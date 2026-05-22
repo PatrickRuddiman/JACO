@@ -65,6 +65,15 @@ func Start(ctx context.Context, d dockerx.Docker, spec compose.ContainerSpec) (c
 	if err != nil {
 		return "", fmt.Errorf("ContainerCreate: %w", err)
 	}
+	// Attach the container to each JACO bridge declared on the spec BEFORE
+	// starting it. NetworkMode=none was used at create-time so the container
+	// has no network until we explicitly NetworkConnect for each declared
+	// docker network (task 27's bridges).
+	for _, net := range spec.Networks {
+		if err := d.NetworkConnect(ctx, net, resp.ID, nil); err != nil {
+			return "", fmt.Errorf("NetworkConnect %s -> %s: %w", net, resp.ID, err)
+		}
+	}
 	if err := d.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		return "", fmt.Errorf("ContainerStart %s: %w", resp.ID, err)
 	}

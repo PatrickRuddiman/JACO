@@ -29,4 +29,7 @@ type Docker interface {
 	ImagePull(ctx context.Context, ref string, opts image.PullOptions) (io.ReadCloser, error)
 	VolumeCreate(ctx context.Context, opts volume.CreateOptions) (volume.Volume, error)
 	NetworkConnect(ctx context.Context, networkID, containerID string, config *network.EndpointSettings) error
+	NetworkCreate(ctx context.Context, name string, options network.CreateOptions) (network.CreateResponse, error)
+	NetworkRemove(ctx context.Context, networkID string) error
+	NetworkList(ctx context.Context, options network.ListOptions) ([]network.Summary, error)
 }

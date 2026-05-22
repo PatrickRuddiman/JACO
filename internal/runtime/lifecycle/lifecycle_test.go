@@ -29,6 +29,7 @@ type fakeDocker struct {
 	containers map[string]*fakeContainer
 	idSeq      int
 	createErr  error
+	attached   map[string][]string // containerID → list of network names
 }
 
 type fakeContainer struct {
@@ -87,6 +88,21 @@ func (f *fakeDocker) ContainerRemove(_ context.Context, id string, _ container.R
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.containers, id)
+	return nil
+}
+
+func (f *fakeDocker) NetworkConnect(_ context.Context, networkID, containerID string, _ *network.EndpointSettings) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.containers[containerID]; !ok {
+		return fmt.Errorf("no such container %s", containerID)
+	}
+	// Track which networks each container has been attached to so the new
+	// test (TestStart_AttachesEachDeclaredNetwork) can assert.
+	if f.attached == nil {
+		f.attached = map[string][]string{}
+	}
+	f.attached[containerID] = append(f.attached[containerID], networkID)
 	return nil
 }
 
@@ -336,6 +352,34 @@ func TestReconcile_RequiresClusterID(t *testing.T) {
 	if err == nil {
 		t.Errorf("expected error when clusterID is empty")
 	}
+}
+
+func TestStart_AttachesEachDeclaredNetwork(t *testing.T) {
+	d := newFakeDocker()
+	spec := sampleSpec("sample-web-0", 42)
+	spec.Networks = []string{"jaco_sample_frontend", "jaco_sample_backend"}
+
+	id, err := lifecycle.Start(context.Background(), d, spec)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	got := d.attached[id]
+	want := []string{"jaco_sample_frontend", "jaco_sample_backend"}
+	if !equalStrings(got, want) {
+		t.Errorf("attached networks = %v, want %v", got, want)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestStart_RequiresReplicaIDAndImage(t *testing.T) {
