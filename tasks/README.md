@@ -1,4 +1,4 @@
-Parent slices: [control-plane](../slices/control-plane.md), [cli](../slices/cli.md), [scheduler](../slices/scheduler.md), [runtime](../slices/runtime.md), [discovery](../slices/discovery.md), [ingress](../slices/ingress.md), [packaging](../slices/packaging.md)
+Parent slices: [control-plane](../slices/control-plane.md), [cli](../slices/cli.md), [scheduler](../slices/scheduler.md), [runtime](../slices/runtime.md), [discovery](../slices/discovery.md), [ingress](../slices/ingress.md), [packaging](../slices/packaging.md), [daemon](../slices/daemon.md)
 
 # JACO — Tasks
 
@@ -42,6 +42,7 @@ Parent slices: [control-plane](../slices/control-plane.md), [cli](../slices/cli.
 | 35 | release-pipeline                                                                  | [35-release-pipeline.md](35-release-pipeline.md)                      | 00                | packaging     |
 | 36 | install-and-systemd                                                               | [36-install-and-systemd.md](36-install-and-systemd.md)                | 35                | packaging     |
 | 37 | self-upgrade                                                                      | [37-self-upgrade.md](37-self-upgrade.md)                              | 35, 36            | packaging     |
+| 38 | daemon-entry                                                                      | [38-daemon-entry.md](38-daemon-entry.md)                              | 05-07, 17, 18, 21, 22, 23, 26, 28-30, 32-34, 35, 36 | daemon |
 
 ## Dependency graph
 
@@ -72,4 +73,7 @@ See [dependency-graph.md](dependency-graph.md) for the ASCII graph + full adjace
                   └─> 28 ────────────────┴─> 30 (also <── 09) ──> 31
 
 00 ──> 35 ──> 36 ──> 37
+
+# Daemon entry — converges the deferrals from every slice.
+{05,06,07,17,18,21,22,23,26,28,29,30,32,33,34,35,36} ──> 38
 ```

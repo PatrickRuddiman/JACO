@@ -29,6 +29,9 @@ Generated from `tasks/` task files' `Depends on:` headers. Edges point from prer
                   └─> 28 ────────────────┴─> 30 (also <── 09) ──> 31
 
 00 ──> 35 ──> 36 ──> 37
+
+# Daemon entry — converges every slice's deferred runtime-wiring work.
+{05,06,07,17,18,21,22,23,26,28,29,30,32,33,34,35,36} ──> 38
 ```
 
 ## Critical chain (longest path)
@@ -77,3 +80,4 @@ Generated from `tasks/` task files' `Depends on:` headers. Edges point from prer
 | 35 | 00 |
 | 36 | 35 |
 | 37 | 35, 36 |
+| 38 | 05, 06, 07, 17, 18, 21, 22, 23, 26, 28, 29, 30, 32, 33, 34, 35, 36 |
