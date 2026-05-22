@@ -1,0 +1,5 @@
+/jaco
+/dist/
+*.test
+*.out
+coverage.*
