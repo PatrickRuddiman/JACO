@@ -1,0 +1,29 @@
+{
+  "apps": {
+    "http": {
+      "servers": {
+        "jaco": {
+          "listen": [
+            ":80",
+            ":443"
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Server": [
+                      "jaco"
+                    ]
+                  },
+                  "status_code": 404
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}
