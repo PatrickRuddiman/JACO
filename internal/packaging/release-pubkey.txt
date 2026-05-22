@@ -1,0 +1,2 @@
+untrusted comment: JACO release-signing minisign public key (PLACEHOLDER — release CI replaces this file before each tagged build)
+RWS0000000000000000000000000000000000000000000000000000000000000000000
