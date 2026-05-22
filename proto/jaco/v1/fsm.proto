@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package jaco.v1;
+
+option go_package = "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1;jacov1";
+
+import "jaco/v1/entities.proto";
+
+// FSMSnapshot captures the full control-plane state for raft snapshot
+// persistence and restore. Encoded with proto.Marshal; written as a single
+// blob to the raft snapshot sink.
+message FSMSnapshot {
+  ClusterMeta cluster = 1;
+  repeated Node nodes = 2;
+  repeated Deployment deployments = 3;
+  repeated ReplicaDesired replicas_desired = 4;
+  repeated ReplicaObserved replicas_observed = 5;
+  repeated Route routes = 6;
+  repeated Cert certs = 7;
+  repeated ChallengeToken challenge_tokens = 8;
+  repeated Token tokens = 9;
+  repeated JoinToken join_tokens = 10;
+  repeated Subnet subnets = 11;
+  repeated RolloutPlan rollout_plans = 12;
+  repeated ReplicaCounter replica_counters = 13;
+  repeated RestartCounter restart_counters = 14;
+  repeated AuditEvent audit_events = 15;
+}
