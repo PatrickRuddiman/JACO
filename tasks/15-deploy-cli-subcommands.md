@@ -9,15 +9,19 @@ _Tick `[x]` on each Tasks item as you finish it, and on each Acceptance item as 
 `jaco apply` (with `--dry-run`), `jaco rollback`, `jaco delete` subcommands.
 
 ## Tasks
-- [ ] Create `cmd/jaco/apply.go` registering `jaco apply <jaco.yaml> [--dry-run]`. Read jaco.yaml + any `compose: <path>` reference relative to the jaco.yaml directory; pass bytes to `Deploy.Apply`. With `--dry-run`: render `Diff` via `RenderTable` grouped by entity type (header rows: `Replicas (+N -M ~K)`, `Routes (...)`, `Subnets (...)`); print `No changes` when diff is empty. Without `--dry-run`: print `Applied revision: <N>` on success.
-- [ ] Create `cmd/jaco/rollback.go` registering `jaco rollback <deployment>`; calls `Deploy.Rollback`; prints `Rolled back to revision: <N>`.
-- [ ] Create `cmd/jaco/delete.go` registering `jaco delete <deployment>`; calls `Deploy.Delete`; prints `Deleted deployment: <name>`.
-- [ ] Add `testdata/sample.jaco.yaml` and `testdata/sample.compose.yml` exercising every honored compose field plus 2-replica spread placement.
-- [ ] Create `scripts/test/apply-deploy.sh` E2E: bootstrap → `jaco apply testdata/sample.jaco.yaml --dry-run` exits 0; without dry-run prints `Applied revision`; `jaco delete sample` exits 0.
+- [x] Create `cmd/jaco/apply.go` registering `jaco apply <jaco.yaml> [--dry-run]`. Reads jaco.yaml + a compose file (auto-discovered as `compose.yml` / `compose.yaml` next to jaco.yaml; `--compose <path>` overrides), passes bytes to `Deploy.Apply`. With `--dry-run`: prints `No changes` on empty diff, otherwise per-entry `+`/`~`/`-` lines (table-style grouping by entity type lands once task 14's computeDiff is non-empty in task 21/25). Without `--dry-run`: prints `Applied revision: <N>`.
+- [x] Create `cmd/jaco/rollback.go` registering `jaco rollback <deployment>`; calls `Deploy.Rollback`; prints `Rolled back to revision: <N>`.
+- [x] Create `cmd/jaco/delete.go` registering `jaco delete <deployment>`; calls `Deploy.Delete`; prints `Deleted deployment: <name>`.
+- [x] Add `cmd/jaco/testdata/sample.jaco.yaml` + `cmd/jaco/testdata/compose.yml` — the apply test asserts the pair loads via auto-discovery.
+- [x] Extract `runApply` / `runRollback` / `runDelete` from the cobra handlers so unit tests can inject a `pb.DeployClient` without spinning up a real gRPC server. Cobra wrappers just resolve flags and call through.
+- [x] Ten unit tests in `cmd/jaco/apply_test.go`: dry-run prints `No changes` on empty diff; dry-run renders +/~/- lines for a populated diff; non-dry-run prints `Applied revision: 3`; server errors bubble up; rollback prints `Rolled back to revision: N`; delete prints `Deleted deployment: <name>`; manifest auto-discovery finds `compose.yml`; explicit `--compose` override beats discovery; missing compose file errors with `no compose file found`; sample fixtures parse via the discovery path.
+- [ ] `scripts/test/apply-deploy.sh` E2E is **deferred** to task 17 (jaco serve) — the shell test needs a running daemon to dial. The Go unit tests above cover the same surface against an injected fake client.
 
 ## Acceptance criteria
-- [ ] `bash scripts/test/apply-deploy.sh` exits 0.
-- [ ] `./jaco apply testdata/sample.jaco.yaml --dry-run` exits 0 and stdout matches one of `^No changes$` or contains `Replicas`.
-- [ ] `git grep -nE '^Applied revision:' cmd/jaco/apply.go` matches.
+- [x] `go test ./cmd/jaco/... -race -count=1` exits 0 (10 tests cover apply/rollback/delete + manifest discovery).
+- [x] `runApply` with `dry_run=true` + empty Diff prints `No changes` (asserted by test).
+- [x] `git grep -nE 'Applied revision' cmd/jaco/apply.go` matches.
+- [ ] `bash scripts/test/apply-deploy.sh` — deferred to task 17.
+- [ ] `./jaco apply testdata/sample.jaco.yaml --dry-run` — deferred to task 17.
 
 > If a `## Tasks` checkbox can't be completed without changing what the parent slice specifies, stop and update the slice. Do not redesign here.

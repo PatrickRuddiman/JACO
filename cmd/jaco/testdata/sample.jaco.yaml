@@ -1,0 +1,10 @@
+deployment: sample
+services:
+  - name: web
+    replicas: 2
+    compose_service: web
+routes:
+  - domain: web.example.com
+    service: web
+    port: 80
+    tls: auto
