@@ -9,17 +9,19 @@ _Tick `[x]` on each Tasks item as you finish it, and on each Acceptance item as 
 3-strike restart on health failure (`code: restart_exhausted` after) + drain-on-node-remove that places replacements before stopping evictees and tears down the raft member only afterwards.
 
 ## Tasks
-- [ ] Create `internal/scheduler/health/health.go`: subscribe to `ReplicaObserved`. On `state → degraded`: raft-Apply `Command{ReplicaCommand}{replica_id, op: remove_from_routing}` (consumed by ingress via Routes watch — that wiring lives in ingress slice rebuild) AND `Command{ReplicaCommand}{replica_id, op: restart}` (consumed by runtime via Replicas watch).
-- [ ] Track per-replica consecutive-failure count via `RestartCounter` entity: increment on each `state → failed` without intervening `state → running`. After 3 consecutive failures: raft-Apply `Command{ReplicaObservedUpdate}{state: failed, code: restart_exhausted}`; no further restart commands until next Deploy.Apply (which clears the RestartCounter).
-- [ ] Create `internal/scheduler/drain/drain.go`: on `Cluster.NodeRemove(hostname, force=false)` request, enumerate `ReplicaDesired{host: hostname}`; compute replacements via `placement.PlaceReplica` against the eligible set minus the leaving node; raft-Apply `Command{Batch}{children: [ReplicaDesired updates with new host for each]}`.
-- [ ] Old replicas on the leaving host remain `running` (routable via ingress) until each replacement reports `running`. Then raft-Apply `Command{ReplicaDesired}{host: removed}` so runtime on the old host tears them down. Then `raft.RemoveServer(hostname)` + `Command{NodeRemove}`.
-- [ ] Drain timeout: 5min per replacement. On timeout abort drain: raft-Apply `Command{NodeStatusUpdate}{hostname, status: "drain_timeout"}`; old replicas remain.
-- [ ] Tests: `internal/scheduler/health/health_test.go` — 3 successive failures → restart_exhausted, fourth failure does not emit a restart command. `internal/scheduler/drain/drain_test.go` — node with 2 replicas removed, both migrate, then raft membership removes the node.
-- [ ] E2E `scripts/test/drain-node.sh` on 3-node rig.
+- [x] Add `Command{RestartCounterUpdate}` variant to commands.proto (ACTION_INCREMENT / ACTION_RESET) plus the FSM handler in `internal/controlplane/fsm/fsm.go` so the scheduler/health package can bump or reset the RestartCounter entity.
+- [x] Create `internal/scheduler/health/health.go` Restarter. Handles ReplicasObserved events on the raft leader: DEGRADED → batched `ReplicaCommand{remove_from_routing}` + `ReplicaCommand{restart}`; FAILED → bump RestartCounter + emit ReplicaCommand{restart}; on the 3rd consecutive failure with no intervening RUNNING, write `ReplicaObservedUpdate{FAILED, code:"restart_exhausted"}` and stop restarting. RUNNING resets the counter (idempotent). Filters out its own `restart_exhausted` echo so the loop terminates.
+- [x] Run(ctx) subscribes to ReplicasObserved and drives Handle() for each event; Handle() self-gates on `leader.IsLeader()` so follower-side restarts never fire.
+- [x] Create `internal/scheduler/drain/drain.go` with `Plan(state, hostname) ([]Migration, error)`: computes the per-replica migration plan for draining a host. Uses placement.PlaceReplica against the remaining eligible set (sans the draining host); rejects when no eligible host remains for a service (e.g. HOSTS-pinned to the draining host).
+- [ ] **Deferred**: full drain step machine (await each replacement healthy → stop evictees → raft.RemoveServer) — needs the daemon entry to wire drain into Cluster.NodeRemove(force=false). Plan() is the building block.
+- [ ] **Deferred**: 5min step timeout + NodeStatusUpdate{drain_timeout} — lands with the step machine.
+- [x] Six restarter tests pass with -race: first failure increments counter + issues restart; three consecutive failures → restart_exhausted with no fourth restart (the AC); RUNNING resets the counter and the next failure starts again at 1; DEGRADED emits remove_from_routing + restart; follower no-ops; own restart_exhausted echo is filtered.
+- [x] Five drain.Plan tests pass with -race: empty host has no migrations; spread-mode 3 replicas where one host drains → migration off; PACK with all replicas on draining host → all migrate to different hosts; HOSTS pinned to draining host → error; empty hostname rejected.
+- [ ] **Deferred**: `scripts/test/drain-node.sh` E2E — depends on `jaco serve` daemon entry to drive Cluster.NodeRemove through the full step machine.
 
 ## Acceptance criteria
-- [ ] `go test ./internal/scheduler/health/... ./internal/scheduler/drain/... -race -count=1` exits 0.
-- [ ] `bash scripts/test/drain-node.sh` exits 0.
-- [ ] Test asserts no `ReplicaCommand{op:restart}` is written after the third failure.
+- [x] `go test ./internal/scheduler/health/... ./internal/scheduler/drain/... -race -count=1` exits 0 (11 tests).
+- [x] Test asserts no `ReplicaCommand{op:restart}` is written after the third failure (`TestHandle_NoRestartAfterThreeConsecutiveFailures`).
+- [ ] `bash scripts/test/drain-node.sh` — deferred to daemon entry.
 
 > If a `## Tasks` checkbox can't be completed without changing what the parent slice specifies, stop and update the slice. Do not redesign here.

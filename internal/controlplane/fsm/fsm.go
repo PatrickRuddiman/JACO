@@ -231,6 +231,24 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 		}, idx)
 		return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
 
+	case *pb.Command_RestartCounterUpdate:
+		u := p.RestartCounterUpdate
+		switch u.GetAction() {
+		case pb.RestartCounterUpdate_ACTION_INCREMENT:
+			var failures int32 = 1
+			if existing, ok := f.State.RestartCounters.Get(u.GetReplicaId()); ok {
+				failures = existing.GetConsecutiveFailures() + 1
+			}
+			f.State.RestartCounters.Apply(&pb.RestartCounter{
+				ReplicaId:           u.GetReplicaId(),
+				ConsecutiveFailures: failures,
+				LastAttemptAt:       cmd.GetTs(),
+			}, idx)
+		case pb.RestartCounterUpdate_ACTION_RESET:
+			f.State.RestartCounters.Remove(u.GetReplicaId(), idx)
+		}
+		return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
+
 	case *pb.Command_RouteUpsert:
 		if r := p.RouteUpsert.GetRoute(); r != nil {
 			f.State.Routes.Apply(r, idx)

@@ -31,6 +31,7 @@ message Command {
     ReplicaCommandIssue replica_command_issue = 33;
     RolloutPlanUpdate rollout_plan_update = 34;
     ReplicaCounterIncrement replica_counter_increment = 35;
+    RestartCounterUpdate restart_counter_update = 36;
 
     RouteUpsert route_upsert = 40;
     RouteRemove route_remove = 41;
@@ -145,6 +146,19 @@ message RolloutPlanUpdate {
 message ReplicaCounterIncrement {
   string deployment = 1;
   string service = 2;
+}
+
+// RestartCounterUpdate is the scheduler/health mutation that bumps the
+// per-replica restart counter (INCREMENT) on a failed observation, or
+// removes it entirely (RESET) on a healthy observation.
+message RestartCounterUpdate {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    ACTION_INCREMENT = 1;
+    ACTION_RESET = 2;
+  }
+  string replica_id = 1;
+  Action action = 2;
 }
 
 // ----- Route mutations -----
