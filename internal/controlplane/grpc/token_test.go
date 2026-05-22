@@ -32,16 +32,18 @@ type twoNodeCluster struct {
 }
 
 type clusterNode struct {
-	Name      string
-	DataDir   string
-	RaftAddr  string
-	GrpcAddr  string
-	State     *state.State
-	Raft      *raftnode.Node
-	Server    *grpcsrv.Server
-	CACert    []byte
-	Tokens    pb.TokensClient
-	Cluster   pb.ClusterClient
+	Name     string
+	DataDir  string
+	RaftAddr string
+	GrpcAddr string
+	State    *state.State
+	Brokers  *watch.Registry
+	Raft     *raftnode.Node
+	Server   *grpcsrv.Server
+	CACert   []byte
+	Tokens   pb.TokensClient
+	Cluster  pb.ClusterClient
+	Audit    pb.AuditClient
 }
 
 // setupTwoNodeCluster bootstraps A, then onboards B via the full join
@@ -63,13 +65,14 @@ func setupTwoNodeCluster(t *testing.T) *twoNodeCluster {
 	aCaCert, _ := os.ReadFile(filepath.Join(aDir, "node", "ca.crt"))
 	aNodeCert, _ := os.ReadFile(filepath.Join(aDir, "node", "node-a.crt"))
 	aNodeKey, _ := os.ReadFile(filepath.Join(aDir, "node", "node-a.key"))
-	a.Server = startGRPCServer(t, freePort(t), aNodeCert, aNodeKey, aCaCert, a.State, a.Raft)
+	a.Server = startGRPCServer(t, freePort(t), aNodeCert, aNodeKey, aCaCert, a.State, a.Brokers, a.Raft)
 	a.GrpcAddr = a.Server.Addr().String()
 	a.CACert = aCaCert
 	conn := dialConn(t, a.GrpcAddr, aCaCert, "node-a")
 	t.Cleanup(func() { _ = conn.Close() })
 	a.Tokens = pb.NewTokensClient(conn)
 	a.Cluster = pb.NewClusterClient(conn)
+	a.Audit = pb.NewAuditClient(conn)
 
 	// --- Node B: raft up, join via A's gRPC, then start B's gRPC. ---
 	bDir := t.TempDir()
@@ -94,13 +97,14 @@ func setupTwoNodeCluster(t *testing.T) *twoNodeCluster {
 		t.Fatalf("NodeJoin: %v", err)
 	}
 
-	b.Server = startGRPCServer(t, freePort(t), joinResp.GetSignedCert(), bKey, joinResp.GetCaCert(), b.State, b.Raft)
+	b.Server = startGRPCServer(t, freePort(t), joinResp.GetSignedCert(), bKey, joinResp.GetCaCert(), b.State, b.Brokers, b.Raft)
 	b.GrpcAddr = b.Server.Addr().String()
 	b.CACert = joinResp.GetCaCert()
 	bConn := dialConn(t, b.GrpcAddr, joinResp.GetCaCert(), "node-b")
 	t.Cleanup(func() { _ = bConn.Close() })
 	b.Tokens = pb.NewTokensClient(bConn)
 	b.Cluster = pb.NewClusterClient(bConn)
+	b.Audit = pb.NewAuditClient(bConn)
 
 	// Both nodes' state must reflect the second member before tests use B.
 	waitFor(t, 5*time.Second, "A.state.Nodes has node-b", func() bool {
@@ -144,10 +148,10 @@ func openClusterNode(t *testing.T, name, dataDir, raftAddr string) *clusterNode 
 		})
 	}
 
-	return &clusterNode{Name: name, DataDir: dataDir, RaftAddr: raftAddr, State: st, Raft: r}
+	return &clusterNode{Name: name, DataDir: dataDir, RaftAddr: raftAddr, State: st, Brokers: brokers, Raft: r}
 }
 
-func startGRPCServer(t *testing.T, bindAddr string, nodeCert, nodeKey, caCert []byte, st *state.State, r *raftnode.Node) *grpcsrv.Server {
+func startGRPCServer(t *testing.T, bindAddr string, nodeCert, nodeKey, caCert []byte, st *state.State, brokers *watch.Registry, r *raftnode.Node) *grpcsrv.Server {
 	t.Helper()
 	srv, err := grpcsrv.NewServer(grpcsrv.Options{
 		BindAddr: bindAddr,
@@ -155,6 +159,7 @@ func startGRPCServer(t *testing.T, bindAddr string, nodeCert, nodeKey, caCert []
 		NodeKey:  nodeKey,
 		CACert:   caCert,
 		State:    st,
+		Brokers:  brokers,
 		Raft:     r,
 	})
 	if err != nil {

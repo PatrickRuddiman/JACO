@@ -18,17 +18,19 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/admission"
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
 // Options carries everything NewServer needs.
 type Options struct {
-	BindAddr string  // e.g. "0.0.0.0:7000"; "127.0.0.1:0" picks a free port (tests)
-	NodeCert []byte  // PEM
-	NodeKey  []byte  // PEM
-	CACert   []byte  // PEM (cluster CA — used to verify client certs in future)
+	BindAddr string         // e.g. "0.0.0.0:7000"; "127.0.0.1:0" picks a free port (tests)
+	NodeCert []byte         // PEM
+	NodeKey  []byte         // PEM
+	CACert   []byte         // PEM (cluster CA — used to verify client certs in future)
 	State    *state.State
-	Raft     *raftnode.Node // optional; nil for tests that bypass raft
+	Brokers  *watch.Registry // needed for follow-mode Audit.Query streams
+	Raft     *raftnode.Node  // optional; nil for tests that bypass raft
 }
 
 // Server wraps the listening gRPC server.
@@ -82,6 +84,7 @@ func NewServer(opts Options) (*Server, error) {
 
 	pb.RegisterClusterServer(gs, &clusterServer{state: opts.State, raft: opts.Raft})
 	pb.RegisterTokensServer(gs, &tokensServer{state: opts.State, raft: opts.Raft})
+	pb.RegisterAuditServer(gs, &auditServer{state: opts.State, brokers: opts.Brokers})
 
 	return &Server{grpc: gs, listener: lis, opts: opts}, nil
 }

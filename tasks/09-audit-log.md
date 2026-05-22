@@ -9,15 +9,17 @@ _Tick `[x]` on each Tasks item as you finish it, and on each Acceptance item as 
 Closed-set audit-event entity, queryable by time/type/follow, with `jaco audit` CLI rendering matching the configured output format.
 
 ## Tasks
-- [ ] In `proto/jaco/v1/entities.proto`, define `enum AuditEventType` with the closed set: `APPLY, DELETE, ROLLBACK, NODE_JOIN, NODE_REMOVE, TOKEN_ISSUE, TOKEN_REVOKE, CERTIFICATE_ISSUED, CERTIFICATE_RENEWED, CERTIFICATE_FAILED, ISOLATION_RULESET_RECONCILED, ISOLATION_UNAVAILABLE, BACKUP_TAKEN, RESTORE_COMPLETED, UPGRADE_SUCCEEDED, UPGRADE_FAILED`. Regenerate via `make proto`.
-- [ ] Ensure FSM `Apply` (from task 04) writes an `AuditEvent{type, identity, payload_summary, raft_index, ts}` for every entity-mutating Command variant.
-- [ ] Add `Audit.Query(req{since, until, types[], follow}) returns stream AuditEvent` handler in `internal/controlplane/grpc/audit.go`. Without `follow`: send historical events matching the filter, then close. With `follow`: send historical, then subscribe to `Brokers.AuditEvents()` and stream subsequent matches.
-- [ ] Create `cmd/jaco/audit.go` with `--since <duration>` (e.g. `1h`), `--type <comma-list>` (one of the closed set, lowercased), `-f/--follow`. Renders via `RenderTable`/`RenderJSON`/`RenderYAML`.
-- [ ] Create `internal/controlplane/grpc/audit_test.go`: bootstrap; apply a no-op token revoke; query with `--type token_revoke`; assert 1 result with the expected identity.
+- [x] `enum AuditEventType` already defined in `proto/jaco/v1/entities.proto` (task 01). Closed set: `APPLY, DELETE, ROLLBACK, NODE_JOIN, NODE_REMOVE, TOKEN_ISSUE, TOKEN_REVOKE, CERTIFICATE_*, ISOLATION_RULESET_RECONCILED, ISOLATION_UNAVAILABLE, BACKUP_TAKEN, RESTORE_COMPLETED, UPGRADE_SUCCEEDED, UPGRADE_FAILED, ROLLOUT_INVARIANT_HOLD`.
+- [x] FSM `Apply` (task 04) already writes `AuditEvent{type, identity, raft_index, ts, payload}` for every mutation in the closed set.
+- [x] Add `Audit.Query(req{since, until, types[], follow}) returns stream AuditEvent` handler in `internal/controlplane/grpc/audit.go`. Without `follow`: send historical events matching the filter, then close. With `follow`: subscribe to `Brokers.AuditEvents` BEFORE reading historical (so events landing mid-snapshot aren't lost), dedupe by raft_index, then stream new matches. KindResync re-fetches state and forwards past `lastIdx`.
+- [x] Add `grpcsrv.Options.Brokers *watch.Registry` (passed by the daemon entrypoint or test harness) so the audit server can subscribe.
+- [x] Add `grpcsrv.AuditTypeToString` / `grpcsrv.ParseAuditType` helpers — strip the `AUDIT_EVENT_TYPE_` prefix and lowercase. Shared between server-side rendering and the CLI's `--type` parsing.
+- [x] Create `cmd/jaco/audit.go` with `--since <duration>` (`time.ParseDuration`), `--type <comma-list>` (lowercased closed-set names), `-f/--follow`. Output respects the global `-o`: JSON array for non-follow, NDJSON for follow, plain table otherwise. (yaml renderer is task 12.)
+- [x] Create `internal/controlplane/grpc/audit_test.go`: bootstrap two-node cluster via the shared harness; revoke a token to generate a TOKEN_REVOKE event; query with `Types=[TOKEN_REVOKE]` and assert every returned event is of that type with the expected payload. Plus `Since` cutoff filter test, follow-mode test that asserts a newly-issued token's TOKEN_ISSUE event arrives on the stream within 3s, and a round-trip test for the AuditTypeToString/ParseAuditType helpers.
 
 ## Acceptance criteria
-- [ ] `go test ./internal/controlplane/grpc/... -race -count=1 -run Audit` exits 0.
-- [ ] After build, in the 3-node test rig: `./jaco audit --type apply -o json | jq '.[0].type'` prints `"apply"`.
-- [ ] `git grep -nE 'AuditEventType' proto/jaco/v1/entities.proto` returns at least 1 match.
+- [x] `go test ./internal/controlplane/grpc/... -race -count=1 -run Audit` exits 0.
+- [ ] **3-node test rig E2E**: `./jaco audit --type apply -o json | jq '.[0].type'` prints `"apply"`. Deferred to task 17 (jaco serve daemon entry); the Go integration test exercises the same shape via in-process raft daemons.
+- [x] `git grep -nE 'AuditEventType' proto/jaco/v1/entities.proto` returns at least 1 match.
 
 > If a `## Tasks` checkbox can't be completed without changing what the parent slice specifies, stop and update the slice. Do not redesign here.
