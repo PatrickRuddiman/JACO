@@ -1,16 +1,27 @@
-# build/jaco.service — placeholder systemd unit. Full body (capabilities,
-# restart policy, watchdog wiring) lands in task 36.
 [Unit]
-Description=JACO container orchestrator
+Description=JACO orchestrator
 After=network-online.target docker.service
-Wants=network-online.target docker.service
+Wants=network-online.target
 
 [Service]
 Type=notify
 ExecStart=/usr/local/bin/jaco serve
+User=jaco
+Group=jaco
+Environment=JACO_DATA_DIR=/var/lib/jaco
+
+# Capability surface: nftables + WireGuard + binding to :80/:443.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+NoNewPrivileges=true
+
+# Filesystem hardening.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/jaco /run
+
+# Restart policy.
 Restart=on-failure
-RestartSec=2s
-User=root
+RestartSec=5
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target

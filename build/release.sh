@@ -43,6 +43,8 @@ build_one() {
   chmod 0755 "$stage_dir/install.sh"
 
   cp "$BUILD_DIR/jaco.service" "$stage_dir/jaco.service"
+  cp "$BUILD_DIR/uninstall.sh" "$stage_dir/uninstall.sh"
+  chmod 0755 "$stage_dir/uninstall.sh"
   cp "$REPO_ROOT/LICENSE"      "$stage_dir/LICENSE"
   cp "$REPO_ROOT/README.md"    "$stage_dir/README.md"
 
