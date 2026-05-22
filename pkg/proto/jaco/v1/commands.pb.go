@@ -606,8 +606,12 @@ type ClusterInit struct {
 	// Hashed secret for the initial operator token; the cleartext is returned to
 	// the bootstrap caller and is never stored.
 	OperatorTokenHashedSecret []byte `protobuf:"bytes,4,opt,name=operator_token_hashed_secret,json=operatorTokenHashedSecret,proto3" json:"operator_token_hashed_secret,omitempty"`
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	// Self-node identity recorded in state.Nodes so NodeList reflects the
+	// bootstrap node from the start.
+	SelfHostname  string `protobuf:"bytes,5,opt,name=self_hostname,json=selfHostname,proto3" json:"self_hostname,omitempty"`
+	SelfAddress   string `protobuf:"bytes,6,opt,name=self_address,json=selfAddress,proto3" json:"self_address,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ClusterInit) Reset() {
@@ -666,6 +670,20 @@ func (x *ClusterInit) GetOperatorTokenHashedSecret() []byte {
 		return x.OperatorTokenHashedSecret
 	}
 	return nil
+}
+
+func (x *ClusterInit) GetSelfHostname() string {
+	if x != nil {
+		return x.SelfHostname
+	}
+	return ""
+}
+
+func (x *ClusterInit) GetSelfAddress() string {
+	if x != nil {
+		return x.SelfAddress
+	}
+	return ""
 }
 
 type NodeJoin struct {
@@ -2054,13 +2072,15 @@ const file_jaco_v1_commands_proto_rawDesc = "" +
 	"\x05batch\x18Z \x01(\v2\x0e.jaco.v1.BatchH\x00R\x05batchB\t\n" +
 	"\apayload\"5\n" +
 	"\x05Batch\x12,\n" +
-	"\bchildren\x18\x01 \x03(\v2\x10.jaco.v1.CommandR\bchildren\"\x9d\x01\n" +
+	"\bchildren\x18\x01 \x03(\v2\x10.jaco.v1.CommandR\bchildren\"\xe5\x01\n" +
 	"\vClusterInit\x12\x1d\n" +
 	"\n" +
 	"cluster_id\x18\x01 \x01(\tR\tclusterId\x12\x17\n" +
 	"\aca_cert\x18\x02 \x01(\fR\x06caCert\x12\x15\n" +
 	"\x06ca_key\x18\x03 \x01(\fR\x05caKey\x12?\n" +
-	"\x1coperator_token_hashed_secret\x18\x04 \x01(\fR\x19operatorTokenHashedSecret\"\xa3\x01\n" +
+	"\x1coperator_token_hashed_secret\x18\x04 \x01(\fR\x19operatorTokenHashedSecret\x12#\n" +
+	"\rself_hostname\x18\x05 \x01(\tR\fselfHostname\x12!\n" +
+	"\fself_address\x18\x06 \x01(\tR\vselfAddress\"\xa3\x01\n" +
 	"\bNodeJoin\x12\x1a\n" +
 	"\bhostname\x18\x01 \x01(\tR\bhostname\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x126\n" +

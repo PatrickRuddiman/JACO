@@ -34,10 +34,20 @@ func IdentityFromContext(ctx context.Context) string {
 	return ""
 }
 
+// UnauthMethods lists gRPC methods that bypass the bearer-token check. These
+// RPCs gate themselves via a body-carried credential — e.g. NodeJoin verifies
+// the single-use join_token in the request body.
+var UnauthMethods = map[string]bool{
+	"/jaco.v1.Cluster/NodeJoin": true,
+}
+
 // UnaryInterceptor returns a grpc.UnaryServerInterceptor that runs
-// authResolve on every incoming RPC.
+// authResolve on every incoming RPC unless the method is unauthenticated.
 func UnaryInterceptor(s *state.State) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if UnauthMethods[info.FullMethod] {
+			return handler(ctx, req)
+		}
 		newCtx, err := authResolve(ctx, s)
 		if err != nil {
 			return nil, err
@@ -47,9 +57,13 @@ func UnaryInterceptor(s *state.State) grpc.UnaryServerInterceptor {
 }
 
 // StreamInterceptor returns a grpc.StreamServerInterceptor that runs
-// authResolve on every incoming stream's initial metadata.
+// authResolve on every incoming stream's initial metadata unless the method
+// is unauthenticated.
 func StreamInterceptor(s *state.State) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if UnauthMethods[info.FullMethod] {
+			return handler(srv, ss)
+		}
 		newCtx, err := authResolve(ss.Context(), s)
 		if err != nil {
 			return err

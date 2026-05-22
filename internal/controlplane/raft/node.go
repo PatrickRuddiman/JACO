@@ -29,11 +29,10 @@ type Config struct {
 
 // Node owns a running raft.Raft and the stores backing it.
 type Node struct {
-	Raft        *hraft.Raft
-	logStore    hraft.LogStore
-	stableStore hraft.StableStore
-	snapStore   hraft.SnapshotStore
-	transport   hraft.Transport
+	Raft      *hraft.Raft
+	boltStore *boltdb.BoltStore // concrete handle so Shutdown can release the file lock
+	snapStore hraft.SnapshotStore
+	transport hraft.Transport
 }
 
 // New constructs and starts a raft node. If cfg.Bootstrap is true the node
@@ -107,11 +106,10 @@ func New(cfg Config) (*Node, error) {
 	}
 
 	return &Node{
-		Raft:        r,
-		logStore:    store,
-		stableStore: store,
-		snapStore:   snaps,
-		transport:   trans,
+		Raft:      r,
+		boltStore: store,
+		snapStore: snaps,
+		transport: trans,
 	}, nil
 }
 
@@ -144,10 +142,22 @@ func (n *Node) LocalAddr() hraft.ServerAddress {
 	return n.transport.LocalAddr()
 }
 
-// Shutdown stops the raft node and releases resources.
+// Shutdown stops the raft node and releases the bolt log-store file lock so
+// the same data dir can be re-opened immediately after.
 func (n *Node) Shutdown() error {
+	var firstErr error
 	if f := n.Raft.Shutdown(); f.Error() != nil {
-		return f.Error()
+		firstErr = f.Error()
 	}
-	return nil
+	if n.boltStore != nil {
+		if err := n.boltStore.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if closer, ok := n.transport.(interface{ Close() error }); ok {
+		if err := closer.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }

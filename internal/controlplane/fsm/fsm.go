@@ -74,6 +74,14 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 				IssuedAt:     cmd.GetTs(),
 			}, idx)
 		}
+		if h := ci.GetSelfHostname(); h != "" {
+			f.State.Nodes.Apply(&pb.Node{
+				Hostname: h,
+				Address:  ci.GetSelfAddress(),
+				Status:   pb.NodeStatus_NODE_STATUS_READY,
+				JoinedAt: cmd.GetTs(),
+			}, idx)
+		}
 		return pb.AuditEventType_AUDIT_EVENT_TYPE_NODE_JOIN, map[string]string{
 			"cluster_id": ci.GetClusterId(),
 		}

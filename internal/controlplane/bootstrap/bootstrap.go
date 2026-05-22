@@ -132,6 +132,8 @@ func Run(opts Options) (*Result, error) {
 			CaCert:                    caCertPEM,
 			CaKey:                     caKeyPEM,
 			OperatorTokenHashedSecret: tokenHash[:],
+			SelfHostname:              opts.Name,
+			SelfAddress:               string(rnode.LocalAddr()),
 		}},
 	}
 	cmdBytes, err := proto.Marshal(initCmd)

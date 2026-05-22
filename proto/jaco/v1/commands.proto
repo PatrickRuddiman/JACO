@@ -68,6 +68,10 @@ message ClusterInit {
   // Hashed secret for the initial operator token; the cleartext is returned to
   // the bootstrap caller and is never stored.
   bytes operator_token_hashed_secret = 4;
+  // Self-node identity recorded in state.Nodes so NodeList reflects the
+  // bootstrap node from the start.
+  string self_hostname = 5;
+  string self_address = 6;
 }
 
 message NodeJoin {

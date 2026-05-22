@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -46,7 +47,8 @@ func resolveOnce(t *testing.T, st *state.State, ctx context.Context) (context.Co
 		seen = ctx
 		return "ok", nil
 	}
-	_, err := admission.UnaryInterceptor(st)(ctx, nil, nil, handler)
+	info := &grpc.UnaryServerInfo{FullMethod: "/jaco.v1.Cluster/Status"}
+	_, err := admission.UnaryInterceptor(st)(ctx, nil, info, handler)
 	return seen, err
 }
 

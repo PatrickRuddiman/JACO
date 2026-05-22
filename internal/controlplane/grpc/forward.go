@@ -9,7 +9,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/status"
 
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
@@ -41,18 +40,18 @@ func NewLeaderForwarder(r *raftnode.Node, caPEM []byte) *LeaderForwarder {
 //     failed.
 func (f *LeaderForwarder) EnsureLeader(_ context.Context) (pb.InternalClient, bool, error) {
 	if f.raft == nil {
-		return nil, false, statusErr(codes.Unavailable, "no_leader", "raft not wired")
+		return nil, false, errorStatus(codes.Unavailable, "no_leader", "raft not wired")
 	}
 	if f.raft.IsLeader() {
 		return nil, true, nil
 	}
 	leader := string(f.raft.Leader())
 	if leader == "" {
-		return nil, false, statusErr(codes.Unavailable, "no_leader", "leader address unknown")
+		return nil, false, errorStatus(codes.Unavailable, "no_leader", "leader address unknown")
 	}
 	conn, err := f.dialer(leader)
 	if err != nil {
-		return nil, false, statusErr(codes.Unavailable, "no_leader", fmt.Sprintf("dial leader %s: %v", leader, err))
+		return nil, false, errorStatus(codes.Unavailable, "no_leader", fmt.Sprintf("dial leader %s: %v", leader, err))
 	}
 	return pb.NewInternalClient(conn), false, nil
 }
@@ -64,12 +63,4 @@ func (f *LeaderForwarder) defaultDial(addr string) (*grpc.ClientConn, error) {
 	}
 	creds := credentials.NewTLS(&tls.Config{RootCAs: pool})
 	return grpc.NewClient(addr, grpc.WithTransportCredentials(creds))
-}
-
-func statusErr(code codes.Code, errCode, msg string) error {
-	st := status.New(code, errCode)
-	if detailed, err := st.WithDetails(&pb.Error{Code: errCode, Message: msg}); err == nil {
-		st = detailed
-	}
-	return st.Err()
 }
