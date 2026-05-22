@@ -267,7 +267,16 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 
 	case *pb.Command_CertLock:
 		l := p.CertLock
+		now := cmd.GetTs().AsTime()
 		if c, ok := f.State.Certs.Get(l.GetName()); ok {
+			// Reject the lock when it's held by a different lessee and the
+			// existing LockUntil hasn't passed yet (cluster-wide single-
+			// flight semantics for CertMagic). Same-lessee reapplies are
+			// the auto-renew path and always accepted.
+			if c.GetLessee() != "" && c.GetLessee() != l.GetLessee() &&
+				c.GetLockUntil() != nil && c.GetLockUntil().AsTime().After(now) {
+				return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
+			}
 			c.Lessee = l.GetLessee()
 			c.LockUntil = l.GetUntil()
 			f.State.Certs.Apply(c, idx)
