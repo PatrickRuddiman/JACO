@@ -145,8 +145,19 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 		}
 
 	case *pb.Command_DeploymentRollback:
-		// Restore semantics (re-derive ReplicaDesired/Routes from a previous
-		// revision) lands in task 14; here we just record the audit event.
+		// Swap applied_revision and previous_revision so the marker reflects
+		// the rollback target. Full state restore — re-deriving the previous
+		// revision's services and routes from stored YAML — requires
+		// revision history which is a follow-up; v1 just flips the markers
+		// and audits ROLLBACK.
+		dr := p.DeploymentRollback
+		if existing, ok := f.State.Deployments.Get(dr.GetDeployment()); ok {
+			wasApplied := existing.GetAppliedRevision()
+			existing.AppliedRevision = dr.GetRevision()
+			existing.PreviousRevision = wasApplied
+			existing.UpdatedAt = cmd.GetTs()
+			f.State.Deployments.Apply(existing, idx)
+		}
 		return pb.AuditEventType_AUDIT_EVENT_TYPE_ROLLBACK, map[string]string{
 			"deployment": p.DeploymentRollback.GetDeployment(),
 			"revision":   strconv.FormatUint(p.DeploymentRollback.GetRevision(), 10),
