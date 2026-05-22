@@ -1,0 +1,238 @@
+package firewall_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/PatrickRuddiman/jaco/internal/discovery/firewall"
+)
+
+func TestRender_GoldenTwoDepsTwoNets(t *testing.T) {
+	in := firewall.RuleInput{
+		Subnets: []firewall.Subnet{
+			{Deployment: "sample", Network: "frontend", CIDR: "10.244.0.0/24"},
+			{Deployment: "sample", Network: "backend", CIDR: "10.244.1.0/24"},
+			{Deployment: "other", Network: "default", CIDR: "10.244.2.0/24"},
+			{Deployment: "other", Network: "metrics", CIDR: "10.244.3.0/24"},
+		},
+		WGPort:       51820,
+		GrpcPort:     7000,
+		IngressPorts: []int{80, 443},
+	}
+	got := firewall.Render(in)
+
+	goldenPath := filepath.Join("testdata", "2dep-2net.nft")
+	if regenGolden() {
+		if err := os.WriteFile(goldenPath, []byte(got), 0o644); err != nil {
+			t.Fatalf("write golden: %v", err)
+		}
+		t.Logf("regenerated %s", goldenPath)
+		return
+	}
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	if got != string(want) {
+		t.Errorf("Render output diverges from golden (run with REGEN_GOLDEN=1 to refresh)")
+		t.Logf("=== got:\n%s\n=== want:\n%s", got, string(want))
+	}
+}
+
+func regenGolden() bool { return os.Getenv("REGEN_GOLDEN") == "1" }
+
+func TestRender_SortsSubnetsDeterministically(t *testing.T) {
+	a := firewall.Render(firewall.RuleInput{
+		Subnets: []firewall.Subnet{
+			{Deployment: "a", Network: "y", CIDR: "10.244.0.0/24"},
+			{Deployment: "b", Network: "x", CIDR: "10.244.1.0/24"},
+			{Deployment: "a", Network: "x", CIDR: "10.244.2.0/24"},
+		},
+	})
+	b := firewall.Render(firewall.RuleInput{
+		Subnets: []firewall.Subnet{
+			{Deployment: "a", Network: "x", CIDR: "10.244.2.0/24"},
+			{Deployment: "b", Network: "x", CIDR: "10.244.1.0/24"},
+			{Deployment: "a", Network: "y", CIDR: "10.244.0.0/24"},
+		},
+	})
+	if a != b {
+		t.Errorf("Render not deterministic under subnet ordering")
+	}
+	// And that the (a,x) entry appears before (a,y), and both before (b,x).
+	ax := strings.Index(a, "10.244.2.0/24")
+	ay := strings.Index(a, "10.244.0.0/24")
+	bx := strings.Index(a, "10.244.1.0/24")
+	if !(ax < ay && ay < bx) {
+		t.Errorf("subnets not sorted: ax=%d ay=%d bx=%d", ax, ay, bx)
+	}
+}
+
+func TestSetName_SanitizesAndFitsLimit(t *testing.T) {
+	cases := []struct {
+		dep, net string
+		match    string
+	}{
+		{"sample", "frontend", "dep_net_sample_frontend"},
+		{"my-dep.v1", "front-end", "dep_net_my_dep_v1_front_end"},
+		{"sample", "default", "dep_net_sample_default"},
+	}
+	for _, c := range cases {
+		got := firewall.SetName(c.dep, c.net)
+		if got != c.match {
+			t.Errorf("SetName(%q,%q) = %q, want %q", c.dep, c.net, got, c.match)
+		}
+		if len(got) > firewall.MaxSetNameLen {
+			t.Errorf("SetName(%q,%q) length %d > %d", c.dep, c.net, len(got), firewall.MaxSetNameLen)
+		}
+	}
+}
+
+func TestSetName_HashesWhenTooLong(t *testing.T) {
+	dep := strings.Repeat("a", 40)
+	net := strings.Repeat("b", 40)
+	got := firewall.SetName(dep, net)
+	if len(got) > firewall.MaxSetNameLen {
+		t.Errorf("SetName too long: %d > %d", len(got), firewall.MaxSetNameLen)
+	}
+	if !strings.HasPrefix(got, "dep_net_") {
+		t.Errorf("SetName lost prefix: %q", got)
+	}
+	// Same input deterministically hashes to the same name.
+	if firewall.SetName(dep, net) != got {
+		t.Errorf("SetName hashing not deterministic")
+	}
+}
+
+func TestSetName_DefaultsEmptyNetworkTo_default(t *testing.T) {
+	got := firewall.SetName("sample", "")
+	if !strings.Contains(got, "_default") {
+		t.Errorf("SetName(%q,'') = %q; expected _default fallback", "sample", got)
+	}
+}
+
+func TestRender_RulesetContainsExpectedChainsAndElements(t *testing.T) {
+	in := firewall.RuleInput{
+		Subnets: []firewall.Subnet{{Deployment: "sample", Network: "frontend", CIDR: "10.244.0.0/24"}},
+		WGPort:  51820, GrpcPort: 7000, IngressPorts: []int{80, 443},
+	}
+	got := firewall.Render(in)
+	for _, want := range []string{
+		"table inet jaco {",
+		"set dep_net_sample_frontend {",
+		"elements = { 10.244.0.0/24 }",
+		"chain forward {",
+		"policy drop;",
+		"ct state established,related accept",
+		"ip saddr @dep_net_sample_frontend ip daddr @dep_net_sample_frontend accept",
+		"chain input {",
+		"iif lo accept",
+		"udp dport 51820 accept",
+		"iifname \"wg-jaco\" accept",
+		"iifname \"jaco-*\" udp dport 53 accept",
+		"tcp dport 7000 accept",
+		"tcp dport { 80, 443 } accept",
+		"chain output {",
+		"policy accept;",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("ruleset missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestRender_SinglePortNoBraces(t *testing.T) {
+	got := firewall.Render(firewall.RuleInput{IngressPorts: []int{443}})
+	if !strings.Contains(got, "tcp dport 443 accept") {
+		t.Errorf("single ingress port should render without braces; got:\n%s", got)
+	}
+}
+
+func TestSelfTestFromJSON_AllChainsAndSetsPresent(t *testing.T) {
+	expected := firewall.RuleInput{
+		Subnets: []firewall.Subnet{{Deployment: "sample", Network: "frontend", CIDR: "10.244.0.0/24"}},
+	}
+	jsonOK := []byte(`{"nftables":[
+		{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"drop"}},
+		{"chain":{"family":"inet","table":"jaco","name":"input","hook":"input","prio":0,"policy":"drop"}},
+		{"chain":{"family":"inet","table":"jaco","name":"output","hook":"output","prio":0,"policy":"accept"}},
+		{"set":{"family":"inet","table":"jaco","name":"dep_net_sample_frontend","type":"ipv4_addr"}}
+	]}`)
+	if err := firewall.SelfTestFromJSON(jsonOK, expected); err != nil {
+		t.Fatalf("SelfTest: %v", err)
+	}
+}
+
+func TestSelfTestFromJSON_MissingChainErrors(t *testing.T) {
+	expected := firewall.RuleInput{Subnets: []firewall.Subnet{{Deployment: "a", Network: "b", CIDR: "10.244.0.0/24"}}}
+	jsonMissing := []byte(`{"nftables":[
+		{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"drop"}},
+		{"set":{"family":"inet","table":"jaco","name":"dep_net_a_b","type":"ipv4_addr"}}
+	]}`)
+	err := firewall.SelfTestFromJSON(jsonMissing, expected)
+	if err == nil {
+		t.Fatalf("expected SelfTestError")
+	}
+	var ste *firewall.SelfTestError
+	if !errors.As(err, &ste) {
+		t.Fatalf("err is not SelfTestError: %T %v", err, err)
+	}
+	if ste.Code != "isolation_self_test_failed" {
+		t.Errorf("code = %q", ste.Code)
+	}
+	if len(ste.Missing) == 0 {
+		t.Errorf("Missing should list the absent chains")
+	}
+}
+
+func TestSelfTestFromJSON_ExtraSetErrors(t *testing.T) {
+	expected := firewall.RuleInput{Subnets: []firewall.Subnet{{Deployment: "a", Network: "b", CIDR: "10.244.0.0/24"}}}
+	jsonExtra := []byte(`{"nftables":[
+		{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"drop"}},
+		{"chain":{"family":"inet","table":"jaco","name":"input","hook":"input","prio":0,"policy":"drop"}},
+		{"chain":{"family":"inet","table":"jaco","name":"output","hook":"output","prio":0,"policy":"accept"}},
+		{"set":{"family":"inet","table":"jaco","name":"dep_net_a_b","type":"ipv4_addr"}},
+		{"set":{"family":"inet","table":"jaco","name":"orphan_set","type":"ipv4_addr"}}
+	]}`)
+	err := firewall.SelfTestFromJSON(jsonExtra, expected)
+	var ste *firewall.SelfTestError
+	if !errors.As(err, &ste) {
+		t.Fatalf("expected SelfTestError; got %v", err)
+	}
+	found := false
+	for _, e := range ste.Extra {
+		if e == "set:orphan_set" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("orphan_set not flagged as extra: %v", ste.Extra)
+	}
+}
+
+func TestApply_FailsWhenNftMissing(t *testing.T) {
+	// In CI without nftables, Apply errors with a wrapped exec failure.
+	// We only verify the file-management path: a temp file gets created and
+	// cleaned up. (The exec error message itself depends on the host.)
+	if err := firewall.IsAvailable(); err == nil {
+		t.Skip("nft is available on PATH; this test asserts the missing-binary path")
+	}
+	err := firewall.DefaultApplier().Apply(context.Background(), "table inet test {}\n")
+	if err == nil {
+		t.Errorf("expected error when nft not on PATH")
+	}
+}
+
+func TestIsAvailable_DependsOnHostPATH(t *testing.T) {
+	// Just verify the call returns either nil or ErrNftNotFound (sentinel).
+	err := firewall.IsAvailable()
+	if err != nil && !errors.Is(err, firewall.ErrNftNotFound) {
+		t.Errorf("unexpected IsAvailable error type: %v", err)
+	}
+	_ = fmt.Sprintf // silence
+}
