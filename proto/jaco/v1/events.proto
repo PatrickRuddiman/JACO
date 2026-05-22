@@ -1,0 +1,117 @@
+syntax = "proto3";
+
+package jaco.v1;
+
+option go_package = "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1;jacov1";
+
+import "jaco/v1/entities.proto";
+
+enum EventKind {
+  EVENT_KIND_UNSPECIFIED = 0;
+  EVENT_KIND_ADDED = 1;
+  EVENT_KIND_UPDATED = 2;
+  EVENT_KIND_REMOVED = 3;
+  EVENT_KIND_RESYNC = 4;
+}
+
+// One Event message per entity type. Generic-T-style Event<T> would have been
+// nicer; protobuf has no generics so we spell each out. Watch.Subscribe returns
+// a stream of SubscribeEvent (see services.proto) whose oneof carries these.
+
+message NodeEvent {
+  EventKind kind = 1;
+  Node before = 2;
+  Node after = 3;
+  uint64 raft_index = 4;
+}
+
+message DeploymentEvent {
+  EventKind kind = 1;
+  Deployment before = 2;
+  Deployment after = 3;
+  uint64 raft_index = 4;
+}
+
+message ReplicaDesiredEvent {
+  EventKind kind = 1;
+  ReplicaDesired before = 2;
+  ReplicaDesired after = 3;
+  uint64 raft_index = 4;
+}
+
+message ReplicaObservedEvent {
+  EventKind kind = 1;
+  ReplicaObserved before = 2;
+  ReplicaObserved after = 3;
+  uint64 raft_index = 4;
+}
+
+message RouteEvent {
+  EventKind kind = 1;
+  Route before = 2;
+  Route after = 3;
+  uint64 raft_index = 4;
+}
+
+message CertEvent {
+  EventKind kind = 1;
+  Cert before = 2;
+  Cert after = 3;
+  uint64 raft_index = 4;
+}
+
+message ChallengeTokenEvent {
+  EventKind kind = 1;
+  ChallengeToken before = 2;
+  ChallengeToken after = 3;
+  uint64 raft_index = 4;
+}
+
+message TokenEvent {
+  EventKind kind = 1;
+  Token before = 2;
+  Token after = 3;
+  uint64 raft_index = 4;
+}
+
+message JoinTokenEvent {
+  EventKind kind = 1;
+  JoinToken before = 2;
+  JoinToken after = 3;
+  uint64 raft_index = 4;
+}
+
+message AuditLogEvent {
+  EventKind kind = 1;
+  AuditEvent before = 2;
+  AuditEvent after = 3;
+  uint64 raft_index = 4;
+}
+
+message SubnetEvent {
+  EventKind kind = 1;
+  Subnet before = 2;
+  Subnet after = 3;
+  uint64 raft_index = 4;
+}
+
+message RolloutPlanEvent {
+  EventKind kind = 1;
+  RolloutPlan before = 2;
+  RolloutPlan after = 3;
+  uint64 raft_index = 4;
+}
+
+message ReplicaCounterEvent {
+  EventKind kind = 1;
+  ReplicaCounter before = 2;
+  ReplicaCounter after = 3;
+  uint64 raft_index = 4;
+}
+
+message RestartCounterEvent {
+  EventKind kind = 1;
+  RestartCounter before = 2;
+  RestartCounter after = 3;
+  uint64 raft_index = 4;
+}

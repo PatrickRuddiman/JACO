@@ -1,0 +1,238 @@
+syntax = "proto3";
+
+package jaco.v1;
+
+option go_package = "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1;jacov1";
+
+import "google/protobuf/timestamp.proto";
+import "jaco/v1/entities.proto";
+import "jaco/v1/events.proto";
+
+// ----- Cluster service -----
+
+service Cluster {
+  rpc Bootstrap(BootstrapRequest) returns (BootstrapResponse);
+  rpc IssueJoinToken(IssueJoinTokenRequest) returns (IssueJoinTokenResponse);
+  rpc NodeJoin(NodeJoinRequest) returns (NodeJoinResponse);
+  rpc NodeRemove(NodeRemoveRequest) returns (NodeRemoveResponse);
+  rpc NodeList(NodeListRequest) returns (NodeListResponse);
+  rpc Backup(BackupRequest) returns (stream BackupChunk);
+  rpc Restore(stream BackupChunk) returns (RestoreResponse);
+  rpc Status(ClusterStatusRequest) returns (ClusterStatusResponse);
+}
+
+message BootstrapRequest {
+  string name = 1;
+}
+message BootstrapResponse {
+  string cluster_id = 1;
+  string operator_token = 2;
+}
+
+message IssueJoinTokenRequest {}
+message IssueJoinTokenResponse {
+  string token = 1;
+  bytes ca_cert = 2;
+  repeated string leader_addrs = 3;
+}
+
+message NodeJoinRequest {
+  string name = 1;
+  string join_token = 2;
+  bytes csr_pem = 3;
+  string advertise_addr = 4;
+  bytes wireguard_pubkey = 5;
+}
+message NodeJoinResponse {
+  string cluster_id = 1;
+  bytes signed_cert = 2;
+  bytes ca_cert = 3;
+  repeated string peer_addrs = 4;
+}
+
+message NodeRemoveRequest {
+  string hostname = 1;
+  bool force = 2;
+}
+message NodeRemoveResponse {}
+
+message NodeListRequest {}
+message NodeListResponse {
+  repeated Node nodes = 1;
+}
+
+message BackupRequest {}
+message BackupChunk {
+  bytes data = 1;
+}
+message RestoreResponse {
+  string cluster_id = 1;
+  uint64 snapshot_index = 2;
+}
+
+message ClusterStatusRequest {}
+message ClusterStatusResponse {
+  repeated Node nodes = 1;
+  string leader = 2;
+  uint64 raft_index = 3;
+}
+
+// ----- Deploy service -----
+
+service Deploy {
+  rpc Apply(ApplyRequest) returns (ApplyResponse);
+  rpc Rollback(RollbackRequest) returns (RollbackResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  rpc Status(DeployStatusRequest) returns (DeployStatusResponse);
+  rpc Logs(LogsRequest) returns (stream LogLine);
+}
+
+message ApplyRequest {
+  bytes jaco_yaml = 1;
+  bytes compose_yaml = 2;
+  bool dry_run = 3;
+}
+message ApplyResponse {
+  uint64 applied_revision = 1;
+  Diff diff = 2;
+}
+message Diff {
+  repeated string adds = 1;
+  repeated string updates = 2;
+  repeated string removes = 3;
+}
+
+message RollbackRequest {
+  string deployment = 1;
+}
+message RollbackResponse {
+  uint64 revision = 1;
+}
+
+message DeleteRequest {
+  string deployment = 1;
+}
+message DeleteResponse {}
+
+message DeployStatusRequest {
+  string deployment_filter = 1;
+  string service_filter = 2;
+}
+message DeployStatusResponse {
+  repeated Deployment deployments = 1;
+  repeated ReplicaObserved replicas = 2;
+  repeated Route routes = 3;
+}
+
+message LogsRequest {
+  string deployment = 1;
+  string service = 2;
+  bool follow = 3;
+  int64 since_seconds = 4;
+}
+message LogLine {
+  string replica_id = 1;
+  string host = 2;
+  string stream = 3;
+  google.protobuf.Timestamp ts = 4;
+  string line = 5;
+}
+
+// ----- Tokens service -----
+
+service Tokens {
+  rpc Issue(TokenIssueRequest) returns (TokenIssueResponse);
+  rpc Revoke(TokenRevokeRequest) returns (TokenRevokeResponse);
+  rpc List(TokenListRequest) returns (TokenListResponse);
+}
+
+message TokenIssueRequest {
+  string identity = 1;
+}
+message TokenIssueResponse {
+  string identity = 1;
+  string token = 2;
+  google.protobuf.Timestamp issued_at = 3;
+}
+
+message TokenRevokeRequest {
+  string identity = 1;
+}
+message TokenRevokeResponse {}
+
+message TokenListRequest {}
+message TokenListResponse {
+  repeated TokenInfo tokens = 1;
+}
+message TokenInfo {
+  string identity = 1;
+  google.protobuf.Timestamp issued_at = 2;
+  google.protobuf.Timestamp revoked_at = 3;
+}
+
+// ----- Audit service -----
+
+service Audit {
+  rpc Query(AuditQueryRequest) returns (stream AuditEvent);
+}
+
+message AuditQueryRequest {
+  google.protobuf.Timestamp since = 1;
+  google.protobuf.Timestamp until = 2;
+  repeated AuditEventType types = 3;
+  bool follow = 4;
+}
+
+// ----- Watch service -----
+
+service Watch {
+  rpc Subscribe(SubscribeRequest) returns (stream SubscribeEvent);
+}
+
+message SubscribeRequest {
+  repeated string entity_types = 1;
+  uint64 since_revision = 2;
+  string deployment_filter = 3;
+}
+
+message SubscribeEvent {
+  oneof payload {
+    NodeEvent node = 1;
+    DeploymentEvent deployment = 2;
+    ReplicaDesiredEvent replica_desired = 3;
+    ReplicaObservedEvent replica_observed = 4;
+    RouteEvent route = 5;
+    CertEvent cert = 6;
+    ChallengeTokenEvent challenge_token = 7;
+    TokenEvent token = 8;
+    JoinTokenEvent join_token = 9;
+    AuditLogEvent audit = 10;
+    SubnetEvent subnet = 11;
+    RolloutPlanEvent rollout_plan = 12;
+    ReplicaCounterEvent replica_counter = 13;
+    RestartCounterEvent restart_counter = 14;
+  }
+}
+
+// ----- Internal (peer) service -----
+
+service Internal {
+  rpc Submit(SubmitRequest) returns (SubmitResponse);
+  rpc SignNodeCert(SignNodeCertRequest) returns (SignNodeCertResponse);
+  rpc Logs(LogsRequest) returns (stream LogLine);
+}
+
+message SubmitRequest {
+  bytes command_bytes = 1;
+}
+message SubmitResponse {
+  uint64 raft_index = 1;
+}
+
+message SignNodeCertRequest {
+  string hostname = 1;
+  bytes csr_pem = 2;
+}
+message SignNodeCertResponse {
+  bytes signed_cert = 1;
+}

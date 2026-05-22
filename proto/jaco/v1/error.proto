@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package jaco.v1;
+
+option go_package = "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1;jacov1";
+
+// Error is the typed envelope used by every gRPC handler. The closed `code`
+// set is enforced by the documentation in spec.md; the protobuf message itself
+// keeps it as a string for forward additions.
+message Error {
+  string code = 1;
+  string message = 2;
+  map<string, string> details = 3;
+}

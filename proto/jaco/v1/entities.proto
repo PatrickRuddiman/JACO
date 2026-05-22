@@ -1,0 +1,220 @@
+syntax = "proto3";
+
+package jaco.v1;
+
+option go_package = "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1;jacov1";
+
+import "google/protobuf/timestamp.proto";
+
+// ----- Closed-set enums -----
+
+enum ReplicaState {
+  REPLICA_STATE_UNSPECIFIED = 0;
+  REPLICA_STATE_PENDING = 1;
+  REPLICA_STATE_PULLING = 2;
+  REPLICA_STATE_RUNNING = 3;
+  REPLICA_STATE_DEGRADED = 4;
+  REPLICA_STATE_UPDATING = 5;
+  REPLICA_STATE_FAILED = 6;
+  REPLICA_STATE_STOPPED = 7;
+}
+
+enum RolloutState {
+  ROLLOUT_STATE_UNSPECIFIED = 0;
+  ROLLOUT_STATE_IN_PROGRESS = 1;
+  ROLLOUT_STATE_COMPLETED = 2;
+  ROLLOUT_STATE_ABORTED = 3;
+}
+
+enum NodeStatus {
+  NODE_STATUS_UNSPECIFIED = 0;
+  NODE_STATUS_JOINING = 1;
+  NODE_STATUS_READY = 2;
+  NODE_STATUS_ISOLATION_UNAVAILABLE = 3;
+  NODE_STATUS_DRAIN_TIMEOUT = 4;
+}
+
+enum DeploymentStatus {
+  DEPLOYMENT_STATUS_UNSPECIFIED = 0;
+  DEPLOYMENT_STATUS_PENDING = 1;
+  DEPLOYMENT_STATUS_ACTIVE = 2;
+}
+
+enum AuditEventType {
+  AUDIT_EVENT_TYPE_UNSPECIFIED = 0;
+  AUDIT_EVENT_TYPE_APPLY = 1;
+  AUDIT_EVENT_TYPE_DELETE = 2;
+  AUDIT_EVENT_TYPE_ROLLBACK = 3;
+  AUDIT_EVENT_TYPE_NODE_JOIN = 4;
+  AUDIT_EVENT_TYPE_NODE_REMOVE = 5;
+  AUDIT_EVENT_TYPE_TOKEN_ISSUE = 6;
+  AUDIT_EVENT_TYPE_TOKEN_REVOKE = 7;
+  AUDIT_EVENT_TYPE_CERTIFICATE_ISSUED = 8;
+  AUDIT_EVENT_TYPE_CERTIFICATE_RENEWED = 9;
+  AUDIT_EVENT_TYPE_CERTIFICATE_FAILED = 10;
+  AUDIT_EVENT_TYPE_ISOLATION_RULESET_RECONCILED = 11;
+  AUDIT_EVENT_TYPE_ISOLATION_UNAVAILABLE = 12;
+  AUDIT_EVENT_TYPE_BACKUP_TAKEN = 13;
+  AUDIT_EVENT_TYPE_RESTORE_COMPLETED = 14;
+  AUDIT_EVENT_TYPE_UPGRADE_SUCCEEDED = 15;
+  AUDIT_EVENT_TYPE_UPGRADE_FAILED = 16;
+  AUDIT_EVENT_TYPE_ROLLOUT_INVARIANT_HOLD = 17;
+}
+
+// ----- Cluster-level entities -----
+
+message ClusterMeta {
+  string cluster_id = 1;
+  bytes ca_cert = 2;
+  bytes ca_key = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+message Node {
+  string hostname = 1;
+  string address = 2;
+  bytes server_cert_fingerprint = 3;
+  bytes wireguard_pubkey = 4;
+  NodeStatus status = 5;
+  map<string, string> status_details = 6;
+  google.protobuf.Timestamp joined_at = 7;
+}
+
+// ----- Deployment entities -----
+
+message ServiceSpec {
+  enum PlacementMode {
+    PLACEMENT_MODE_UNSPECIFIED = 0;
+    PLACEMENT_MODE_SPREAD = 1;
+    PLACEMENT_MODE_PACK = 2;
+    PLACEMENT_MODE_HOSTS = 3;
+  }
+  string name = 1;
+  int32 replicas = 2;
+  PlacementMode placement = 3;
+  repeated string hosts = 4;
+  string compose_service = 5;
+  repeated string networks = 6;
+}
+
+message Deployment {
+  string name = 1;
+  uint64 applied_revision = 2;
+  uint64 previous_revision = 3;
+  DeploymentStatus status = 4;
+  map<string, string> status_details = 5;
+  bytes jaco_yaml = 6;
+  bytes compose_yaml = 7;
+  repeated ServiceSpec services = 8;
+  google.protobuf.Timestamp updated_at = 9;
+}
+
+message ReplicaDesired {
+  string id = 1;
+  string deployment = 2;
+  string service = 3;
+  int32 index = 4;
+  string host = 5;
+  string image = 6;
+  uint64 raft_index = 7;
+}
+
+message ReplicaObserved {
+  string id = 1;
+  ReplicaState state = 2;
+  string code = 3;
+  string message = 4;
+  map<string, string> details = 5;
+  string container_id = 6;
+  string host = 7;
+  google.protobuf.Timestamp started_at = 8;
+  google.protobuf.Timestamp last_health_at = 9;
+}
+
+message Route {
+  string domain = 1;
+  string deployment = 2;
+  string service = 3;
+  int32 port = 4;
+  bool tls_auto = 5;
+}
+
+// ----- Ingress entities -----
+
+message Cert {
+  string domain = 1;
+  bytes private_key = 2;
+  bytes cert_chain = 3;
+  google.protobuf.Timestamp not_before = 4;
+  google.protobuf.Timestamp not_after = 5;
+  string lessee = 6;
+  google.protobuf.Timestamp lock_until = 7;
+}
+
+message ChallengeToken {
+  string token = 1;
+  string domain = 2;
+  string key_auth = 3;
+  google.protobuf.Timestamp expires_at = 4;
+}
+
+// ----- Auth entities -----
+
+message Token {
+  string identity = 1;
+  bytes hashed_secret = 2;
+  google.protobuf.Timestamp issued_at = 3;
+  google.protobuf.Timestamp revoked_at = 4;
+}
+
+message JoinToken {
+  bytes hashed_secret = 1;
+  google.protobuf.Timestamp issued_at = 2;
+  google.protobuf.Timestamp expires_at = 3;
+  google.protobuf.Timestamp consumed_at = 4;
+}
+
+// ----- Audit -----
+
+message AuditEvent {
+  uint64 raft_index = 1;
+  AuditEventType type = 2;
+  string identity = 3;
+  google.protobuf.Timestamp ts = 4;
+  map<string, string> payload = 5;
+}
+
+// ----- Discovery entities -----
+
+message Subnet {
+  string deployment = 1;
+  string network = 2;
+  string cidr = 3;
+  google.protobuf.Timestamp allocated_at = 4;
+}
+
+// ----- Scheduler entities -----
+
+message RolloutPlan {
+  string deployment = 1;
+  string service = 2;
+  uint64 target_revision = 3;
+  int32 total_steps = 4;
+  int32 current_step = 5;
+  RolloutState state = 6;
+  string failure_reason = 7;
+  google.protobuf.Timestamp started_at = 8;
+  google.protobuf.Timestamp last_step_at = 9;
+}
+
+message ReplicaCounter {
+  string deployment = 1;
+  string service = 2;
+  uint64 next_index = 3;
+}
+
+message RestartCounter {
+  string replica_id = 1;
+  int32 consecutive_failures = 2;
+  google.protobuf.Timestamp last_attempt_at = 3;
+}

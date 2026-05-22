@@ -1,0 +1,215 @@
+syntax = "proto3";
+
+package jaco.v1;
+
+option go_package = "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1;jacov1";
+
+import "google/protobuf/timestamp.proto";
+import "jaco/v1/entities.proto";
+
+// Command is the FSM apply envelope. One oneof variant per state mutation.
+message Command {
+  string cluster_id = 1;
+  uint64 raft_index = 2;
+  google.protobuf.Timestamp ts = 3;
+  string identity = 4;
+
+  oneof payload {
+    ClusterInit cluster_init = 10;
+    NodeJoin node_join = 11;
+    NodeRemove node_remove = 12;
+    NodeStatusUpdate node_status_update = 13;
+
+    DeploymentApply deployment_apply = 20;
+    DeploymentRollback deployment_rollback = 21;
+    DeploymentDelete deployment_delete = 22;
+    DeploymentStatusUpdate deployment_status_update = 23;
+
+    ReplicaDesiredUpsert replica_desired_upsert = 30;
+    ReplicaDesiredRemove replica_desired_remove = 31;
+    ReplicaObservedUpdate replica_observed_update = 32;
+    ReplicaCommandIssue replica_command_issue = 33;
+    RolloutPlanUpdate rollout_plan_update = 34;
+    ReplicaCounterIncrement replica_counter_increment = 35;
+
+    RouteUpsert route_upsert = 40;
+    RouteRemove route_remove = 41;
+
+    CertStore cert_store = 50;
+    CertLock cert_lock = 51;
+    CertUnlock cert_unlock = 52;
+    ChallengeTokenStore challenge_token_store = 53;
+
+    SubnetAllocate subnet_allocate = 60;
+    SubnetFree subnet_free = 61;
+
+    TokenIssue token_issue = 70;
+    TokenRevoke token_revoke = 71;
+    JoinTokenIssue join_token_issue = 72;
+    JoinTokenConsume join_token_consume = 73;
+
+    AuditAppend audit_append = 80;
+
+    Batch batch = 90;
+  }
+}
+
+// Batch carries multiple commands applied atomically inside one raft Apply.
+message Batch {
+  repeated Command children = 1;
+}
+
+// ----- Cluster mutations -----
+
+message ClusterInit {
+  string cluster_id = 1;
+  bytes ca_cert = 2;
+  bytes ca_key = 3;
+  // Hashed secret for the initial operator token; the cleartext is returned to
+  // the bootstrap caller and is never stored.
+  bytes operator_token_hashed_secret = 4;
+}
+
+message NodeJoin {
+  string hostname = 1;
+  string address = 2;
+  bytes server_cert_fingerprint = 3;
+  bytes wireguard_pubkey = 4;
+}
+
+message NodeRemove {
+  string hostname = 1;
+}
+
+message NodeStatusUpdate {
+  string hostname = 1;
+  NodeStatus status = 2;
+  map<string, string> details = 3;
+}
+
+// ----- Deployment mutations -----
+
+message DeploymentApply {
+  string deployment = 1;
+  uint64 revision = 2;
+  bytes jaco_yaml = 3;
+  bytes compose_yaml = 4;
+  repeated ServiceSpec services = 5;
+  repeated Route routes = 6;
+}
+
+message DeploymentRollback {
+  string deployment = 1;
+  uint64 revision = 2;
+}
+
+message DeploymentDelete {
+  string deployment = 1;
+}
+
+message DeploymentStatusUpdate {
+  string deployment = 1;
+  DeploymentStatus status = 2;
+  map<string, string> details = 3;
+}
+
+// ----- Replica mutations -----
+
+message ReplicaDesiredUpsert {
+  ReplicaDesired replica = 1;
+}
+
+message ReplicaDesiredRemove {
+  string id = 1;
+}
+
+message ReplicaObservedUpdate {
+  ReplicaObserved replica = 1;
+}
+
+// ReplicaCommandIssue is consumed by runtime / ingress via watches; not a
+// stored entity, just a one-shot ledger entry.
+message ReplicaCommandIssue {
+  string replica_id = 1;
+  string op = 2;
+}
+
+message RolloutPlanUpdate {
+  RolloutPlan plan = 1;
+}
+
+message ReplicaCounterIncrement {
+  string deployment = 1;
+  string service = 2;
+}
+
+// ----- Route mutations -----
+
+message RouteUpsert {
+  Route route = 1;
+}
+
+message RouteRemove {
+  string domain = 1;
+}
+
+// ----- Cert / challenge mutations -----
+
+message CertStore {
+  string key = 1;
+  bytes value = 2;
+  int64 ttl_seconds = 3;
+}
+
+message CertLock {
+  string name = 1;
+  string lessee = 2;
+  google.protobuf.Timestamp until = 3;
+}
+
+message CertUnlock {
+  string name = 1;
+}
+
+message ChallengeTokenStore {
+  ChallengeToken token = 1;
+}
+
+// ----- Subnet mutations -----
+
+message SubnetAllocate {
+  string deployment = 1;
+  string network = 2;
+  string cidr = 3;
+}
+
+message SubnetFree {
+  string deployment = 1;
+  string network = 2;
+}
+
+// ----- Token mutations -----
+
+message TokenIssue {
+  string identity = 1;
+  bytes hashed_secret = 2;
+}
+
+message TokenRevoke {
+  string identity = 1;
+}
+
+message JoinTokenIssue {
+  bytes hashed_secret = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+message JoinTokenConsume {
+  bytes hashed_secret = 1;
+}
+
+// ----- Audit mutation -----
+
+message AuditAppend {
+  AuditEvent event = 1;
+}
