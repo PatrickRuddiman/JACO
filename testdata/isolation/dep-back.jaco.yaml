@@ -1,0 +1,10 @@
+deployment: dep-back
+services:
+  - name: svc-a
+    replicas: 2
+    compose_service: svc-a
+    networks: [net-a]
+  - name: svc-b
+    replicas: 2
+    compose_service: svc-b
+    networks: [net-b]

@@ -1,4 +1,4 @@
-.PHONY: build test vet lint proto clean
+.PHONY: build test test-isolation vet lint proto clean
 
 GO  ?= go
 BIN ?= jaco
@@ -8,6 +8,14 @@ build:
 
 test:
 	$(GO) test ./... -race -count=1
+
+# test-isolation runs the privileged 3-node end-to-end isolation rig
+# (scripts/test/isolation-rig.sh). The rig requires CAP_NET_ADMIN +
+# CAP_NET_RAW + kernel WG + nftables + docker; CI executes it under a
+# privileged runner. Local devs can run it after setting
+# JACO_RIG_FORCE=1 once the jaco-serve daemon entry exists.
+test-isolation:
+	bash scripts/test/isolation-rig.sh
 
 vet:
 	$(GO) vet ./...

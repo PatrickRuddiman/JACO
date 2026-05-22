@@ -1,0 +1,43 @@
+name: isolation-rig
+
+# Mandatory CI test for the discovery slice's isolation invariants. Runs on
+# every PR that touches the discovery / runtime code or the spec / slice
+# documents.
+on:
+  pull_request:
+    paths:
+      - "internal/discovery/**"
+      - "internal/runtime/**"
+      - "spec.md"
+      - "design.md"
+      - "slices/discovery.md"
+      - "scripts/test/isolation-rig.sh"
+      - "testdata/isolation/**"
+      - ".github/workflows/isolation-rig.yml"
+
+jobs:
+  isolation-rig:
+    name: 3-node isolation rig
+    runs-on: ubuntu-latest
+    # The rig needs a privileged container or VM. On standard GitHub-hosted
+    # runners, nesting privileged containers is supported via setup-buildx /
+    # the docker-in-docker action. A self-hosted runner with kernel WG + nft
+    # is preferred for the full coverage.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Build jaco
+        run: make build
+
+      - name: Run isolation rig
+        env:
+          # Once jaco-serve lands, flip this to 1 in CI to actually run the
+          # rig. Until then the rig is a no-op skeleton that emits a clear
+          # "prerequisite not implemented" message and exits 0.
+          JACO_RIG_FORCE: "0"
+        run: make test-isolation

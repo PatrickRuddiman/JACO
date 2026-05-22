@@ -1,0 +1,12 @@
+services:
+  svc-a:
+    image: busybox:1.36
+    command: ["sh", "-c", "nc -lk -p 9999 -e /bin/sh"]
+    networks: [net-a]
+  svc-b:
+    image: busybox:1.36
+    command: ["sh", "-c", "nc -lk -p 9998 -e /bin/sh"]
+    networks: [net-b]
+networks:
+  net-a: {}
+  net-b: {}
