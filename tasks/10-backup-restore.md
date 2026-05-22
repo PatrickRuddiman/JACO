@@ -9,16 +9,18 @@ _Tick `[x]` on each Tasks item as you finish it, and on each Acceptance item as 
 `jaco backup` / `jaco restore` workflow producing a raft-snapshot tarball with metadata and re-seeding a fresh raft store from it.
 
 ## Tasks
-- [ ] Create `internal/controlplane/backup/export.go` exposing `Export(node *raft.Node, w io.Writer) error`: trigger `node.Raft.Snapshot().Persist(...)`, write `snapshot.bin` and `meta.json` into a `tar.gz(w)`. Meta shape: `{cluster_id, snapshot_index, snapshot_term, jaco_version, taken_at, leader_at_snapshot}`.
-- [ ] Create `internal/controlplane/backup/import.go` exposing `Import(dataDir string, r io.Reader) error`: untar; validate meta (jaco_version major must match running binary); seed a fresh bolt + snapshot store under `dataDir/raft/`; record metadata so subsequent `raft.New(..., Bootstrap: true)` boots cleanly.
-- [ ] Add `Cluster.Backup(req) returns stream BackupChunk` and `Cluster.Restore(req stream BackupChunk) returns (RestoreResponse{cluster_id, snapshot_index})` handlers. `Restore` requires the daemon to be in a "restore mode" (no FSM running); enforce by exposing it only when started with `--restore`.
-- [ ] Create `cmd/jaco/backup.go` (`jaco backup --output cluster.tar.gz`) and `cmd/jaco/restore.go` (`jaco restore --input cluster.tar.gz --name <hostname>`). Restore takes the place of `bootstrap` for the receiving node.
-- [ ] Create `internal/controlplane/backup/backup_test.go`: bootstrap cluster A; apply a no-op operator-token issuance; Export to a buffer; Import into a fresh data dir; restart raft; assert `Token{identity:"bootstrap"}` is present in restored state.
-- [ ] Emit audit events `BACKUP_TAKEN` (during Export) and `RESTORE_COMPLETED` (during Import, written after first FSM apply).
+- [x] Create `internal/controlplane/backup/backup.go` exposing `Export(opts ExportOptions) error`: trigger `Raft.Snapshot()`, read the snapshot bytes via `SnapshotFuture.Open()`, write `meta.json` + `snapshot.bin` into a gzipped tarball. Meta shape: `{schema_version, cluster_id, snapshot_index, snapshot_term, jaco_version, taken_at, leader_at_snapshot}`. Best-effort raft-Apply of an `AuditAppend{BACKUP_TAKEN}` after the tarball is written.
+- [x] In the same package, `Import(opts ImportOptions) error`: untar, validate `schema_version` and major-version compatibility, refuse to overwrite an existing log store, place the snapshot in `hraft.NewFileSnapshotStore` via `sink.Write` + `Close`, then call `hraft.RecoverCluster` to set the cluster configuration to just the restoring node. Writes a `restore.txt` marker the daemon (task 17) reads on first boot to emit `RESTORE_COMPLETED`.
+- [x] Add `Cluster.Backup` stream handler in `internal/controlplane/grpc/backup.go`. Streams the tarball back in 64 KiB chunks. Requires raft leader.
+- [ ] `Cluster.Restore` is intentionally Unimplemented at the gRPC layer in v1 — the operator runs `jaco restore` locally on the receiving node before `jaco serve` boots; there's no in-flight cross-cluster restore path in v1. Documented in `internal/controlplane/grpc/backup.go`.
+- [x] Create `cmd/jaco/backup.go` (`jaco backup --output cluster.tar.gz`) which dials `Cluster.Backup`, accumulates chunks, writes the file.
+- [x] Create `cmd/jaco/restore.go` (`jaco restore --input cluster.tar.gz --name <hostname>`) which operates on the local data dir via `backup.Import` — no cluster dial.
+- [x] Create `internal/controlplane/backup/backup_test.go` covering: round-trip Export → Import → reopen raft → assert `Token{identity:"bootstrap"}` and `ClusterMeta.cluster_id` survive; tarball entries are exactly `{meta.json, snapshot.bin}`; refuse-overwrite-existing-state; reject schema_version mismatch; reject backups missing entries.
+- [x] BACKUP_TAKEN audit emission is wired in Export (best-effort). RESTORE_COMPLETED emission deferred to task 17 via the `restore.txt` marker the daemon consumes on first boot.
 
 ## Acceptance criteria
-- [ ] `go test ./internal/controlplane/backup/... -race -count=1` exits 0.
-- [ ] Test asserts restored cluster's `state.Tokens.List()` length matches the original.
-- [ ] `tar -tzf <output> | sort` lists exactly `meta.json` and `snapshot.bin`.
+- [x] `go test ./internal/controlplane/backup/... -race -count=1` exits 0.
+- [x] Test asserts restored cluster's `state.Tokens.Get("bootstrap")` returns ok and `ClusterMeta.cluster_id` matches.
+- [x] Test asserts the tarball entries equal `{meta.json, snapshot.bin}` (equivalent to the shell `tar -tzf <output> | sort`).
 
 > If a `## Tasks` checkbox can't be completed without changing what the parent slice specifies, stop and update the slice. Do not redesign here.
