@@ -135,6 +135,17 @@ func (d *deployServer) Rollback(ctx context.Context, req *pb.RollbackRequest) (*
 	return &pb.RollbackResponse{Revision: prev}, nil
 }
 
+// Logs is the operator-facing fanout RPC. v1 returns Unimplemented — the
+// per-replica peer fanout (Internal.Logs over the cluster CA) needs the
+// daemon entry to wire a *dockerx.Client and the local hostname into the
+// server Options. runtime/logs.Stream + the jaco logs CLI are already in
+// place; this stub lands the surface so the CLI receives a clean
+// codes.Unimplemented + message instead of a panic.
+func (d *deployServer) Logs(_ *pb.LogsRequest, _ pb.Deploy_LogsServer) error {
+	return errorStatus(codes.Unimplemented, "logs_unimplemented",
+		"Deploy.Logs requires daemon-side docker wiring; follow-up task")
+}
+
 // Delete raft-Applies a DeploymentDelete command. The FSM cascades — removes
 // all Routes and ReplicaDesired entries owned by the deployment in addition
 // to the Deployment itself.

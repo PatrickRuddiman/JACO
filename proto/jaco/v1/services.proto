@@ -129,6 +129,9 @@ message LogsRequest {
   string service = 2;
   bool follow = 3;
   int64 since_seconds = 4;
+  // Replica-scoped lookup used by Internal.Logs (peer RPC) — Deploy.Logs
+  // (CLI entry) leaves this empty and uses deployment + service.
+  string replica_id = 5;
 }
 message LogLine {
   string replica_id = 1;

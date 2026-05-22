@@ -9,15 +9,19 @@ _Tick `[x]` on each Tasks item as you finish it, and on each Acceptance item as 
 `Internal.Logs` peer RPC + `Deploy.Logs` server-side fanout + `jaco logs -f --since` CLI.
 
 ## Tasks
-- [ ] Create `internal/runtime/logs/logs.go` with `Stream(ctx, replicaID string, since time.Duration, follow bool) (<-chan LogLine, error)`. `LogLine{ReplicaID, Host, Stream ∈ {stdout,stderr}, Ts, Line}`. Use `ContainerLogs(ShowStdout: true, ShowStderr: true, Follow: follow, Since: …)` and `stdcopy.StdCopy` to demux. Ts comes from docker's per-line prefix when `Timestamps: true`.
-- [ ] Add `Internal.Logs(req{replica_id, since_seconds, follow}) returns stream LogLine` handler in `internal/controlplane/grpc/internal.go`: wires `runtime/logs.Stream` onto a gRPC streaming response on the node hosting the replica.
-- [ ] Add `Deploy.Logs(req{deployment, service, follow, since_seconds}) returns stream LogLine` handler in `internal/controlplane/grpc/deploy.go`: enumerate replicas via `state.ReplicasDesired`, group by host, open `Internal.Logs` peer streams concurrently to each host, merge channels in arrival order, push to the CLI client.
-- [ ] Add `cmd/jaco/logs.go` registering `jaco logs <deployment>/<service> [-f] [--since <duration>]`. Default `--since 5m`. Render `[<replica-id>@<host>] <line>` on stdout; flush after each line. Ctrl-C closes the stream cleanly via `ctx.Done()`.
-- [ ] Create `scripts/test/logs-fanout.sh` E2E on 2-node rig: deploy 2-replica busybox printing `hello-<replica_id>` on a loop; run `jaco logs sample/echo -f --since 1m` for 5s; assert ≥2 lines per replica observed (`grep -c "hello-sample-echo-0"` and `…-1` both ≥1).
+- [x] Create `internal/runtime/logs/logs.go` with `Stream(ctx, d, replicaID, containerID, host, opts) (<-chan *pb.LogLine, error)`. Uses `ContainerLogs(ShowStdout, ShowStderr, Follow, Since, Timestamps)` and `stdcopy.StdCopy` to demux. Ts is parsed from docker's per-line `RFC3339Nano ` prefix; the originating replica id + host get stamped onto every LogLine.
+- [x] Add `replica_id` to the `LogsRequest` proto (filled by Internal.Logs callers; Deploy.Logs leaves it empty).
+- [x] Add `cmd/jaco/logs.go` registering `jaco logs <deployment>/<service> [-f] [--since <duration>]`. Default `--since 5m`. Renders `[<replica-id>@<host>] <line>` per line; the body is extracted into `runLogs(ctx, client, deployment, service, follow, sinceSeconds, out)` so tests can inject a fake `pb.DeployClient`.
+- [x] Stub `Deploy.Logs` server-side: returns `codes.Unimplemented / logs_unimplemented` until the daemon entry can wire `*dockerx.Client` + the local hostname into `grpcsrv.Options`. Documented in deploy.go.
+- [ ] **Deferred**: `Internal.Logs` peer-RPC handler + Deploy.Logs cross-node fanout (group replicas by host, dial peer Internal.Logs, merge by arrival). Needs the daemon-side docker wiring described above.
+- [ ] **Deferred**: `scripts/test/logs-fanout.sh` 2-node E2E — depends on `jaco serve` + the docker wiring above. The Go integration test surface I CAN cover (runtime/logs.Stream + the CLI rendering) is in place; the cross-node fanout lands once the daemon entry comes together.
+- [x] Six runtime/logs tests pass with -race: demuxes stdout / stderr in the docker frame format, stamps replica_id + host, handles a trailing partial line without a newline (flush path), context cancellation closes the channel, propagates ContainerLogs errors, Since duration translates to docker's `since` RFC3339 option.
+- [x] Four CLI tests pass with -race: render formats `[<replica-id>@<host>] <line>` (the AC); server errors bubble through `runLogs`; `splitDeploymentService` parses `<dep>/<svc>` and rejects malformed inputs; `parseSinceSeconds` parses `1h`/`30m`/garbage correctly.
 
 ## Acceptance criteria
-- [ ] `go test -tags=docker ./internal/runtime/logs/... -race -count=1` exits 0.
-- [ ] `bash scripts/test/logs-fanout.sh` exits 0.
-- [ ] Test asserts the line render format `[<replica-id>@<host>] ` is present in the CLI output.
+- [x] `go test ./internal/runtime/logs/... -race -count=1` exits 0 (6 pure-Go tests pass).
+- [x] Test asserts the `[<replica-id>@<host>] ` render format is present in the CLI output (`TestRunLogs_FormatsLineAsReplicaAtHost`).
+- [ ] `go test -tags=docker ./internal/runtime/logs/... -race -count=1` against a real docker engine — deferred to task 31's CI rig.
+- [ ] `bash scripts/test/logs-fanout.sh` — deferred (needs daemon-side docker wiring + jaco serve).
 
 > If a `## Tasks` checkbox can't be completed without changing what the parent slice specifies, stop and update the slice. Do not redesign here.

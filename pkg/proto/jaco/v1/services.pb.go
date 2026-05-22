@@ -1207,11 +1207,14 @@ func (x *DeployStatusResponse) GetRoutes() []*Route {
 }
 
 type LogsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Deployment    string                 `protobuf:"bytes,1,opt,name=deployment,proto3" json:"deployment,omitempty"`
-	Service       string                 `protobuf:"bytes,2,opt,name=service,proto3" json:"service,omitempty"`
-	Follow        bool                   `protobuf:"varint,3,opt,name=follow,proto3" json:"follow,omitempty"`
-	SinceSeconds  int64                  `protobuf:"varint,4,opt,name=since_seconds,json=sinceSeconds,proto3" json:"since_seconds,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Deployment   string                 `protobuf:"bytes,1,opt,name=deployment,proto3" json:"deployment,omitempty"`
+	Service      string                 `protobuf:"bytes,2,opt,name=service,proto3" json:"service,omitempty"`
+	Follow       bool                   `protobuf:"varint,3,opt,name=follow,proto3" json:"follow,omitempty"`
+	SinceSeconds int64                  `protobuf:"varint,4,opt,name=since_seconds,json=sinceSeconds,proto3" json:"since_seconds,omitempty"`
+	// Replica-scoped lookup used by Internal.Logs (peer RPC) — Deploy.Logs
+	// (CLI entry) leaves this empty and uses deployment + service.
+	ReplicaId     string `protobuf:"bytes,5,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1272,6 +1275,13 @@ func (x *LogsRequest) GetSinceSeconds() int64 {
 		return x.SinceSeconds
 	}
 	return 0
+}
+
+func (x *LogsRequest) GetReplicaId() string {
+	if x != nil {
+		return x.ReplicaId
+	}
+	return ""
 }
 
 type LogLine struct {
@@ -2339,14 +2349,16 @@ const file_jaco_v1_services_proto_rawDesc = "" +
 	"\x14DeployStatusResponse\x125\n" +
 	"\vdeployments\x18\x01 \x03(\v2\x13.jaco.v1.DeploymentR\vdeployments\x124\n" +
 	"\breplicas\x18\x02 \x03(\v2\x18.jaco.v1.ReplicaObservedR\breplicas\x12&\n" +
-	"\x06routes\x18\x03 \x03(\v2\x0e.jaco.v1.RouteR\x06routes\"\x84\x01\n" +
+	"\x06routes\x18\x03 \x03(\v2\x0e.jaco.v1.RouteR\x06routes\"\xa3\x01\n" +
 	"\vLogsRequest\x12\x1e\n" +
 	"\n" +
 	"deployment\x18\x01 \x01(\tR\n" +
 	"deployment\x12\x18\n" +
 	"\aservice\x18\x02 \x01(\tR\aservice\x12\x16\n" +
 	"\x06follow\x18\x03 \x01(\bR\x06follow\x12#\n" +
-	"\rsince_seconds\x18\x04 \x01(\x03R\fsinceSeconds\"\x94\x01\n" +
+	"\rsince_seconds\x18\x04 \x01(\x03R\fsinceSeconds\x12\x1d\n" +
+	"\n" +
+	"replica_id\x18\x05 \x01(\tR\treplicaId\"\x94\x01\n" +
 	"\aLogLine\x12\x1d\n" +
 	"\n" +
 	"replica_id\x18\x01 \x01(\tR\treplicaId\x12\x12\n" +
