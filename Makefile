@@ -1,4 +1,4 @@
-.PHONY: build test test-isolation vet lint proto clean
+.PHONY: build test test-isolation release vet lint proto clean
 
 GO  ?= go
 BIN ?= jaco
@@ -26,6 +26,11 @@ lint: vet
 
 proto:
 	buf generate
+
+# release cross-builds linux + darwin × amd64 + arm64 tarballs into dist/.
+# Set MINISIGN_KEY=... to also sign dist/SHA256SUMS.
+release:
+	VERSION=$$(git describe --tags --always --dirty 2>/dev/null || echo dev) bash build/release.sh
 
 clean:
 	rm -f $(BIN)

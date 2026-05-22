@@ -1,0 +1,16 @@
+# build/jaco.service — placeholder systemd unit. Full body (capabilities,
+# restart policy, watchdog wiring) lands in task 36.
+[Unit]
+Description=JACO container orchestrator
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/jaco serve
+Restart=on-failure
+RestartSec=2s
+User=root
+
+[Install]
+WantedBy=multi-user.target
