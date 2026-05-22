@@ -1,0 +1,107 @@
+// Package compose loads compose files, validates them against JACO's closed
+// field set (see spec.md §3 In), and projects each service into a
+// docker-engine-friendly ContainerSpec for the runtime slice.
+package compose
+
+import "time"
+
+// ContainerSpec is the moby-friendly view of one replica's container. The
+// runtime/lifecycle package translates this into docker.ContainerCreate +
+// HostConfig calls (task 17).
+type ContainerSpec struct {
+	// Identity / JACO labels
+	ClusterID     string
+	Deployment    string
+	Service       string
+	ReplicaID     string
+	ReplicaIndex  int
+	RaftIndex     uint64
+
+	// Image + process
+	Image      string
+	Command    []string
+	Entrypoint []string
+	Env        []string // KEY=value strings, sorted
+	WorkingDir string
+	User       string
+
+	// Labels = user labels + JACO labels, JACO labels always win on conflict.
+	Labels map[string]string
+
+	// Mounts + tmpfs
+	Mounts []Mount
+	Tmpfs  []string
+
+	// Capabilities + sysctls + ulimits
+	CapAdd   []string
+	CapDrop  []string
+	Sysctls  map[string]string
+	Ulimits  map[string]Ulimit
+	ReadOnly bool
+
+	// Health
+	Healthcheck *Healthcheck
+
+	// Networking: docker network names this container attaches to. Order is
+	// the compose-declared order (matters for resolver fallthrough — see
+	// discovery slice §3 decision 9).
+	Networks []string
+
+	// Ports the user declared in compose. JACO does NOT publish these to the
+	// host (ingress handles that via Caddy). Carried here for audit / docs.
+	Ports []PortDecl
+}
+
+// Mount is a single bind / named-volume / tmpfs attachment.
+type Mount struct {
+	Type     string // "bind" | "volume"
+	Source   string // host path for bind, volume name for volume
+	Target   string // path inside the container
+	ReadOnly bool
+}
+
+// Ulimit covers a single soft/hard pair (e.g. nofile, nproc).
+type Ulimit struct {
+	Soft int64
+	Hard int64
+}
+
+// PortDecl mirrors a compose `ports:` entry. JACO never publishes the port to
+// the host — kept for documentation / inspection only.
+type PortDecl struct {
+	Container int
+	Host      int // 0 when compose used `8080` without an explicit host side
+	Protocol  string // "tcp" | "udp"
+}
+
+// Healthcheck mirrors docker's container health spec.
+type Healthcheck struct {
+	Test        []string
+	Interval    time.Duration
+	Timeout     time.Duration
+	Retries     int
+	StartPeriod time.Duration
+}
+
+// SpecOptions are the bits the caller must supply when projecting a compose
+// service into a per-replica ContainerSpec.
+type SpecOptions struct {
+	ClusterID    string
+	Deployment   string
+	Service      string
+	ReplicaID    string
+	ReplicaIndex int
+	RaftIndex    uint64
+}
+
+// ValidationError is the typed result Validate returns when the compose file
+// reaches outside the JACO-supported closed set. Code matches the pb.Error
+// codes consumed by Deploy.Apply (task 14).
+type ValidationError struct {
+	Code    string
+	Message string
+	Details map[string]string
+}
+
+// Error implements the error interface.
+func (e *ValidationError) Error() string { return e.Message }
