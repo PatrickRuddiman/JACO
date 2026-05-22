@@ -16,6 +16,7 @@ import (
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/admission"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/ca"
+	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -189,14 +190,20 @@ func (c *clusterServer) NodeRemove(ctx context.Context, req *pb.NodeRemoveReques
 	return &pb.NodeRemoveResponse{}, nil
 }
 
-// applyCommand marshals cmd and submits via raft.Apply. Centralizes the
-// marshal step so handlers can stay declarative.
+// applyCommand marshals cmd and submits via raft.Apply on this server's
+// raft node. Delegates to applyRaftCommand so tokensServer (and any future
+// servers) share the same marshal-then-apply step.
 func (c *clusterServer) applyCommand(cmd *pb.Command) error {
+	return applyRaftCommand(c.raft, cmd)
+}
+
+// applyRaftCommand marshals cmd and submits via raft.Apply on r.
+func applyRaftCommand(r *raftnode.Node, cmd *pb.Command) error {
 	data, err := proto.Marshal(cmd)
 	if err != nil {
 		return fmt.Errorf("marshal command: %w", err)
 	}
-	if _, err := c.raft.Apply(data, 5*time.Second); err != nil {
+	if _, err := r.Apply(data, 5*time.Second); err != nil {
 		return err
 	}
 	return nil

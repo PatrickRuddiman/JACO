@@ -33,16 +33,7 @@ func startTestServer(t *testing.T) (pb.ClusterClient, string, *grpcsrv.Server) {
 	if err != nil {
 		t.Fatalf("GenerateClusterCA: %v", err)
 	}
-	_, csrPEM, err := ca.GenerateNodeKeypair("127.0.0.1")
-	if err != nil {
-		t.Fatalf("GenerateNodeKeypair: %v", err)
-	}
-	nodeKeyPEM, _, err := ca.GenerateNodeKeypair("127.0.0.1")
-	if err != nil {
-		t.Fatalf("GenerateNodeKeypair: %v", err)
-	}
-	// We need the key that goes with the CSR — regenerate as a pair.
-	nodeKeyPEM, csrPEM, err = ca.GenerateNodeKeypair("127.0.0.1")
+	nodeKeyPEM, csrPEM, err := ca.GenerateNodeKeypair("127.0.0.1")
 	if err != nil {
 		t.Fatalf("GenerateNodeKeypair: %v", err)
 	}
