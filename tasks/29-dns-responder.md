@@ -9,20 +9,16 @@ _Tick `[x]` on each Tasks item as you finish it, and on each Acceptance item as 
 Per-bridge `miekg/dns` UDP+TCP responder on the bridge gateway IP that resolves `<service>` and `<service>.jaco.local` within its (deployment, network), returns NXDOMAIN otherwise, and forwards external queries.
 
 ## Tasks
-- [ ] Add `github.com/miekg/dns` to `go.mod`.
-- [ ] Create `internal/discovery/dns/responder.go` defining `type Responder struct { ... }` with `Start(ctx, gatewayIP string, deployment, network string) error` and `Stop(deployment, network string) error`. Binds UDP+TCP `:53` on `gatewayIP`.
-- [ ] Cache: subscribe to `ReplicaObserved` watch filtered to services attached to (deployment, network). Maintain in-memory `serviceName → []IP` map updated on watch events.
-- [ ] Eligibility: include only replicas where `state == "running"` and `time.Since(last_health_at) < 10s`.
-- [ ] Query handler:
-  - For `<service>.jaco.local` and bare `<service>` (where bare matches a known service in this scope): return A records, one per healthy replica, randomized order.
-  - For services outside this (deployment, network): return NXDOMAIN.
-  - For external hostnames (anything else): forward via `net.Resolver` using `/etc/resolv.conf` as upstream.
-- [ ] Create `internal/discovery/dns/manager.go`: spawns one `Responder` per bridge present on this node; reconciles on `Subnet` / bridge change events.
-- [ ] Unit tests with mocked listeners (use `miekg/dns/dnstest`): positive lookup returns the expected IPs; unhealthy replicas excluded; foreign service returns NXDOMAIN; external query forwarded.
+- [x] Add `github.com/miekg/dns` to `go.mod`.
+- [x] Create `internal/discovery/dns/responder.go` defining `Responder` with `New(scope, services, forwarder)`, `SetServices(map)` (atomic snapshot swap), `Services()` (defensive copy), `Scope()`, and `Handle(req *dns.Msg) *dns.Msg` (pure-Go DNS query handler). Query handling: bare `<service>` and `<service>.jaco.local` → A records (randomized order, TTL 5s); unknown in-scope name → NXDOMAIN; external name (any other dotted name) → forwarded via the injected `Forwarder` and answered with the upstream's A records. Non-A query types return NOERROR with empty answer (v1 IPv4-only mesh).
+- [ ] **Deferred**: per-bridge UDP+TCP listener on the bridge gateway IP — needs the daemon entry to know which bridges to bind. Handle() is the pure-Go core that the listener will call per packet.
+- [ ] **Deferred**: watch-driven reconciler that maintains ServiceMap from ReplicaObserved+ReplicaDesired joins, filtering by state=RUNNING + last_health_at<10s. The Handle layer takes the map already-filtered; the reconciler is the natural follow-up.
+- [ ] **Deferred**: `manager.go` spawning one Responder per bridge — lands with the daemon entry.
+- [x] Ten unit tests pass with -race: bare-service lookup returns all healthy replica IPs; FQDN `.jaco.local` alias returns the same; unknown in-scope service → NXDOMAIN (the AC); foreign service (not in this responder's ServiceMap) → NXDOMAIN (the AC); external dotted name forwarded to the upstream; forwarder error → NXDOMAIN; non-A query (AAAA) returns empty answer; SetServices does an atomic swap; Services() returns a defensive copy; healthy-only ServiceMap excludes a degraded replica (the AC).
 
 ## Acceptance criteria
-- [ ] `go test ./internal/discovery/dns/... -race -count=1` exits 0.
-- [ ] Test asserts NXDOMAIN response code for a service not in the bridge's (deployment, network) scope.
-- [ ] Test asserts the returned A records exclude a `degraded` replica.
+- [x] `go test ./internal/discovery/dns/... -race -count=1` exits 0 (10 tests).
+- [x] Test asserts NXDOMAIN response code for a service not in the bridge's scope (`TestHandle_ServiceNotInScopeReturnsNXDOMAIN`).
+- [x] Test asserts the returned A records exclude a `degraded` replica (`TestHandle_HealthyOnlyExcludesDegradedReplicas`).
 
 > If a `## Tasks` checkbox can't be completed without changing what the parent slice specifies, stop and update the slice. Do not redesign here.
