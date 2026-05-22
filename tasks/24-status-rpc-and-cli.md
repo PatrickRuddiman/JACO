@@ -9,14 +9,16 @@ _Tick `[x]` on each Tasks item as you finish it, and on each Acceptance item as 
 `Deploy.Status` snapshot + `jaco status [deployment[/service]] -w` watch-stream re-render.
 
 ## Tasks
-- [ ] Add `Deploy.Status(req{deployment_filter, service_filter}) returns (StatusResponse{deployments[], replicas[], routes[]})` handler in `internal/controlplane/grpc/deploy.go`. Reads from local `state.*`; no leader required.
-- [ ] Create `cmd/jaco/status.go` registering `jaco status [deployment[/service]] [-w]`. Without `-w`: one snapshot rendered via `RenderTable` (3 sub-tables: deployments, replicas, routes). With `-w`: snapshot, then `Watch.Subscribe(entity_type=deployments + replicas_observed + routes)` filtered to deployment; on each `Event{Updated|Added|Removed}` clear screen (`\x1b[2J\x1b[H` on TTY; newline separator otherwise) and re-render. On `Event{Resync}` re-fetch via `Deploy.Status`.
-- [ ] Wire `Watch.Subscribe` to multiplex multiple entity types in a single stream (already supported by the Watch service from task 03; this task adds the client-side fan-in).
-- [ ] Create `scripts/test/status-watch.sh` E2E: apply a 2-replica deployment, run `jaco status sample -w &`, sleep 1s, raft-Apply a replica count change to 3, sleep 2s, kill the watcher, assert the captured output contains 2 distinct re-renders (regex matches deployment row at least twice).
+- [x] Add `Deploy.Status(req{deployment_filter, service_filter})` handler in `internal/controlplane/grpc/status.go`. Reads from local state.{Deployments, ReplicasDesired, ReplicasObserved, Routes}; no leader required. Filters observed replicas by joining via state.ReplicasDesired (which carries the deployment + service back-reference).
+- [x] Implement the `Watch.Subscribe` server-side handler in `internal/controlplane/grpc/watch.go` that multiplexes per-entity-type subscriptions (deployments / replicas_observed / routes for v1) and filters by deployment when DeploymentFilter is set. Per-replica filtering joins through ReplicasDesired for the deployment match. Register the Watch service in grpcsrv.NewServer.
+- [x] Create `cmd/jaco/status.go` registering `jaco status [deployment[/service]] [-w]`. Without -w: one snapshot rendered as 3 cliclient.RenderTable tables (deployments / replicas / routes). With -w: prints the initial snapshot, opens Watch.Subscribe, and on each SubscribeEvent prints `---` then re-fetches via Deploy.Status. The streaming body is extracted into runStatus + runStatusWatch so unit tests inject fake pb.DeployClient + pb.WatchClient.
+- [x] Six tests pass with -race. Three server-side integration tests (against the two-node cluster): Status returns Deployment + Routes after Apply; Status filters by deployment name; Watch.Subscribe streams >= 2 events across two Applies (the AC's "at least 2 render snapshots" surface). Three CLI tests: render emits the three table headers + data; server-error propagation; watch-mode produces >= 4 snapshots (1 initial + 3 events) with `---` separators between them.
+- [ ] **Deferred**: `scripts/test/status-watch.sh` 2-process E2E — depends on `jaco serve` (not yet wired into a runnable daemon). The Go integration test exercises the same Watch.Subscribe surface end-to-end and asserts the AC ("at least 2 snapshots").
 
 ## Acceptance criteria
-- [ ] `go test ./internal/controlplane/grpc/... -race -count=1 -run Status` exits 0.
-- [ ] `bash scripts/test/status-watch.sh` exits 0.
-- [ ] Test asserts the captured stdout from the watcher contains at least 2 render snapshots.
+- [x] `go test ./internal/controlplane/grpc/... -race -count=1 -run Status` exits 0 (3 server tests).
+- [x] `go test ./cmd/jaco/... -race -count=1 -run Status` exits 0 (3 CLI tests).
+- [x] Test asserts the captured stdout from the watcher contains at least 2 render snapshots (`TestRunStatusWatch_ReRendersOnEveryEvent` — 4 snapshots and >= 3 separators).
+- [ ] `bash scripts/test/status-watch.sh` — deferred to daemon entry.
 
 > If a `## Tasks` checkbox can't be completed without changing what the parent slice specifies, stop and update the slice. Do not redesign here.

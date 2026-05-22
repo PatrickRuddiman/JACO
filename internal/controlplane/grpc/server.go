@@ -86,6 +86,7 @@ func NewServer(opts Options) (*Server, error) {
 	pb.RegisterTokensServer(gs, &tokensServer{state: opts.State, raft: opts.Raft})
 	pb.RegisterAuditServer(gs, &auditServer{state: opts.State, brokers: opts.Brokers})
 	pb.RegisterDeployServer(gs, &deployServer{state: opts.State, raft: opts.Raft})
+	pb.RegisterWatchServer(gs, &watchServer{state: opts.State, brokers: opts.Brokers})
 
 	return &Server{grpc: gs, listener: lis, opts: opts}, nil
 }
