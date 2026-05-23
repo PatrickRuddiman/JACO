@@ -1,8 +1,11 @@
 # JACO — Just Another Container Orchestrator
 
-JACO is a self-contained, single-binary container orchestrator built on
-hashicorp/raft, embedded Caddy, WireGuard, and per-(deployment, network)
-bridges with nftables-enforced isolation.
+JACO is a multi-node container orchestrator built on hashicorp/raft,
+embedded Caddy, WireGuard, and per-(deployment, network) bridges with
+nftables-enforced isolation. It ships as two binaries: `jacod` (the
+long-running daemon, managed by systemd) and `jaco` (the operator CLI
+that talks to a local jacod over a unix socket and to peer jacods over
+TCP for cross-host control).
 
 ## Components
 
@@ -17,21 +20,75 @@ bridges with nftables-enforced isolation.
 - **Ingress** — Embedded Caddy v2 reverse-proxy; per-route ACME via raft-
   backed CertMagic storage; HTTP-01 challenge coordination through raft.
 
-## Quick start
+## Install
 
-`jaco bootstrap` brings the first node up and prints an operator token.
-`jaco node issue-join-token` produces a single-use 24h token for the next
-node; `jaco node join` adds it to the cluster. `jaco apply` ships a
-deployment defined by a compose file + a JACO manifest.
+From a release tarball:
 
-For installation, run `bash install.sh` from a release tarball as root.
+```sh
+tar xf jaco-vX-linux-amd64.tar.gz
+cd jaco-vX-linux-amd64
+sudo ./install.sh
+sudo systemctl enable --now jacod
+```
+
+The installer drops `/usr/local/bin/{jaco,jacod}`, a default
+`/etc/jaco/jacod.yaml` (edit `listen_addr` / `cluster_addr` / `data_dir`
+as needed), and the `jacod.service` systemd unit. The daemon comes up in
+the uninitialized state — every RPC except `Cluster.{Init,Join,Status}`
+returns `cluster_uninitialized` until one of those two transitions runs.
+
+## Bring up a cluster
+
+On the first node:
+
+```sh
+sudo jaco cluster init
+# prints: cluster_id=… operator_token=<64 hex chars> — save the token
+```
+
+Mint a single-use 24h join token on the leader (operator-authenticated):
+
+```sh
+JACO_TOKEN=<operator_token> jaco node issue-join-token
+# prints: token=… leader_addrs=…
+```
+
+On each follower:
+
+```sh
+sudo jaco node join --peer <leader-host>:<gRPC-port> --token <single-use>
+```
+
+After all nodes report `READY` in `jaco status`, ship a deployment:
+
+```sh
+JACO_TOKEN=<operator_token> jaco apply path/to/jaco.yaml
+JACO_TOKEN=<operator_token> jaco status my-deployment   # -w to follow
+JACO_TOKEN=<operator_token> jaco logs   my-deployment/web --follow
+```
+
+## Network model
+
+The daemon's cross-host gRPC listener (`listen_addr`) and raft transport
+(`cluster_addr`) are plaintext TCP in v0 — JACO assumes the wire is
+wrapped by Tailscale / WireGuard / your own overlay. Cluster
+authentication still relies on the operator bearer token plus the
+single-use join token; only the wire confidentiality is delegated.
+TLS-with-cluster-CA + cert pinning lands in a follow-up.
+
+Discovery subsystems (WireGuard mesh, nftables firewall, per-bridge DNS)
+are kernel-gated — when the host lacks the relevant kernel feature
+(unprivileged container, missing `CONFIG_WIREGUARD`, no `nft` binary),
+the daemon logs a one-line warning and proceeds without that subsystem.
+The scheduler + runtime + ingress paths work either way.
 
 ## Status
 
-Pre-release. The cross-cutting daemon entry that ties the slices together
-is in progress — most slice primitives (control plane, scheduler,
-runtime, discovery, ingress) ship with comprehensive `-race` unit tests
-in the meantime.
+Pre-release. Functional for single-host and multi-host clusters via the
+two-binary path described above. Open gaps: TLS on the cross-host
+listener, follower→leader forwarding of `ReplicaObserved` updates, the
+caddy/v2 ingress reload loop, rollout state-machine integration with the
+scheduler, and the drain step machine for `jaco node remove`.
 
 See `spec.md` for the v1 contract and `design.md` for the architecture
 overview.
