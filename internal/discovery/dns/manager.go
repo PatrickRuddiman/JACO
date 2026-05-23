@@ -44,6 +44,15 @@ type listenerEntry struct {
 	responder *Responder
 	udp       *dns.Server
 	tcp       *dns.Server
+	done      chan struct{} // closed on intentional shutdown; stops bind retries
+}
+
+// stop signals the retry loops to exit and shuts the listeners down. Safe to
+// call once per entry (entries are removed from the map under m.mu).
+func (e *listenerEntry) stop() {
+	close(e.done)
+	_ = e.udp.Shutdown()
+	_ = e.tcp.Shutdown()
 }
 
 // Run blocks until ctx is cancelled. Spawns / stops per-bridge listeners
@@ -62,7 +71,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	obsSub := m.Brokers.ReplicasObserved.Subscribe()
 	defer obsSub.Cancel()
 
-	m.reconcileSubnets()
+	m.reconcileSubnets(ctx)
 	m.refreshServiceMaps()
 
 	for {
@@ -71,14 +80,14 @@ func (m *Manager) Run(ctx context.Context) error {
 			m.shutdownAll()
 			return nil
 		case <-subnetSub.Events():
-			m.reconcileSubnets()
+			m.reconcileSubnets(ctx)
 		case <-obsSub.Events():
 			m.refreshServiceMaps()
 		}
 	}
 }
 
-func (m *Manager) reconcileSubnets() {
+func (m *Manager) reconcileSubnets(ctx context.Context) {
 	live := map[string]*pb.Subnet{}
 	for _, sn := range m.State.Subnets.List() {
 		live[scopeKey(sn.GetDeployment(), sn.GetNetwork())] = sn
@@ -86,18 +95,17 @@ func (m *Manager) reconcileSubnets() {
 	m.mu.Lock()
 	for k, l := range m.listeners {
 		if _, ok := live[k]; !ok {
-			_ = l.udp.Shutdown()
-			_ = l.tcp.Shutdown()
+			l.stop()
 			delete(m.listeners, k)
 		}
 	}
 	m.mu.Unlock()
 	for _, sn := range live {
-		m.ensure(sn)
+		m.ensure(ctx, sn)
 	}
 }
 
-func (m *Manager) ensure(sn *pb.Subnet) {
+func (m *Manager) ensure(ctx context.Context, sn *pb.Subnet) {
 	key := scopeKey(sn.GetDeployment(), sn.GetNetwork())
 	m.mu.Lock()
 	if _, ok := m.listeners[key]; ok {
@@ -117,30 +125,72 @@ func (m *Manager) ensure(sn *pb.Subnet) {
 	addr := fmt.Sprintf("%s:%d", gw, ListenPort)
 	udp := &dns.Server{Addr: addr, Net: "udp", Handler: dnsHandlerFunc(resp.Handle)}
 	tcp := &dns.Server{Addr: addr, Net: "tcp", Handler: dnsHandlerFunc(resp.Handle)}
+	done := make(chan struct{})
 
-	go func() {
-		if err := udp.ListenAndServe(); err != nil {
-			m.Logger.Printf("dns.Manager: %s/%s UDP listen failed (%v); responder disabled", sn.GetDeployment(), sn.GetNetwork(), err)
-		}
-	}()
-	go func() {
-		if err := tcp.ListenAndServe(); err != nil {
-			m.Logger.Printf("dns.Manager: %s/%s TCP listen failed (%v)", sn.GetDeployment(), sn.GetNetwork(), err)
-		}
-	}()
+	go m.serveWithRetry(ctx, udp, done, sn.GetDeployment(), sn.GetNetwork(), "UDP")
+	go m.serveWithRetry(ctx, tcp, done, sn.GetDeployment(), sn.GetNetwork(), "TCP")
 
 	m.mu.Lock()
-	m.listeners[key] = &listenerEntry{scope: scope, responder: resp, udp: udp, tcp: tcp}
+	m.listeners[key] = &listenerEntry{scope: scope, responder: resp, udp: udp, tcp: tcp, done: done}
 	m.mu.Unlock()
 }
 
+// serveWithRetry runs ListenAndServe, retrying with backoff (200ms→5s) when
+// the bind fails — the bridge gateway IP may not be on the interface yet when
+// the subnet watch first fires (issue #28). Exits when the bind succeeds and
+// is later Shutdown, when done is closed (listener removed), or on ctx cancel.
+func (m *Manager) serveWithRetry(ctx context.Context, srv *dns.Server, done <-chan struct{}, dep, network, proto string) {
+	const maxBackoff = 5 * time.Second
+	backoff := 200 * time.Millisecond
+	logged := false
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		default:
+		}
+		err := srv.ListenAndServe()
+		// Distinguish an intentional Shutdown (done closed) from a bind error.
+		select {
+		case <-done:
+			return
+		case <-ctx.Done():
+			return
+		default:
+		}
+		if err == nil {
+			return // clean shutdown without done set (shouldn't happen, but stop)
+		}
+		if !logged {
+			m.Logger.Printf("dns.Manager: %s/%s %s listen failed (%v); retrying until the bridge gateway is up", dep, network, proto, err)
+			logged = true
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-time.After(backoff):
+		}
+		if backoff *= 2; backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
 func (m *Manager) refreshServiceMaps() {
-	// Build per-scope service maps from ReplicasObserved filtered to
-	// RUNNING + last_health_at < 10s. IPs come from the runtime's
-	// Details["ip"] entry, written by the discovery/runtime_attach
-	// slice when it joins a replica to a network.
+	// Build per-scope service maps from ReplicasObserved filtered to RUNNING
+	// + last_health_at < 10s. The IP for a scope comes from the per-network
+	// detail key Details["ip.<dockerNetwork>"] the health watcher writes
+	// (issue #28), so a multi-homed replica contributes the right IP per
+	// scope. Locality: if any healthy replica of a service runs on this host,
+	// only its local IP(s) are served — avoiding the cross-host trombone;
+	// otherwise every cluster-wide IP is served (the responder shuffles).
 	now := time.Now()
-	mapsByScope := map[string]ServiceMap{}
+	type svcIPs struct{ local, all []net.IP }
+	collected := map[string]map[string]*svcIPs{} // scopeKey -> service -> ips
 	for _, obs := range m.State.ReplicasObserved.List() {
 		if obs.GetState() != pb.ReplicaState_REPLICA_STATE_RUNNING {
 			continue
@@ -152,21 +202,39 @@ func (m *Manager) refreshServiceMaps() {
 		if !ok {
 			continue
 		}
-		ipStr := obs.GetDetails()["ip"]
-		if ipStr == "" {
-			continue
-		}
-		ip := net.ParseIP(ipStr)
-		if ip == nil {
-			continue
-		}
 		for _, network := range networksOfService(m.State, rep.GetDeployment(), rep.GetService()) {
-			key := scopeKey(rep.GetDeployment(), network)
-			if _, ok := mapsByScope[key]; !ok {
-				mapsByScope[key] = ServiceMap{}
+			dockerNet := bridge.DockerNetworkName(rep.GetDeployment(), network)
+			ip := net.ParseIP(obs.GetDetails()["ip."+dockerNet])
+			if ip == nil {
+				continue
 			}
-			mapsByScope[key][rep.GetService()] = append(mapsByScope[key][rep.GetService()], ip)
+			key := scopeKey(rep.GetDeployment(), network)
+			if collected[key] == nil {
+				collected[key] = map[string]*svcIPs{}
+			}
+			s := collected[key][rep.GetService()]
+			if s == nil {
+				s = &svcIPs{}
+				collected[key][rep.GetService()] = s
+			}
+			s.all = append(s.all, ip)
+			if obs.GetHost() == m.Hostname {
+				s.local = append(s.local, ip)
+			}
 		}
+	}
+
+	mapsByScope := map[string]ServiceMap{}
+	for key, svcs := range collected {
+		sm := ServiceMap{}
+		for svc, ips := range svcs {
+			if len(ips.local) > 0 {
+				sm[svc] = ips.local
+			} else {
+				sm[svc] = ips.all
+			}
+		}
+		mapsByScope[key] = sm
 	}
 
 	m.mu.Lock()
@@ -183,8 +251,7 @@ func (m *Manager) refreshServiceMaps() {
 func (m *Manager) shutdownAll() {
 	m.mu.Lock()
 	for k, l := range m.listeners {
-		_ = l.udp.Shutdown()
-		_ = l.tcp.Shutdown()
+		l.stop()
 		delete(m.listeners, k)
 	}
 	m.mu.Unlock()
