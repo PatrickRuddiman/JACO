@@ -30,8 +30,13 @@ import (
 type Options struct {
 	DataDir  string
 	Name     string
-	BindAddr string    // raft transport bind; "" defaults to 127.0.0.1:0
-	LogOut   io.Writer // raft log destination; nil silences
+	BindAddr string // raft transport bind; "" defaults to 127.0.0.1:0
+	// AdvertiseAddr is the host:port peers will dial to reach this node's
+	// raft transport. Required when BindAddr is unspecified (0.0.0.0); when
+	// empty, raft derives advertise from BindAddr — fine for tests that
+	// bind to a real loopback IP, broken for production 0.0.0.0 binds.
+	AdvertiseAddr string
+	LogOut        io.Writer // raft log destination; nil silences
 }
 
 // Result is what the CLI prints (and tests assert against).
@@ -107,12 +112,13 @@ func Run(opts Options) (*Result, error) {
 	f := fsm.New(st, brokers)
 
 	rnode, err := raftnode.New(raftnode.Config{
-		DataDir:   opts.DataDir,
-		BindAddr:  opts.BindAddr,
-		LocalID:   opts.Name,
-		Bootstrap: true,
-		FSM:       f,
-		LogOutput: opts.LogOut,
+		DataDir:       opts.DataDir,
+		BindAddr:      opts.BindAddr,
+		AdvertiseAddr: opts.AdvertiseAddr,
+		LocalID:       opts.Name,
+		Bootstrap:     true,
+		FSM:           f,
+		LogOutput:     opts.LogOut,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("start raft: %w", err)

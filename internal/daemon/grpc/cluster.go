@@ -32,8 +32,14 @@ type clusterServer struct {
 	gate     *admission.InitGate
 	dataDir  string
 	hostname string // override for tests; defaults to os.Hostname() at handler time
-	bindAddr string // raft TCP transport addr; cfg.ClusterAddr in production
-	server   *Server // back-reference so handlers can call OpenRaft / read raft handle
+	bindAddr string // raft TCP transport bind; cfg.ClusterAddr in production
+	// advertiseAddr is the host:port peers should dial for this node's raft
+	// transport. Equals bindAddr when the operator pinned an explicit IP;
+	// when bindAddr is 0.0.0.0:N, cmd/jacod sets this to the auto-detected
+	// interface IP + N. Empty → fall back to bindAddr (the legacy single-IP
+	// path used by tests with 127.0.0.1:port).
+	advertiseAddr string
+	server        *Server // back-reference so handlers can call OpenRaft / read raft handle
 
 	// mu guards the single-flight Init / Join. Concurrent Init calls would
 	// race on raft store creation; serialize them at the handler layer.
@@ -55,6 +61,17 @@ func (c *clusterServer) effectiveBindAddr() string {
 		return c.bindAddr
 	}
 	return "127.0.0.1:0"
+}
+
+// effectiveAdvertiseAddr returns the host:port peers should be told to
+// dial for raft. Falls back to effectiveBindAddr when no explicit advertise
+// was configured — appropriate for tests and any deployment where bind is
+// already a routable IP.
+func (c *clusterServer) effectiveAdvertiseAddr() string {
+	if c.advertiseAddr != "" {
+		return c.advertiseAddr
+	}
+	return c.effectiveBindAddr()
 }
 
 // Init creates a brand-new single-node cluster on this daemon. Refuses when
@@ -81,11 +98,13 @@ func (c *clusterServer) Init(_ context.Context, req *pb.ClusterInitRequest) (*pb
 		return nil, status.Errorf(codes.Internal, "hostname: %v", err)
 	}
 	bindAddr := c.effectiveBindAddr()
+	advertiseAddr := c.effectiveAdvertiseAddr()
 
 	result, err := bootstrap.Run(bootstrap.Options{
-		DataDir:  c.dataDir,
-		Name:     hostname,
-		BindAddr: bindAddr,
+		DataDir:       c.dataDir,
+		Name:          hostname,
+		BindAddr:      bindAddr,
+		AdvertiseAddr: advertiseAddr,
 	})
 	if err != nil {
 		if errors.Is(err, errRaftExists) || isRaftExistsErr(err) {
@@ -96,7 +115,7 @@ func (c *clusterServer) Init(_ context.Context, req *pb.ClusterInitRequest) (*pb
 
 	// Re-open raft for steady-state operation. bootstrap.Run shut down its
 	// own raft handle to release the bolt file lock.
-	if err := c.server.OpenRaft(hostname, bindAddr); err != nil {
+	if err := c.server.OpenRaft(hostname, bindAddr, advertiseAddr); err != nil {
 		return nil, status.Errorf(codes.Internal, "open raft post-bootstrap: %v", err)
 	}
 
@@ -157,13 +176,12 @@ func (c *clusterServer) Join(ctx context.Context, req *pb.ClusterJoinRequest) (*
 	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	advertise := c.bindAddr
+	advertise := c.effectiveAdvertiseAddr()
 	// grpcAddr is the joiner's own cross-host gRPC listener address, used
 	// by the leader (or any other node) to dial back via Internal.Submit.
-	// If listen_addr is 0.0.0.0:N, peers won't be able to dial — operators
-	// should set listen_addr to a reachable interface IP. We don't try to
-	// rewrite 0.0.0.0 here; that's an operator-facing config concern.
-	grpcAddr := c.server.TCPAddr()
+	// Resolved at startup by cmd/jacod via netdetect when listen_addr is
+	// unspecified; falls back to the bound address when explicit.
+	grpcAddr := c.server.TCPAdvertiseAddr()
 	resp, err := pb.NewClusterClient(conn).NodeJoin(dialCtx, &pb.NodeJoinRequest{
 		Name:          hostname,
 		JoinToken:     req.GetJoinToken(),
@@ -183,7 +201,7 @@ func (c *clusterServer) Join(ctx context.Context, req *pb.ClusterJoinRequest) (*
 	// know about us (raft.AddVoter on the leader fires inside the peer's
 	// Cluster.NodeJoin handler). We open our local raft node here against
 	// the existing peer set; raft will catch up via snapshot+log.
-	if err := c.server.OpenRaft(hostname, advertise); err != nil {
+	if err := c.server.OpenRaft(hostname, c.effectiveBindAddr(), advertise); err != nil {
 		return nil, status.Errorf(codes.Internal, "open raft post-join: %v", err)
 	}
 

@@ -10,10 +10,16 @@ data_dir: /var/lib/jaco
 # Cross-host gRPC endpoint — peers + remote CLI dial here. v0 ships
 # plaintext TCP (Tailscale / WireGuard wraps the wire); TLS-with-
 # cluster-CA lands in a follow-up.
+#
+# Leave the host as 0.0.0.0 to bind on every interface AND have jacod
+# auto-detect a single advertise IP at startup (priority: Tailscale →
+# tun/wg/jaco → RFC1918 → public). Set to a specific host:port to pin
+# the advertise face (required on multi-NIC hosts with no obvious
+# primary; jacod refuses to start if auto-detect finds nothing).
 listen_addr: 0.0.0.0:7000
 
 # Raft TCP transport — peer-to-peer log replication. Must differ from
-# listen_addr.
+# listen_addr. Same auto-detect rules as listen_addr.
 cluster_addr: 0.0.0.0:7001
 
 # Local-control socket — the `jaco` CLI dials this for cluster init/join,

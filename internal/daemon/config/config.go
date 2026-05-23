@@ -13,6 +13,11 @@ import (
 )
 
 // Defaults match slices/daemon.md §4.
+//
+// The 0.0.0.0 bind on listen_addr / cluster_addr is intentional: the
+// daemon listens on every interface, and cmd/jacod auto-detects a real
+// advertise IP at startup via internal/daemon/netdetect. Operators on
+// multi-NIC hosts can pin a specific host:port to override.
 const (
 	DefaultDataDir     = "/var/lib/jaco"
 	DefaultListenAddr  = "0.0.0.0:7000"
