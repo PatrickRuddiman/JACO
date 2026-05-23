@@ -19,6 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	Cluster_Init_FullMethodName           = "/jaco.v1.Cluster/Init"
+	Cluster_Join_FullMethodName           = "/jaco.v1.Cluster/Join"
 	Cluster_Bootstrap_FullMethodName      = "/jaco.v1.Cluster/Bootstrap"
 	Cluster_IssueJoinToken_FullMethodName = "/jaco.v1.Cluster/IssueJoinToken"
 	Cluster_NodeJoin_FullMethodName       = "/jaco.v1.Cluster/NodeJoin"
@@ -33,6 +35,11 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ClusterClient interface {
+	// Local-control RPCs (called by `jaco` CLI over the unix socket against
+	// the local jacod).
+	Init(ctx context.Context, in *ClusterInitRequest, opts ...grpc.CallOption) (*ClusterInitResponse, error)
+	Join(ctx context.Context, in *ClusterJoinRequest, opts ...grpc.CallOption) (*ClusterJoinResponse, error)
+	// Cluster-wide RPCs (called from any node; leader-forwarded internally).
 	Bootstrap(ctx context.Context, in *BootstrapRequest, opts ...grpc.CallOption) (*BootstrapResponse, error)
 	IssueJoinToken(ctx context.Context, in *IssueJoinTokenRequest, opts ...grpc.CallOption) (*IssueJoinTokenResponse, error)
 	NodeJoin(ctx context.Context, in *NodeJoinRequest, opts ...grpc.CallOption) (*NodeJoinResponse, error)
@@ -49,6 +56,26 @@ type clusterClient struct {
 
 func NewClusterClient(cc grpc.ClientConnInterface) ClusterClient {
 	return &clusterClient{cc}
+}
+
+func (c *clusterClient) Init(ctx context.Context, in *ClusterInitRequest, opts ...grpc.CallOption) (*ClusterInitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClusterInitResponse)
+	err := c.cc.Invoke(ctx, Cluster_Init_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *clusterClient) Join(ctx context.Context, in *ClusterJoinRequest, opts ...grpc.CallOption) (*ClusterJoinResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClusterJoinResponse)
+	err := c.cc.Invoke(ctx, Cluster_Join_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *clusterClient) Bootstrap(ctx context.Context, in *BootstrapRequest, opts ...grpc.CallOption) (*BootstrapResponse, error) {
@@ -147,6 +174,11 @@ func (c *clusterClient) Status(ctx context.Context, in *ClusterStatusRequest, op
 // All implementations must embed UnimplementedClusterServer
 // for forward compatibility.
 type ClusterServer interface {
+	// Local-control RPCs (called by `jaco` CLI over the unix socket against
+	// the local jacod).
+	Init(context.Context, *ClusterInitRequest) (*ClusterInitResponse, error)
+	Join(context.Context, *ClusterJoinRequest) (*ClusterJoinResponse, error)
+	// Cluster-wide RPCs (called from any node; leader-forwarded internally).
 	Bootstrap(context.Context, *BootstrapRequest) (*BootstrapResponse, error)
 	IssueJoinToken(context.Context, *IssueJoinTokenRequest) (*IssueJoinTokenResponse, error)
 	NodeJoin(context.Context, *NodeJoinRequest) (*NodeJoinResponse, error)
@@ -165,6 +197,12 @@ type ClusterServer interface {
 // pointer dereference when methods are called.
 type UnimplementedClusterServer struct{}
 
+func (UnimplementedClusterServer) Init(context.Context, *ClusterInitRequest) (*ClusterInitResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Init not implemented")
+}
+func (UnimplementedClusterServer) Join(context.Context, *ClusterJoinRequest) (*ClusterJoinResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Join not implemented")
+}
 func (UnimplementedClusterServer) Bootstrap(context.Context, *BootstrapRequest) (*BootstrapResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Bootstrap not implemented")
 }
@@ -208,6 +246,42 @@ func RegisterClusterServer(s grpc.ServiceRegistrar, srv ClusterServer) {
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&Cluster_ServiceDesc, srv)
+}
+
+func _Cluster_Init_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ClusterInitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ClusterServer).Init(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Cluster_Init_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ClusterServer).Init(ctx, req.(*ClusterInitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Cluster_Join_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ClusterJoinRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ClusterServer).Join(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Cluster_Join_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ClusterServer).Join(ctx, req.(*ClusterJoinRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _Cluster_Bootstrap_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -343,6 +417,14 @@ var Cluster_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "jaco.v1.Cluster",
 	HandlerType: (*ClusterServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Init",
+			Handler:    _Cluster_Init_Handler,
+		},
+		{
+			MethodName: "Join",
+			Handler:    _Cluster_Join_Handler,
+		},
 		{
 			MethodName: "Bootstrap",
 			Handler:    _Cluster_Bootstrap_Handler,
