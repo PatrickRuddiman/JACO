@@ -1188,6 +1188,69 @@ func (x *ChallengeToken) GetExpiresAt() *timestamppb.Timestamp {
 	return nil
 }
 
+// CertBlob is the raft-replicated payload behind ingress/storage's
+// certmagic.Storage. The key is whatever CertMagic hands us
+// (e.g. "certificates/<domain>/<file>"); the value is the opaque blob.
+type CertBlob struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Value         []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CertBlob) Reset() {
+	*x = CertBlob{}
+	mi := &file_jaco_v1_entities_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CertBlob) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CertBlob) ProtoMessage() {}
+
+func (x *CertBlob) ProtoReflect() protoreflect.Message {
+	mi := &file_jaco_v1_entities_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CertBlob.ProtoReflect.Descriptor instead.
+func (*CertBlob) Descriptor() ([]byte, []int) {
+	return file_jaco_v1_entities_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *CertBlob) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *CertBlob) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *CertBlob) GetUpdatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return nil
+}
+
 type Token struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Identity      string                 `protobuf:"bytes,1,opt,name=identity,proto3" json:"identity,omitempty"`
@@ -1200,7 +1263,7 @@ type Token struct {
 
 func (x *Token) Reset() {
 	*x = Token{}
-	mi := &file_jaco_v1_entities_proto_msgTypes[9]
+	mi := &file_jaco_v1_entities_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1212,7 +1275,7 @@ func (x *Token) String() string {
 func (*Token) ProtoMessage() {}
 
 func (x *Token) ProtoReflect() protoreflect.Message {
-	mi := &file_jaco_v1_entities_proto_msgTypes[9]
+	mi := &file_jaco_v1_entities_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1225,7 +1288,7 @@ func (x *Token) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Token.ProtoReflect.Descriptor instead.
 func (*Token) Descriptor() ([]byte, []int) {
-	return file_jaco_v1_entities_proto_rawDescGZIP(), []int{9}
+	return file_jaco_v1_entities_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *Token) GetIdentity() string {
@@ -1268,7 +1331,7 @@ type JoinToken struct {
 
 func (x *JoinToken) Reset() {
 	*x = JoinToken{}
-	mi := &file_jaco_v1_entities_proto_msgTypes[10]
+	mi := &file_jaco_v1_entities_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1280,7 +1343,7 @@ func (x *JoinToken) String() string {
 func (*JoinToken) ProtoMessage() {}
 
 func (x *JoinToken) ProtoReflect() protoreflect.Message {
-	mi := &file_jaco_v1_entities_proto_msgTypes[10]
+	mi := &file_jaco_v1_entities_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1293,7 +1356,7 @@ func (x *JoinToken) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinToken.ProtoReflect.Descriptor instead.
 func (*JoinToken) Descriptor() ([]byte, []int) {
-	return file_jaco_v1_entities_proto_rawDescGZIP(), []int{10}
+	return file_jaco_v1_entities_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *JoinToken) GetHashedSecret() []byte {
@@ -1337,7 +1400,7 @@ type AuditEvent struct {
 
 func (x *AuditEvent) Reset() {
 	*x = AuditEvent{}
-	mi := &file_jaco_v1_entities_proto_msgTypes[11]
+	mi := &file_jaco_v1_entities_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1349,7 +1412,7 @@ func (x *AuditEvent) String() string {
 func (*AuditEvent) ProtoMessage() {}
 
 func (x *AuditEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_jaco_v1_entities_proto_msgTypes[11]
+	mi := &file_jaco_v1_entities_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1362,7 +1425,7 @@ func (x *AuditEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuditEvent.ProtoReflect.Descriptor instead.
 func (*AuditEvent) Descriptor() ([]byte, []int) {
-	return file_jaco_v1_entities_proto_rawDescGZIP(), []int{11}
+	return file_jaco_v1_entities_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *AuditEvent) GetRaftIndex() uint64 {
@@ -1412,7 +1475,7 @@ type Subnet struct {
 
 func (x *Subnet) Reset() {
 	*x = Subnet{}
-	mi := &file_jaco_v1_entities_proto_msgTypes[12]
+	mi := &file_jaco_v1_entities_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1424,7 +1487,7 @@ func (x *Subnet) String() string {
 func (*Subnet) ProtoMessage() {}
 
 func (x *Subnet) ProtoReflect() protoreflect.Message {
-	mi := &file_jaco_v1_entities_proto_msgTypes[12]
+	mi := &file_jaco_v1_entities_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1437,7 +1500,7 @@ func (x *Subnet) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Subnet.ProtoReflect.Descriptor instead.
 func (*Subnet) Descriptor() ([]byte, []int) {
-	return file_jaco_v1_entities_proto_rawDescGZIP(), []int{12}
+	return file_jaco_v1_entities_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *Subnet) GetDeployment() string {
@@ -1485,7 +1548,7 @@ type RolloutPlan struct {
 
 func (x *RolloutPlan) Reset() {
 	*x = RolloutPlan{}
-	mi := &file_jaco_v1_entities_proto_msgTypes[13]
+	mi := &file_jaco_v1_entities_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1497,7 +1560,7 @@ func (x *RolloutPlan) String() string {
 func (*RolloutPlan) ProtoMessage() {}
 
 func (x *RolloutPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_jaco_v1_entities_proto_msgTypes[13]
+	mi := &file_jaco_v1_entities_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1510,7 +1573,7 @@ func (x *RolloutPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RolloutPlan.ProtoReflect.Descriptor instead.
 func (*RolloutPlan) Descriptor() ([]byte, []int) {
-	return file_jaco_v1_entities_proto_rawDescGZIP(), []int{13}
+	return file_jaco_v1_entities_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *RolloutPlan) GetDeployment() string {
@@ -1587,7 +1650,7 @@ type ReplicaCounter struct {
 
 func (x *ReplicaCounter) Reset() {
 	*x = ReplicaCounter{}
-	mi := &file_jaco_v1_entities_proto_msgTypes[14]
+	mi := &file_jaco_v1_entities_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1599,7 +1662,7 @@ func (x *ReplicaCounter) String() string {
 func (*ReplicaCounter) ProtoMessage() {}
 
 func (x *ReplicaCounter) ProtoReflect() protoreflect.Message {
-	mi := &file_jaco_v1_entities_proto_msgTypes[14]
+	mi := &file_jaco_v1_entities_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1612,7 +1675,7 @@ func (x *ReplicaCounter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplicaCounter.ProtoReflect.Descriptor instead.
 func (*ReplicaCounter) Descriptor() ([]byte, []int) {
-	return file_jaco_v1_entities_proto_rawDescGZIP(), []int{14}
+	return file_jaco_v1_entities_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ReplicaCounter) GetDeployment() string {
@@ -1647,7 +1710,7 @@ type RestartCounter struct {
 
 func (x *RestartCounter) Reset() {
 	*x = RestartCounter{}
-	mi := &file_jaco_v1_entities_proto_msgTypes[15]
+	mi := &file_jaco_v1_entities_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1659,7 +1722,7 @@ func (x *RestartCounter) String() string {
 func (*RestartCounter) ProtoMessage() {}
 
 func (x *RestartCounter) ProtoReflect() protoreflect.Message {
-	mi := &file_jaco_v1_entities_proto_msgTypes[15]
+	mi := &file_jaco_v1_entities_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1672,7 +1735,7 @@ func (x *RestartCounter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestartCounter.ProtoReflect.Descriptor instead.
 func (*RestartCounter) Descriptor() ([]byte, []int) {
-	return file_jaco_v1_entities_proto_rawDescGZIP(), []int{15}
+	return file_jaco_v1_entities_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *RestartCounter) GetReplicaId() string {
@@ -1797,7 +1860,12 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\x06domain\x18\x02 \x01(\tR\x06domain\x12\x19\n" +
 	"\bkey_auth\x18\x03 \x01(\tR\akeyAuth\x129\n" +
 	"\n" +
-	"expires_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"\xbc\x01\n" +
+	"expires_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"m\n" +
+	"\bCertBlob\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\x129\n" +
+	"\n" +
+	"updated_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xbc\x01\n" +
 	"\x05Token\x12\x1a\n" +
 	"\bidentity\x18\x01 \x01(\tR\bidentity\x12#\n" +
 	"\rhashed_secret\x18\x02 \x01(\fR\fhashedSecret\x127\n" +
@@ -1915,7 +1983,7 @@ func file_jaco_v1_entities_proto_rawDescGZIP() []byte {
 }
 
 var file_jaco_v1_entities_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_jaco_v1_entities_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_jaco_v1_entities_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_jaco_v1_entities_proto_goTypes = []any{
 	(ReplicaState)(0),              // 0: jaco.v1.ReplicaState
 	(RolloutState)(0),              // 1: jaco.v1.RolloutState
@@ -1932,55 +2000,57 @@ var file_jaco_v1_entities_proto_goTypes = []any{
 	(*Route)(nil),                  // 12: jaco.v1.Route
 	(*Cert)(nil),                   // 13: jaco.v1.Cert
 	(*ChallengeToken)(nil),         // 14: jaco.v1.ChallengeToken
-	(*Token)(nil),                  // 15: jaco.v1.Token
-	(*JoinToken)(nil),              // 16: jaco.v1.JoinToken
-	(*AuditEvent)(nil),             // 17: jaco.v1.AuditEvent
-	(*Subnet)(nil),                 // 18: jaco.v1.Subnet
-	(*RolloutPlan)(nil),            // 19: jaco.v1.RolloutPlan
-	(*ReplicaCounter)(nil),         // 20: jaco.v1.ReplicaCounter
-	(*RestartCounter)(nil),         // 21: jaco.v1.RestartCounter
-	nil,                            // 22: jaco.v1.Node.StatusDetailsEntry
-	nil,                            // 23: jaco.v1.Deployment.StatusDetailsEntry
-	nil,                            // 24: jaco.v1.ReplicaObserved.DetailsEntry
-	nil,                            // 25: jaco.v1.AuditEvent.PayloadEntry
-	(*timestamppb.Timestamp)(nil),  // 26: google.protobuf.Timestamp
+	(*CertBlob)(nil),               // 15: jaco.v1.CertBlob
+	(*Token)(nil),                  // 16: jaco.v1.Token
+	(*JoinToken)(nil),              // 17: jaco.v1.JoinToken
+	(*AuditEvent)(nil),             // 18: jaco.v1.AuditEvent
+	(*Subnet)(nil),                 // 19: jaco.v1.Subnet
+	(*RolloutPlan)(nil),            // 20: jaco.v1.RolloutPlan
+	(*ReplicaCounter)(nil),         // 21: jaco.v1.ReplicaCounter
+	(*RestartCounter)(nil),         // 22: jaco.v1.RestartCounter
+	nil,                            // 23: jaco.v1.Node.StatusDetailsEntry
+	nil,                            // 24: jaco.v1.Deployment.StatusDetailsEntry
+	nil,                            // 25: jaco.v1.ReplicaObserved.DetailsEntry
+	nil,                            // 26: jaco.v1.AuditEvent.PayloadEntry
+	(*timestamppb.Timestamp)(nil),  // 27: google.protobuf.Timestamp
 }
 var file_jaco_v1_entities_proto_depIdxs = []int32{
-	26, // 0: jaco.v1.ClusterMeta.created_at:type_name -> google.protobuf.Timestamp
+	27, // 0: jaco.v1.ClusterMeta.created_at:type_name -> google.protobuf.Timestamp
 	2,  // 1: jaco.v1.Node.status:type_name -> jaco.v1.NodeStatus
-	22, // 2: jaco.v1.Node.status_details:type_name -> jaco.v1.Node.StatusDetailsEntry
-	26, // 3: jaco.v1.Node.joined_at:type_name -> google.protobuf.Timestamp
+	23, // 2: jaco.v1.Node.status_details:type_name -> jaco.v1.Node.StatusDetailsEntry
+	27, // 3: jaco.v1.Node.joined_at:type_name -> google.protobuf.Timestamp
 	5,  // 4: jaco.v1.ServiceSpec.placement:type_name -> jaco.v1.ServiceSpec.PlacementMode
 	3,  // 5: jaco.v1.Deployment.status:type_name -> jaco.v1.DeploymentStatus
-	23, // 6: jaco.v1.Deployment.status_details:type_name -> jaco.v1.Deployment.StatusDetailsEntry
+	24, // 6: jaco.v1.Deployment.status_details:type_name -> jaco.v1.Deployment.StatusDetailsEntry
 	8,  // 7: jaco.v1.Deployment.services:type_name -> jaco.v1.ServiceSpec
-	26, // 8: jaco.v1.Deployment.updated_at:type_name -> google.protobuf.Timestamp
+	27, // 8: jaco.v1.Deployment.updated_at:type_name -> google.protobuf.Timestamp
 	0,  // 9: jaco.v1.ReplicaObserved.state:type_name -> jaco.v1.ReplicaState
-	24, // 10: jaco.v1.ReplicaObserved.details:type_name -> jaco.v1.ReplicaObserved.DetailsEntry
-	26, // 11: jaco.v1.ReplicaObserved.started_at:type_name -> google.protobuf.Timestamp
-	26, // 12: jaco.v1.ReplicaObserved.last_health_at:type_name -> google.protobuf.Timestamp
-	26, // 13: jaco.v1.Cert.not_before:type_name -> google.protobuf.Timestamp
-	26, // 14: jaco.v1.Cert.not_after:type_name -> google.protobuf.Timestamp
-	26, // 15: jaco.v1.Cert.lock_until:type_name -> google.protobuf.Timestamp
-	26, // 16: jaco.v1.ChallengeToken.expires_at:type_name -> google.protobuf.Timestamp
-	26, // 17: jaco.v1.Token.issued_at:type_name -> google.protobuf.Timestamp
-	26, // 18: jaco.v1.Token.revoked_at:type_name -> google.protobuf.Timestamp
-	26, // 19: jaco.v1.JoinToken.issued_at:type_name -> google.protobuf.Timestamp
-	26, // 20: jaco.v1.JoinToken.expires_at:type_name -> google.protobuf.Timestamp
-	26, // 21: jaco.v1.JoinToken.consumed_at:type_name -> google.protobuf.Timestamp
-	4,  // 22: jaco.v1.AuditEvent.type:type_name -> jaco.v1.AuditEventType
-	26, // 23: jaco.v1.AuditEvent.ts:type_name -> google.protobuf.Timestamp
-	25, // 24: jaco.v1.AuditEvent.payload:type_name -> jaco.v1.AuditEvent.PayloadEntry
-	26, // 25: jaco.v1.Subnet.allocated_at:type_name -> google.protobuf.Timestamp
-	1,  // 26: jaco.v1.RolloutPlan.state:type_name -> jaco.v1.RolloutState
-	26, // 27: jaco.v1.RolloutPlan.started_at:type_name -> google.protobuf.Timestamp
-	26, // 28: jaco.v1.RolloutPlan.last_step_at:type_name -> google.protobuf.Timestamp
-	26, // 29: jaco.v1.RestartCounter.last_attempt_at:type_name -> google.protobuf.Timestamp
-	30, // [30:30] is the sub-list for method output_type
-	30, // [30:30] is the sub-list for method input_type
-	30, // [30:30] is the sub-list for extension type_name
-	30, // [30:30] is the sub-list for extension extendee
-	0,  // [0:30] is the sub-list for field type_name
+	25, // 10: jaco.v1.ReplicaObserved.details:type_name -> jaco.v1.ReplicaObserved.DetailsEntry
+	27, // 11: jaco.v1.ReplicaObserved.started_at:type_name -> google.protobuf.Timestamp
+	27, // 12: jaco.v1.ReplicaObserved.last_health_at:type_name -> google.protobuf.Timestamp
+	27, // 13: jaco.v1.Cert.not_before:type_name -> google.protobuf.Timestamp
+	27, // 14: jaco.v1.Cert.not_after:type_name -> google.protobuf.Timestamp
+	27, // 15: jaco.v1.Cert.lock_until:type_name -> google.protobuf.Timestamp
+	27, // 16: jaco.v1.ChallengeToken.expires_at:type_name -> google.protobuf.Timestamp
+	27, // 17: jaco.v1.CertBlob.updated_at:type_name -> google.protobuf.Timestamp
+	27, // 18: jaco.v1.Token.issued_at:type_name -> google.protobuf.Timestamp
+	27, // 19: jaco.v1.Token.revoked_at:type_name -> google.protobuf.Timestamp
+	27, // 20: jaco.v1.JoinToken.issued_at:type_name -> google.protobuf.Timestamp
+	27, // 21: jaco.v1.JoinToken.expires_at:type_name -> google.protobuf.Timestamp
+	27, // 22: jaco.v1.JoinToken.consumed_at:type_name -> google.protobuf.Timestamp
+	4,  // 23: jaco.v1.AuditEvent.type:type_name -> jaco.v1.AuditEventType
+	27, // 24: jaco.v1.AuditEvent.ts:type_name -> google.protobuf.Timestamp
+	26, // 25: jaco.v1.AuditEvent.payload:type_name -> jaco.v1.AuditEvent.PayloadEntry
+	27, // 26: jaco.v1.Subnet.allocated_at:type_name -> google.protobuf.Timestamp
+	1,  // 27: jaco.v1.RolloutPlan.state:type_name -> jaco.v1.RolloutState
+	27, // 28: jaco.v1.RolloutPlan.started_at:type_name -> google.protobuf.Timestamp
+	27, // 29: jaco.v1.RolloutPlan.last_step_at:type_name -> google.protobuf.Timestamp
+	27, // 30: jaco.v1.RestartCounter.last_attempt_at:type_name -> google.protobuf.Timestamp
+	31, // [31:31] is the sub-list for method output_type
+	31, // [31:31] is the sub-list for method input_type
+	31, // [31:31] is the sub-list for extension type_name
+	31, // [31:31] is the sub-list for extension extendee
+	0,  // [0:31] is the sub-list for field type_name
 }
 
 func init() { file_jaco_v1_entities_proto_init() }
@@ -1994,7 +2064,7 @@ func file_jaco_v1_entities_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_jaco_v1_entities_proto_rawDesc), len(file_jaco_v1_entities_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   20,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

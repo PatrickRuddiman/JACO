@@ -40,6 +40,8 @@ message Command {
     CertLock cert_lock = 51;
     CertUnlock cert_unlock = 52;
     ChallengeTokenStore challenge_token_store = 53;
+    CertBlobUpsert cert_blob_upsert = 54;
+    CertBlobRemove cert_blob_remove = 55;
 
     SubnetAllocate subnet_allocate = 60;
     SubnetFree subnet_free = 61;
@@ -192,6 +194,14 @@ message CertUnlock {
 
 message ChallengeTokenStore {
   ChallengeToken token = 1;
+}
+
+message CertBlobUpsert {
+  CertBlob blob = 1;
+}
+
+message CertBlobRemove {
+  string key = 1;
 }
 
 // ----- Subnet mutations -----

@@ -163,6 +163,15 @@ message ChallengeToken {
   google.protobuf.Timestamp expires_at = 4;
 }
 
+// CertBlob is the raft-replicated payload behind ingress/storage's
+// certmagic.Storage. The key is whatever CertMagic hands us
+// (e.g. "certificates/<domain>/<file>"); the value is the opaque blob.
+message CertBlob {
+  string key = 1;
+  bytes value = 2;
+  google.protobuf.Timestamp updated_at = 3;
+}
+
 // ----- Auth entities -----
 
 message Token {

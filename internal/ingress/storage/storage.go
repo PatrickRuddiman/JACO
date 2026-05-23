@@ -1,7 +1,6 @@
-// Package storage implements the certmagic.Storage interface backed by
-// raft (for the per-domain Lock / Unlock semantics) and an in-memory
-// key/value map (for the cert blobs in v1; raft-backed blob storage lands
-// when a CertBlob entity is added to the proto).
+// Package storage implements the certmagic.Storage interface fully
+// backed by raft: Lock / Unlock through the Cert entity, blobs (Store /
+// Load / Delete / List / Stat) through the CertBlob entity (task 40).
 //
 // The interface JacoStorage matches certmagic.Storage and caddy.Storage
 // shape-for-shape so the daemon-side ingress can register it as the
@@ -72,26 +71,18 @@ type Storage interface {
 	Unlock(ctx context.Context, name string) error
 }
 
-// JacoStorage implements Storage backed by the raft-replicated Cert entity
-// (for Lock / Unlock) and an in-memory blob map keyed by certmagic key (v1
-// — a CertBlob entity for full raft-backed blob storage is a follow-up).
+// JacoStorage implements Storage entirely through raft. Lock / Unlock
+// flow through the Cert entity; blobs flow through the CertBlob entity
+// added in task 40 — every node sees the same blob set via state.
 type JacoStorage struct {
 	state  *state.State
 	apply  Applier
 	clock  Clock
 	lessee string
 
-	mu    sync.RWMutex
-	blobs map[string]blobEntry
-
 	// renewers tracks active auto-renew goroutines keyed by lock name.
 	renewersMu sync.Mutex
 	renewers   map[string]context.CancelFunc
-}
-
-type blobEntry struct {
-	value    []byte
-	modified time.Time
 }
 
 // New constructs a JacoStorage. lessee is the local node's hostname (used
@@ -105,7 +96,6 @@ func New(st *state.State, apply Applier, lessee string, clock Clock) *JacoStorag
 		apply:    apply,
 		clock:    clock,
 		lessee:   lessee,
-		blobs:    map[string]blobEntry{},
 		renewers: map[string]context.CancelFunc{},
 	}
 }
@@ -199,58 +189,72 @@ func (s *JacoStorage) renewLoop(ctx context.Context, name string) {
 
 // --- Store / Load / Delete / Exists / List / Stat ------------------------
 
-// Store records value under key in the in-memory map. v1 limitation: blob
-// storage is per-node, not raft-replicated; the daemon entry will swap in
-// a CertBlob-entity-backed implementation when added to the proto.
+// Store raft-Applies CertBlobUpsert{key, value}. The FSM writes the blob
+// into state.CertBlobs on every node, so Load on any peer sees the
+// payload after replication catches up.
 func (s *JacoStorage) Store(_ context.Context, key string, value []byte) error {
 	if key == "" {
 		return fmt.Errorf("Store: key is required")
 	}
 	cp := make([]byte, len(value))
 	copy(cp, value)
-	s.mu.Lock()
-	s.blobs[key] = blobEntry{value: cp, modified: s.clock.Now()}
-	s.mu.Unlock()
-	return nil
+	cmd := &pb.Command{
+		Identity: "ingress",
+		Ts:       timestamppb.New(s.clock.Now()),
+		Payload: &pb.Command_CertBlobUpsert{CertBlobUpsert: &pb.CertBlobUpsert{
+			Blob: &pb.CertBlob{
+				Key:       key,
+				Value:     cp,
+				UpdatedAt: timestamppb.New(s.clock.Now()),
+			},
+		}},
+	}
+	data, err := proto.Marshal(cmd)
+	if err != nil {
+		return err
+	}
+	return s.apply(data)
 }
 
-// Load reads the value for key. Returns os.ErrNotExist-compatible error when
-// the key is absent (certmagic checks errors.Is(err, fs.ErrNotExist)).
+// Load reads the value for key from state.CertBlobs. Returns ErrNotExist
+// when the key is absent (certmagic checks errors.Is(err, fs.ErrNotExist)).
 func (s *JacoStorage) Load(_ context.Context, key string) ([]byte, error) {
-	s.mu.RLock()
-	b, ok := s.blobs[key]
-	s.mu.RUnlock()
+	b, ok := s.state.CertBlobs.Get(key)
 	if !ok {
 		return nil, fmt.Errorf("Load %s: %w", key, ErrNotExist)
 	}
-	cp := make([]byte, len(b.value))
-	copy(cp, b.value)
+	cp := make([]byte, len(b.GetValue()))
+	copy(cp, b.GetValue())
 	return cp, nil
 }
 
-// Delete removes key. No-op when absent (matches certmagic's contract).
+// Delete raft-Applies CertBlobRemove{key}. No-op when absent (matches
+// certmagic's contract).
 func (s *JacoStorage) Delete(_ context.Context, key string) error {
-	s.mu.Lock()
-	delete(s.blobs, key)
-	s.mu.Unlock()
-	return nil
+	cmd := &pb.Command{
+		Identity: "ingress",
+		Ts:       timestamppb.New(s.clock.Now()),
+		Payload:  &pb.Command_CertBlobRemove{CertBlobRemove: &pb.CertBlobRemove{Key: key}},
+	}
+	data, err := proto.Marshal(cmd)
+	if err != nil {
+		return err
+	}
+	return s.apply(data)
 }
 
-// Exists reports whether key has a value.
+// Exists reports whether key has a value in state.CertBlobs.
 func (s *JacoStorage) Exists(_ context.Context, key string) bool {
-	s.mu.RLock()
-	_, ok := s.blobs[key]
-	s.mu.RUnlock()
+	_, ok := s.state.CertBlobs.Get(key)
 	return ok
 }
 
 // List returns the keys under prefix. When recursive=false, returns direct
 // children only; when true, returns the full path of every descendant.
 func (s *JacoStorage) List(_ context.Context, prefix string, recursive bool) ([]string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	seen := map[string]bool{}
-	for k := range s.blobs {
+	for _, b := range s.state.CertBlobs.List() {
+		k := b.GetKey()
 		if !strings.HasPrefix(k, prefix) {
 			continue
 		}
@@ -263,11 +267,9 @@ func (s *JacoStorage) List(_ context.Context, prefix string, recursive bool) ([]
 			seen[k] = true
 			continue
 		}
-		// Non-recursive: take only the first segment after the prefix.
 		if idx := strings.IndexByte(remainder, '/'); idx >= 0 {
 			remainder = remainder[:idx]
 		}
-		// Re-assemble the absolute key for the child.
 		var full string
 		if prefix == "" {
 			full = remainder
@@ -289,16 +291,14 @@ func (s *JacoStorage) List(_ context.Context, prefix string, recursive bool) ([]
 // Stat returns metadata for key. IsTerminal=true reflects that the key has
 // a value (vs. being just a directory prefix).
 func (s *JacoStorage) Stat(_ context.Context, key string) (KeyInfo, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	b, ok := s.blobs[key]
+	b, ok := s.state.CertBlobs.Get(key)
 	if !ok {
 		return KeyInfo{}, fmt.Errorf("Stat %s: %w", key, ErrNotExist)
 	}
 	return KeyInfo{
 		Key:        key,
-		Modified:   b.modified,
-		Size:       int64(len(b.value)),
+		Modified:   b.GetUpdatedAt().AsTime(),
+		Size:       int64(len(b.GetValue())),
 		IsTerminal: true,
 	}, nil
 }

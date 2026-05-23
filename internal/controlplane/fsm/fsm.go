@@ -304,6 +304,21 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 		}
 		return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
 
+	case *pb.Command_CertBlobUpsert:
+		if b := p.CertBlobUpsert.GetBlob(); b != nil {
+			if b.GetUpdatedAt() == nil {
+				b.UpdatedAt = cmd.GetTs()
+			}
+			f.State.CertBlobs.Apply(b, idx)
+		}
+		return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
+
+	case *pb.Command_CertBlobRemove:
+		if key := p.CertBlobRemove.GetKey(); key != "" {
+			f.State.CertBlobs.Remove(key, idx)
+		}
+		return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
+
 	case *pb.Command_SubnetAllocate:
 		sa := p.SubnetAllocate
 		f.State.Subnets.Apply(&pb.Subnet{

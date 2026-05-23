@@ -18,6 +18,7 @@ type State struct {
 	ReplicasObserved *Store[*pb.ReplicaObserved]
 	Routes           *Store[*pb.Route]
 	Certs            *Store[*pb.Cert]
+	CertBlobs        *Store[*pb.CertBlob]
 	ChallengeTokens  *Store[*pb.ChallengeToken]
 	Tokens           *Store[*pb.Token]
 	JoinTokens       *Store[*pb.JoinToken]
@@ -38,6 +39,7 @@ func New(brokers *watch.Registry) *State {
 		ReplicasObserved: newReplicasObserved(brokers.ReplicasObserved),
 		Routes:           newRoutes(brokers.Routes),
 		Certs:            newCerts(brokers.Certs),
+		CertBlobs:        newCertBlobs(brokers.CertBlobs),
 		ChallengeTokens:  newChallengeTokens(brokers.ChallengeTokens),
 		Tokens:           newTokens(brokers.Tokens),
 		JoinTokens:       newJoinTokens(brokers.JoinTokens),

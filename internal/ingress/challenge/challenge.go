@@ -67,7 +67,11 @@ func NewIssuer(apply Applier, clock Clock) *Issuer {
 }
 
 // Issue raft-Applies a ChallengeTokenStore. domain + token + keyAuth come
-// from certmagic's challenge presentation.
+// from certmagic's challenge presentation. Audit events for the CertMagic
+// OnEvent pair land here too — CERTIFICATE_RENEWED on apply success,
+// CERTIFICATE_FAILED on apply error. This is the closest signal we have
+// without an embedded certmagic + OnEvent hook (the daemon execs an
+// external caddy in v0).
 func (i *Issuer) Issue(_ context.Context, domain, token, keyAuth string) error {
 	if domain == "" || token == "" || keyAuth == "" {
 		return fmt.Errorf("Issue: domain + token + keyAuth required")
@@ -83,6 +87,34 @@ func (i *Issuer) Issue(_ context.Context, domain, token, keyAuth string) error {
 				KeyAuth:   keyAuth,
 				ExpiresAt: timestamppb.New(expiresAt),
 			},
+		}},
+	}
+	data, err := proto.Marshal(cmd)
+	if err != nil {
+		return err
+	}
+	if applyErr := i.apply(data); applyErr != nil {
+		_ = i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_FAILED, map[string]string{
+			"domain": domain,
+			"reason": applyErr.Error(),
+		})
+		return applyErr
+	}
+	_ = i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_RENEWED, map[string]string{
+		"domain": domain,
+	})
+	return nil
+}
+
+// emitAudit raft-Applies an AuditAppend command. Failure to emit audit
+// is non-fatal — callers shouldn't fail their request because the audit
+// store is briefly unavailable.
+func (i *Issuer) emitAudit(t pb.AuditEventType, payload map[string]string) error {
+	cmd := &pb.Command{
+		Identity: "ingress",
+		Ts:       timestamppb.New(i.clock.Now()),
+		Payload: &pb.Command_AuditAppend{AuditAppend: &pb.AuditAppend{
+			Event: &pb.AuditEvent{Type: t, Payload: payload},
 		}},
 	}
 	data, err := proto.Marshal(cmd)
