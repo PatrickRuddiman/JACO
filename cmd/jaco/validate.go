@@ -63,31 +63,34 @@ func runValidate(cmd *cobra.Command, jacoPath, composePath string) error {
 	// Validate the jaco manifest if provided.
 	if jacoPath != "" {
 		if err := grpcsrv.ValidateJacoYAMLBytes(jacoBytes); err != nil {
-			code, msg := validationCodeAndMessage(err)
-			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s: %s\n", code, msg)
-			return err
+			return formatValidationError(err)
 		}
 	}
 
 	// Validate the compose file if provided.
 	if composePath != "" {
 		if err := compose.Validate(composeBytes); err != nil {
-			code, msg := validationCodeAndMessage(err)
-			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s: %s\n", code, msg)
-			return err
+			return formatValidationError(err)
 		}
 	}
 
 	// Cross-check: every jaco service must reference a real compose service.
 	if jacoPath != "" && composePath != "" {
 		if err := crossValidate(jacoBytes, composeBytes); err != nil {
-			code, msg := validationCodeAndMessage(err)
-			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s: %s\n", code, msg)
-			return err
+			return formatValidationError(err)
 		}
 	}
 
 	return nil
+}
+
+// formatValidationError wraps err in an "Error: <code>: <message>" envelope
+// so the top-level Execute() prints a single formatted line to stderr. We
+// don't print here ourselves because root.Execute already does that — doing
+// both would double up the output.
+func formatValidationError(err error) error {
+	code, msg := validationCodeAndMessage(err)
+	return fmt.Errorf("Error: %s: %s", code, msg)
 }
 
 // validationCodeAndMessage pulls the typed Code and human Message out of
