@@ -29,11 +29,10 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/daemon/admission"
 	dnsmgr "github.com/PatrickRuddiman/jaco/internal/discovery/dns"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/firewall"
+	"github.com/PatrickRuddiman/jaco/internal/discovery/ipam"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/wgmesh"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/rebuild"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/storage"
-	"google.golang.org/grpc/credentials"
-	hraft "github.com/hashicorp/raft"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/health"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/reconciler"
@@ -41,6 +40,8 @@ import (
 	schedhealth "github.com/PatrickRuddiman/jaco/internal/scheduler/health"
 	"github.com/PatrickRuddiman/jaco/internal/scheduler/rollout"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
+	hraft "github.com/hashicorp/raft"
+	"google.golang.org/grpc/credentials"
 )
 
 // Server bundles the daemon-side gRPC server with its unix socket listener
@@ -82,6 +83,10 @@ type Server struct {
 	// docker is the optional runtime engine handle. nil → no runtime
 	// reconciler is spawned in startSubsystems.
 	docker dockerx.Docker
+
+	// ipamPool is the /16 the leader allocates per-host /24s from when it
+	// handles Internal.EnsureSubnet.
+	ipamPool string
 
 	// tlsDyn holds the live server cert for the cross-host TCP listener.
 	// Nil when no TCP listener was opened. RebindTLS swaps the cert in
@@ -144,6 +149,19 @@ type Options struct {
 	// containers). cmd/jacod wires dockerx.New; tests usually pass nil or
 	// an in-memory fake.
 	Docker dockerx.Docker
+
+	// IPAMPool is the /16 the leader allocates per-host /24s from when it
+	// handles Internal.EnsureSubnet. Empty → ipam.DefaultPoolCIDR.
+	IPAMPool string
+}
+
+// ipamPoolOrDefault returns the configured IPAM pool, or the JACO default
+// when the operator left it empty.
+func ipamPoolOrDefault(pool string) string {
+	if pool == "" {
+		return ipam.DefaultPoolCIDR
+	}
+	return pool
 }
 
 // New builds a Server. Doesn't start anything yet — call Serve.
@@ -261,6 +279,7 @@ func New(opts Options) (*Server, error) {
 		logger:       logger,
 		docker:       opts.Docker,
 		tlsDyn:       dynTLS,
+		ipamPool:     ipamPoolOrDefault(opts.IPAMPool),
 	}
 	cluster := &clusterServer{
 		gate:          gate,

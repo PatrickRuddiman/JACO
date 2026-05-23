@@ -48,6 +48,7 @@ var UnauthMethods = map[string]bool{
 	"/jaco.v1.Internal/Submit":       true,
 	"/jaco.v1.Internal/SignNodeCert": true,
 	"/jaco.v1.Internal/Logs":         true,
+	"/jaco.v1.Internal/EnsureSubnet": true,
 }
 
 // UnaryInterceptor returns a grpc.UnaryServerInterceptor that runs

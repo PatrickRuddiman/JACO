@@ -257,6 +257,7 @@ service Internal {
   rpc Submit(SubmitRequest) returns (SubmitResponse);
   rpc SignNodeCert(SignNodeCertRequest) returns (SignNodeCertResponse);
   rpc Logs(LogsRequest) returns (stream LogLine);
+  rpc EnsureSubnet(EnsureSubnetRequest) returns (EnsureSubnetResponse);
 }
 
 message SubmitRequest {
@@ -264,6 +265,17 @@ message SubmitRequest {
 }
 message SubmitResponse {
   uint64 raft_index = 1;
+}
+
+// EnsureSubnet asks the leader to idempotently allocate the per-host /24 for
+// a (deployment, network, host) tuple and return its CIDR.
+message EnsureSubnetRequest {
+  string deployment = 1;
+  string network = 2;
+  string host = 3;
+}
+message EnsureSubnetResponse {
+  string cidr = 1;
 }
 
 message SignNodeCertRequest {
