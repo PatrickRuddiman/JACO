@@ -7,6 +7,14 @@ import (
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
+// NewClusterServer returns a pb.ClusterServer backed by the controlplane
+// implementation. The daemon uses this for the membership / token RPCs
+// (NodeList, NodeRemove, IssueJoinToken, Backup, Restore) that aren't
+// reimplemented in the daemon-side clusterServer.
+func NewClusterServer(st *state.State, r *raftnode.Node) pb.ClusterServer {
+	return &clusterServer{state: st, raft: r}
+}
+
 // NewTokensServer returns a pb.TokensServer backed by the given state + raft.
 // Used by the daemon (internal/daemon/grpc.Server) to register the same
 // operator-token CRUD surface controlplane/grpcsrv ships, without having to
