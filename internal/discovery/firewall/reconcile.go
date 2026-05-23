@@ -29,11 +29,18 @@ type IsolationStatusFn func(ctx context.Context, status string, reason string) e
 
 // Reconciler glues SelfTest + Render + Apply into one drift-detection loop.
 type Reconciler struct {
-	Lister         Lister
-	Applier        Applier
-	Audit          AuditFn
-	UpdateStatus   IsolationStatusFn
-	Render         func() RuleInput
+	Lister       Lister
+	Applier      Applier
+	Audit        AuditFn
+	UpdateStatus IsolationStatusFn
+	Render       func() RuleInput
+
+	// Pool is the IPAM /16; EnsureSNAT re-asserts the intra-pool SNAT
+	// exemption in Docker's nat POSTROUTING each tick (issue #28). Both are
+	// optional — when either is unset the SNAT step is skipped (tests, or
+	// hosts without iptables).
+	Pool       string
+	EnsureSNAT func(ctx context.Context, pool string) error
 
 	// degraded tracks whether the last Tick saw an Apply failure.
 	degraded bool
@@ -44,6 +51,16 @@ type Reconciler struct {
 // Apply failed (the daemon should already have been marked
 // isolation_unavailable via UpdateStatus).
 func (r *Reconciler) Tick(ctx context.Context) error {
+	// Re-assert the intra-pool SNAT exemption first — it lives in Docker's
+	// nat POSTROUTING (outside table inet jaco / its SelfTest), so it must be
+	// checked every tick. Best-effort: a failure here is independent of the
+	// inet jaco isolation status.
+	if r.EnsureSNAT != nil && r.Pool != "" {
+		if err := r.EnsureSNAT(ctx, r.Pool); err != nil {
+			_ = r.Audit(ctx, "SNAT_EXEMPT_FAILED", map[string]string{"error": err.Error()})
+		}
+	}
+
 	expected := r.Render()
 	listBytes, err := r.Lister.List(ctx)
 	if err != nil {

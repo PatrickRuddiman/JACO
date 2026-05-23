@@ -147,6 +147,33 @@ func TestReconcile_HappyPathNoDriftSilent(t *testing.T) {
 	}
 }
 
+func TestReconcile_AssertsSNATExemptEachTick(t *testing.T) {
+	var gotPool string
+	calls := 0
+	r := &firewall.Reconciler{
+		Lister:       &fakeLister{body: []byte(validJSON)},
+		Applier:      &recordingApplier{},
+		Audit:        (&recordingAudit{}).fn(),
+		UpdateStatus: (&recordingStatus{}).fn(),
+		Render:       goodInput,
+		Pool:         "10.244.0.0/16",
+		EnsureSNAT: func(_ context.Context, pool string) error {
+			calls++
+			gotPool = pool
+			return nil
+		},
+	}
+	if err := r.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("EnsureSNAT called %d times, want 1", calls)
+	}
+	if gotPool != "10.244.0.0/16" {
+		t.Errorf("EnsureSNAT pool = %q, want 10.244.0.0/16", gotPool)
+	}
+}
+
 func TestReconcile_DriftDetectedReappliesAndAudits(t *testing.T) {
 	// The AC: when nft list shows drift, the reconciler re-renders + applies
 	// and writes an ISOLATION_RULESET_RECONCILED audit event.
