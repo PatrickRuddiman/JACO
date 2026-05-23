@@ -43,6 +43,10 @@ Parent slices: [control-plane](../slices/control-plane.md), [cli](../slices/cli.
 | 36 | install-and-systemd                                                               | [36-install-and-systemd.md](36-install-and-systemd.md)                | 35                | packaging     |
 | 37 | self-upgrade                                                                      | [37-self-upgrade.md](37-self-upgrade.md)                              | 35, 36            | packaging     |
 | 38 | daemon-entry                                                                      | [38-daemon-entry.md](38-daemon-entry.md)                              | 05-07, 17, 18, 21, 22, 23, 26, 28-30, 32-34, 35, 36 | daemon |
+| 39 | rollout-reconcile-integration                                                     | [39-rollout-reconcile-integration.md](39-rollout-reconcile-integration.md) | 22, 38            | scheduler     |
+| 40 | certblob-raft-storage                                                             | [40-certblob-raft-storage.md](40-certblob-raft-storage.md)            | 33, 34, 38        | ingress       |
+| 41 | cross-host-tls                                                                    | [41-cross-host-tls.md](41-cross-host-tls.md)                          | 38                | daemon        |
+| 42 | real-engine-integration-tests                                                     | [42-real-engine-integration-tests.md](42-real-engine-integration-tests.md) | 38                | packaging     |
 
 ## Dependency graph
 

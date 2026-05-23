@@ -32,6 +32,15 @@ Generated from `tasks/` task files' `Depends on:` headers. Edges point from prer
 
 # Daemon entry — converges every slice's deferred runtime-wiring work.
 {05,06,07,17,18,21,22,23,26,28,29,30,32,33,34,35,36} ──> 38
+
+# Post-38 follow-ups (each unblocked by 38).
+22 ─┐
+38 ─┴─> 39 (rollout-reconcile-integration)
+33 ─┐
+34 ─┼─> 40 (certblob-raft-storage)
+38 ─┘
+38 ──> 41 (cross-host-tls)
+38 ──> 42 (real-engine-integration-tests)
 ```
 
 ## Critical chain (longest path)
@@ -81,3 +90,7 @@ Generated from `tasks/` task files' `Depends on:` headers. Edges point from prer
 | 36 | 35 |
 | 37 | 35, 36 |
 | 38 | 05, 06, 07, 17, 18, 21, 22, 23, 26, 28, 29, 30, 32, 33, 34, 35, 36 |
+| 39 | 22, 38 |
+| 40 | 33, 34, 38 |
+| 41 | 38 |
+| 42 | 38 |
