@@ -10,6 +10,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -32,11 +33,25 @@ func main() {
 		return
 	}
 
-	cfg, err := config.Load(*configPath)
-	if err != nil {
-		log.Fatalf("jacod: load config %s: %v", *configPath, err)
+	ctx, cancel := signalContext()
+	defer cancel()
+
+	if err := run(ctx, *configPath, os.Stderr); err != nil {
+		log.Fatalf("jacod: %v", err)
 	}
-	log.Printf("jacod: starting (version=%s data_dir=%s unix_socket=%s)", version, cfg.DataDir, cfg.UnixSocket)
+}
+
+// run is the testable body of jacod. Returns when ctx is cancelled (via
+// SIGTERM/SIGINT in production) or the gRPC server dies.
+func run(ctx context.Context, configPath string, logOut io.Writer) error {
+	logger := log.New(logOut, "jacod: ", log.LstdFlags|log.Lmsgprefix)
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("load config %s: %w", configPath, err)
+	}
+	logger.Printf("starting (version=%s data_dir=%s unix_socket=%s)",
+		version, cfg.DataDir, cfg.UnixSocket)
 
 	server, err := dgrpc.New(dgrpc.Options{
 		UnixSocketPath: cfg.UnixSocket,
@@ -44,12 +59,10 @@ func main() {
 		ClusterAddr:    cfg.ClusterAddr,
 	})
 	if err != nil {
-		log.Fatalf("jacod: gRPC server: %v", err)
+		return fmt.Errorf("gRPC server: %w", err)
 	}
-	log.Printf("jacod: listening on %s (uninitialized — run `jaco cluster init` or `jaco node join`)", server.SocketPath())
-
-	rootCtx, cancel := signalContext()
-	defer cancel()
+	logger.Printf("listening on %s (uninitialized — run `jaco cluster init` or `jaco node join`)",
+		server.SocketPath())
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.Serve() }()
@@ -57,16 +70,17 @@ func main() {
 	select {
 	case err := <-errCh:
 		if err != nil {
-			log.Fatalf("jacod: gRPC server died: %v", err)
+			return fmt.Errorf("gRPC server died: %w", err)
 		}
-	case <-rootCtx.Done():
-		log.Printf("jacod: signal received, shutting down")
+	case <-ctx.Done():
+		logger.Printf("signal received, shutting down")
 	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	server.Stop(shutdownCtx)
-	log.Printf("jacod: shutdown complete")
+	logger.Printf("shutdown complete")
+	return nil
 }
 
 // signalContext returns a context that cancels on SIGTERM / SIGINT.

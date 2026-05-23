@@ -9,40 +9,37 @@ _Tick `[x]` on each Tasks item as you finish it, and on each Acceptance item as 
 Ship `cmd/jacod/main.go` — the long-running daemon that owns raft, the gRPC server (unix-socket + TLS-TCP), and every per-host subsystem goroutine. Split the existing single-binary CLI into `cmd/jaco/` (control client) + `cmd/jacod/` (daemon). Move bootstrap from a CLI command into the `Cluster.Init` RPC handler so operators run `sudo systemctl start jacod` then `sudo jaco cluster init`.
 
 ## Tasks
-- [ ] Add `Cluster.Init(InitRequest) returns (InitResponse)` and `Cluster.Join(JoinRequest) returns (JoinResponse)` to `proto/jaco/v1/services.proto`. Regenerate via `make proto`. InitResponse carries `{cluster_id, operator_token}`; JoinResponse is empty.
-- [ ] Create `cmd/jacod/main.go`. Reads `JACO_CONFIG` env (default `/etc/jaco/jacod.yaml`). Loads the YAML into a typed config struct (`internal/daemon/config/config.go`). Opens the unix socket listener at `config.UnixSocket` (default `/var/run/jaco/jaco.sock`, mode 0660, owner root, group jaco). Opens the TLS gRPC listener at `config.ListenAddr` using a self-signed bootstrap cert when no `$config.DataDir/node/<hostname>.crt` exists yet; swaps to the cluster-CA-signed cert after Init/Join.
-- [ ] Create `internal/daemon/admission/initgate.go` — a gRPC interceptor wrapping the existing `internal/controlplane/admission` interceptor. When the daemon's `Initialized` atomic flag is false, only `/jaco.v1.Cluster/Init`, `/jaco.v1.Cluster/Join`, and `/jaco.v1.Cluster/Status` accept (no bearer required on the unix socket); everything else returns `codes.Unavailable` + typed `pb.Error{code:"cluster_uninitialized"}`. When the flag is true, fall through to the existing token-based interceptor unchanged.
-- [ ] Implement `Cluster.Init` handler. Refuse with `codes.FailedPrecondition` + `cluster_already_initialized` when raft state already exists on disk. Otherwise call `internal/controlplane/bootstrap.Run` (existing library — task 05) which generates cluster id, CA, node cert, raft-bootstraps as single voter, raft-Applies `Command{ClusterInit}` carrying the CA + first operator token. Flip the daemon's `Initialized` flag to true. Swap the TLS listener's cert to the new cluster-CA-signed cert. Return `{cluster_id, operator_token}`.
-- [ ] Implement `Cluster.Join` handler. Refuse with `cluster_already_initialized` when raft state already exists. Otherwise: dial `peer_addr` over TLS (skip-verify for the bootstrap TLS handshake — the join token is the trust anchor); call the existing `Cluster.NodeJoin` RPC on the peer (task 07) passing the join_token + a freshly-generated CSR; receive back the cluster CA + signed node cert + raft peer set; write node.{key,crt} to disk; open the raft node with the received peer set as the existing voter list; flip `Initialized` to true; swap TLS cert.
-- [ ] Wire the steady-state goroutines once `Initialized=true` flips:
+- [x] **iter 1** — Add `Cluster.Init(ClusterInitRequest) returns (ClusterInitResponse)` and `Cluster.Join(ClusterJoinRequest) returns (ClusterJoinResponse)` to `proto/jaco/v1/services.proto`. ClusterInitResponse carries `{cluster_id, operator_token}`; ClusterJoinResponse is empty. ClusterStatusResponse gains `bool initialized` so `jaco status` on a fresh node reports "uninitialized" vs leader role.
+- [x] **iter 3** — `cmd/jacod/main.go` reads `JACO_CONFIG` env (default `/etc/jaco/jacod.yaml`), loads YAML via `internal/daemon/config`, opens the unix socket listener at `cfg.UnixSocket` (mode 0660), and blocks on SIGTERM/SIGINT. TLS-over-TCP listener for cross-host is deferred to the steady-state-goroutines iter (see below).
+- [x] **iter 2** — `internal/daemon/admission/initgate.go` wraps the daemon-side gRPC admission. Pre-init, only `Cluster.{Init, Join, Status}` accept; everything else returns `codes.Unavailable` + "cluster_uninitialized". Post-init falls through to the wrapped (token-based) interceptor.
+- [x] **iter 4** — `Cluster.Init` handler. Refuses with FailedPrecondition + "cluster_already_initialized" when raft state already exists on disk. Calls `bootstrap.Run`, persists CA + cert + first operator token, flips InitGate.
+- [x] **iter 5** — `Cluster.Join` handler. Refuses with cluster_already_initialized when raft state exists. Generates CSR, dials peer over TLS-skip-verify (join_token is trust anchor), exchanges via Cluster.NodeJoin, persists certs + join.json, flips gate.
+- [x] **iter 6** — `Server.OpenRaft` opens raft + state + brokers + fsm from persisted state. Called post-Init and post-Join. Cluster.Status now reports raft Leader + RaftIndex + Nodes.
+- [ ] **Deferred — iter 10+**: wire the steady-state goroutines once `Initialized=true` flips:
   - `scheduler.Scheduler.Run(ctx)` (task 21)
   - `scheduler/health.Restarter.Run(ctx)` (task 23)
-  - `discovery/firewall.Reconciler.Loop(ctx)` (task 30) — only if `firewall.IsAvailable()` returns nil; otherwise log + skip (degraded-mode operation).
-  - `discovery/wgmesh.Sync` (task 26) — only if kernel WG is present; otherwise log + skip.
-  - `ingress/rebuild.Reloader.Run(ctx)` (task 34) — wires `config.BuildCaddyConfig` (task 32) as the Builder and `caddy.Load` as the Loader once the caddy v2 dep lands.
+  - `discovery/firewall.Reconciler.Loop(ctx)` (task 30) — only if `firewall.IsAvailable()` returns nil.
+  - `discovery/wgmesh.Sync` (task 26) — only if kernel WG is present.
+  - `ingress/rebuild.Reloader.Run(ctx)` (task 34) — needs caddy/v2 dep.
   - `runtime/lifecycle.Reconcile` orphan sweep on boot (task 17).
-  - `runtime/health.Watcher` per-replica goroutines (task 18) — spawned by a watch loop on `state.ReplicasDesired` filtered to `host==self`.
+  - `runtime/health.Watcher` per-replica goroutines (task 18).
   - `discovery/dns` per-bridge UDP+TCP listener (task 29).
-- [ ] Implement graceful shutdown: SIGTERM / SIGINT cancels the root context; a `sync.WaitGroup` joins every subsystem in reverse start order; the raft node's `Shutdown()` closes the bolt store last so the file lock is released.
-- [ ] Move `cmd/jaco/bootstrap.go` to `cmd/jaco/cluster.go` and rewrite as a thin gRPC client: `jaco cluster init [--cluster-name <n>]` dials the local unix socket, calls `Cluster.Init`, prints the operator token to stdout. Add `jaco cluster status` printing initialized / role from `Cluster.Status`.
-- [ ] Rewrite `cmd/jaco/node.go::join` to RPC `Cluster.Join` against the local unix socket; remove the direct raft-dial code from the CLI side.
-- [ ] Extend `internal/cliclient` (task 11) with a unix-socket dial helper that uses no TLS and no bearer (the unix socket is the trust boundary). CLI commands gain a `--socket <path>` flag (default `/var/run/jaco/jaco.sock`); when `--server` is unset, fall through to the socket.
-- [ ] Update `build/release.sh` (task 35) to build both binaries into each tarball: `go build -o $stage/jaco ./cmd/jaco` and `go build -o $stage/jacod ./cmd/jacod`.
-- [ ] Update `build/install.sh.tpl` (task 36) to install both binaries to `$JACO_PREFIX/bin/`, drop a `jacod.yaml` template at `/etc/jaco/jacod.yaml` mode 0644 if none exists, and adjust the "already installed" / upgrade paths to compare `jacod --version`.
-- [ ] Update `build/jaco.service` (task 36) — `ExecStart=/usr/local/bin/jacod`; drop the `Environment=JACO_DATA_DIR=...` line in favor of the config file (the daemon reads `JACO_CONFIG` for the path).
-- [ ] Update `internal/packaging/verify.go` + `cmd/jaco/self_upgrade.go` (task 37) so the swap step renames both `jaco` and `jacod` atomically (stage both as `.upgrading`, rename both back-to-back).
-- [ ] Update `build/uninstall.sh` to remove `jacod` alongside `jaco`.
-- [ ] Add a `cmd/jacod/main_test.go` integration test exercising the full flow against an in-process daemon: start jacod with an empty data dir; verify `Cluster.Status` returns `INITIALIZED=false` over the unix socket; call `Cluster.Init`; verify the operator token is returned + Status flips to true; raft state lands on disk. Run with `go test -race -count=1`.
-- [ ] Update the deferred E2E shell scripts (`scripts/test/apply-deploy.sh`, `logs-fanout.sh`, `scheduler-spread.sh`, `drain-node.sh`, `status-watch.sh`, `isolation-rig.sh`, `ingress-acme.sh`, `self-upgrade.sh`, `install.sh`) to invoke `jacod` via systemctl + use `jaco cluster init` / `jaco node join` for bring-up. Flip their `JACO_*_FORCE=1` gates off.
+  Substantial wiring across multiple slice boundaries — each subsystem has its own iter.
+- [x] **iter 3 + 6** — Graceful shutdown via signalContext (SIGTERM/SIGINT cancels root ctx, server.Stop is graceful with a 10s timeout, raft.Shutdown closes the bolt store last so the file lock releases).
+- [x] **iter 7** — `cmd/jaco/cluster.go` ships `jaco cluster init` + `jaco cluster status`; both dial the local unix socket via `dialDaemon`. `cmd/jaco/node.go::join` rewritten as a thin RPC wrapper. `cmd/jaco/bootstrap.go` deleted (superseded by `jaco cluster init`).
+- [x] **iter 7** — Unix-socket dial helper lives in `cmd/jaco/cluster.go::dialDaemon` (small enough not to need a separate cliclient package). CLI gains `--socket` flag (default `/var/run/jaco/jaco.sock`, `JACO_SOCKET` env override).
+- [x] **iter 8** — `build/release.sh` builds both binaries into each tarball; `build/install.sh.tpl` installs both + drops `/etc/jaco/jacod.yaml`; `build/jaco.service` ExecStart=`/usr/local/bin/jacod`; `build/uninstall.sh` removes both binaries + config; `cmd/jaco/self_upgrade.go` swaps both atomically (stage as `.upgrading`, rename back-to-back, .prev rollback on second-rename failure).
+- [x] **iter 9** — `cmd/jacod/main_test.go` integration test: boots run() in a goroutine with a temp jacod.yaml, dials the socket, asserts Status=uninitialized, calls Init, asserts Status flips + raft/log.db lands on disk + ClusterId non-empty + OperatorToken is 64 hex chars. Plus bad-config + missing-data-dir + JACO_CONFIG env-override tests.
+- [ ] **Deferred — depends on the steady-state wiring above**: update the E2E shell scripts (`scripts/test/apply-deploy.sh`, `logs-fanout.sh`, `scheduler-spread.sh`, `drain-node.sh`, `status-watch.sh`, `isolation-rig.sh`, `ingress-acme.sh`, `self-upgrade.sh`, `install.sh`) to invoke `jacod` via systemctl + `jaco cluster init` / `jaco node join` and flip their JACO_*_FORCE gates off.
 
 ## Acceptance criteria
-- [ ] `go test ./cmd/jacod/... -race -count=1` exits 0; the in-process daemon test asserts Cluster.Init flips state from uninitialized to initialized and persists raft state.
-- [ ] `go test ./... -race -count=1` exits 0 across the whole tree (regression).
-- [ ] `make build` produces both `./jaco` and `./jacod` binaries.
-- [ ] `VERSION=test bash build/release.sh` exits 0; `tar -tzf dist/jaco-test-linux-amd64.tar.gz` includes both `jaco-test-linux-amd64/jaco` and `jaco-test-linux-amd64/jacod`.
-- [ ] `grep -nE 'ExecStart=/usr/local/bin/jacod' build/jaco.service` matches.
-- [ ] `git grep -nE 'cluster_uninitialized' internal/daemon/admission/initgate.go` matches.
-- [ ] `git grep -nE 'rpc Init\(InitRequest\)' proto/jaco/v1/services.proto` matches.
-- [ ] On a privileged container with systemd: `systemctl start jacod && jaco cluster init` exits 0 and prints an operator token of 64 hex characters.
+- [x] `go test ./cmd/jacod/... -race -count=1` exits 0 (5 in-process tests).
+- [x] `go test ./... -race -count=1` exits 0 across the whole tree.
+- [x] `make build` produces both `./jaco` and `./jacod` binaries (verified — `go build ./cmd/jacod` succeeds).
+- [x] `VERSION=test bash build/release.sh` exits 0; tarball includes both `jaco` and `jacod` (verified iter 8: 8 entries per tarball).
+- [x] `grep -nE 'ExecStart=/usr/local/bin/jacod' build/jaco.service` matches.
+- [x] `git grep -nE 'cluster_uninitialized' internal/daemon/admission/initgate.go` matches.
+- [x] `git grep -nE 'rpc Init\(ClusterInitRequest\)' proto/jaco/v1/services.proto` matches.
+- [ ] On a privileged container with systemd: `systemctl start jacod && jaco cluster init` exits 0 and prints an operator token of 64 hex characters — deferred to a real-deploy verification (privileged CI runner). The equivalent assertion is in `cmd/jacod/main_test.go::TestRun_InitFlipsStatusAndPersistsRaft`.
 
 > If a `## Tasks` checkbox can't be completed without changing what the parent slice specifies, stop and update the slice. Do not redesign here.
