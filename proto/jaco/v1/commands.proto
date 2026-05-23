@@ -19,6 +19,7 @@ message Command {
     NodeJoin node_join = 11;
     NodeRemove node_remove = 12;
     NodeStatusUpdate node_status_update = 13;
+    NodeUpdateSelf node_update_self = 14;
 
     DeploymentApply deployment_apply = 20;
     DeploymentRollback deployment_rollback = 21;
@@ -93,6 +94,15 @@ message NodeStatusUpdate {
   string hostname = 1;
   NodeStatus status = 2;
   map<string, string> details = 3;
+}
+
+// NodeUpdateSelf lets a node re-publish its own discovery metadata
+// (wireguard pubkey, grpc address) post-bootstrap or post-restart so
+// peers see the current values without waiting for a fresh Join.
+message NodeUpdateSelf {
+  string hostname = 1;
+  bytes wireguard_pubkey = 2;
+  string grpc_address = 3;
 }
 
 // ----- Deployment mutations -----

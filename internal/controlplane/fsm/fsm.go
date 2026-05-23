@@ -107,6 +107,19 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 			"hostname": p.NodeRemove.GetHostname(),
 		}
 
+	case *pb.Command_NodeUpdateSelf:
+		us := p.NodeUpdateSelf
+		if node, ok := f.State.Nodes.Get(us.GetHostname()); ok {
+			if len(us.GetWireguardPubkey()) > 0 {
+				node.WireguardPubkey = us.GetWireguardPubkey()
+			}
+			if addr := us.GetGrpcAddress(); addr != "" {
+				node.GrpcAddress = addr
+			}
+			f.State.Nodes.Apply(node, idx)
+		}
+		return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
+
 	case *pb.Command_NodeStatusUpdate:
 		u := p.NodeStatusUpdate
 		if node, ok := f.State.Nodes.Get(u.GetHostname()); ok {

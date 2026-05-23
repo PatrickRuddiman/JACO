@@ -369,10 +369,22 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 	// isn't reachable via wgctrl (typical on unprivileged dev hosts and
 	// containers without CAP_NET_ADMIN).
 	if err := wgmesh.IsKernelAvailable(); err == nil {
-		privKey, _, err := wgmesh.LoadOrGenerateKeypair(s.cluster.dataDir)
+		privKey, pubKey, err := wgmesh.LoadOrGenerateKeypair(s.cluster.dataDir)
 		if err != nil {
 			s.logger.Printf("wgmesh keypair: %v (mesh sync skipped)", err)
 		} else {
+			// Bring up the wg interface if it doesn't exist yet. Skips
+			// gracefully without CAP_NET_ADMIN — Syncer's tick logs the
+			// resulting ConfigureDevice failure once.
+			if err := wgmesh.EnsureInterface(wgmesh.DefaultInterface); err != nil {
+				s.logger.Printf("wgmesh.EnsureInterface: %v (mesh sync best-effort)", err)
+			}
+			// Publish our wireguard pubkey + gRPC address through raft so
+			// peers see them after a restart / initial Init. Uses the same
+			// SubmitFn path the runtime reconciler uses — direct apply on
+			// the leader, Internal.Submit forward on followers.
+			s.publishSelf(ctx, node, st, hostname, pubKey)
+
 			syncer := &wgmesh.Syncer{
 				State:        st,
 				SelfHostname: hostname,
@@ -648,6 +660,50 @@ func (s *Server) SocketPath() string { return s.socketPath }
 // TCPAddr returns the resolved cross-host listener address (after net.Listen
 // substituted any :0 port). Empty when ListenAddr was unset.
 func (s *Server) TCPAddr() string { return s.tcpAddr }
+
+// publishSelf raft-Applies a NodeUpdateSelf so peers see our current
+// wireguard pubkey + grpc address. Direct apply on the leader; follower
+// forwarding via Internal.Submit at the leader's gRPC address.
+func (s *Server) publishSelf(ctx context.Context, node *raftnode.Node, st *state.State, hostname string, pubKey wgtypesKey) {
+	cmd := &pb.Command{
+		Identity: "node-update-self",
+		Payload: &pb.Command_NodeUpdateSelf{NodeUpdateSelf: &pb.NodeUpdateSelf{
+			Hostname:        hostname,
+			WireguardPubkey: pubKey[:],
+			GrpcAddress:     s.tcpAddr,
+		}},
+	}
+	data, err := proto.Marshal(cmd)
+	if err != nil {
+		s.logger.Printf("publishSelf marshal: %v", err)
+		return
+	}
+	if _, err := node.Apply(data, 0); err == nil {
+		return
+	} else if !errors.Is(err, hraft.ErrNotLeader) {
+		s.logger.Printf("publishSelf apply: %v", err)
+		return
+	}
+	leaderAddr := leaderGRPCAddr(st, node)
+	if leaderAddr == "" {
+		s.logger.Printf("publishSelf: no leader gRPC address known")
+		return
+	}
+	conn, err := grpc.NewClient(leaderAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		s.logger.Printf("publishSelf dial leader: %v", err)
+		return
+	}
+	defer conn.Close()
+	if _, err := pb.NewInternalClient(conn).Submit(ctx, &pb.SubmitRequest{CommandBytes: data}); err != nil {
+		s.logger.Printf("publishSelf forward: %v", err)
+	}
+}
+
+// wgtypesKey is the fixed-size byte array wgctrl's wgtypes.Key uses.
+// Pulled into a local alias so server.go doesn't need to import wgtypes
+// just for the publishSelf signature.
+type wgtypesKey = [32]byte
 
 // leaderGRPCAddr returns the leader's cross-host gRPC address by matching
 // raft.Leader() (a raft transport addr) against state.Nodes[].Address and

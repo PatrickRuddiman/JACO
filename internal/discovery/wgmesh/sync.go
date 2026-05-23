@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os/exec"
 	"time"
 
 	"golang.zx2c4.com/wireguard/wgctrl"
@@ -22,6 +23,32 @@ const DefaultSyncInterval = 30 * time.Second
 
 // DefaultInterface is the wg device JACO owns by default.
 const DefaultInterface = "jaco0"
+
+// EnsureInterface brings up name as a wireguard device if it doesn't
+// already exist. Idempotent — returns nil when the device is present
+// already. On hosts without CAP_NET_ADMIN the `ip link add` shells out
+// and fails; the daemon logs the error and proceeds without mesh
+// (Syncer.tick will then log its own ConfigureDevice failure once).
+func EnsureInterface(name string) error {
+	c, err := wgctrl.New()
+	if err != nil {
+		return fmt.Errorf("EnsureInterface: open wgctrl: %w", err)
+	}
+	defer c.Close()
+	if _, err := c.Device(name); err == nil {
+		return nil // already exists
+	}
+	cmd := exec.Command("ip", "link", "add", name, "type", "wireguard")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("EnsureInterface: ip link add %s: %w: %s", name, err, string(out))
+	}
+	// Bring the link up.
+	up := exec.Command("ip", "link", "set", name, "up")
+	if out, err := up.CombinedOutput(); err != nil {
+		return fmt.Errorf("EnsureInterface: ip link set %s up: %w: %s", name, err, string(out))
+	}
+	return nil
+}
 
 // IsKernelAvailable returns nil when the kernel WireGuard module is
 // reachable via wgctrl. Returns the underlying wgctrl.New error otherwise
