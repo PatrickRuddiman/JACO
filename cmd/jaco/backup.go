@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -51,7 +52,7 @@ func backupCmd() *cobra.Command {
 
 		stream, err := pb.NewClusterClient(conn).Backup(ctx, &pb.BackupRequest{})
 		if err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 
 		f, err := os.Create(outputPath)
@@ -67,7 +68,7 @@ func backupCmd() *cobra.Command {
 				break
 			}
 			if err != nil {
-				return fmt.Errorf("stream recv: %w", err)
+				return fmt.Errorf("stream recv: %w", cliclient.FormatError(err))
 			}
 			n, err := f.Write(chunk.GetData())
 			if err != nil {

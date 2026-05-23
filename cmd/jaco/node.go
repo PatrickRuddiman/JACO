@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -62,7 +63,7 @@ func nodeIssueJoinTokenCmd() *cobra.Command {
 		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
 		resp, err := pb.NewClusterClient(conn).IssueJoinToken(ctx, &pb.IssueJoinTokenRequest{})
 		if err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 		fmt.Printf("Join token: %s\n", resp.GetToken())
 		fmt.Printf("Expires in: 24h\n")
@@ -121,7 +122,7 @@ func runNodeJoin(ctx context.Context, client pb.ClusterClient, peer, token strin
 		PeerAddr:  peer,
 		JoinToken: token,
 	}); err != nil {
-		return err
+		return cliclient.FormatError(err)
 	}
 	fmt.Fprintln(out, "Joined cluster.")
 	return nil
@@ -164,7 +165,7 @@ func nodeRemoveCmd() *cobra.Command {
 		if _, err := pb.NewClusterClient(conn).NodeRemove(ctx, &pb.NodeRemoveRequest{
 			Hostname: args[0], Force: force,
 		}); err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 		fmt.Printf("Removed node %s\n", args[0])
 		return nil
@@ -200,7 +201,7 @@ func nodeListCmd() *cobra.Command {
 		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
 		resp, err := pb.NewClusterClient(conn).NodeList(ctx, &pb.NodeListRequest{})
 		if err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 		for _, n := range resp.GetNodes() {
 			fmt.Printf("%s\t%s\t%s\n", n.GetHostname(), n.GetAddress(), n.GetStatus())

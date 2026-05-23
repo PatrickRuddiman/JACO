@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -52,7 +53,7 @@ func deleteCmd() *cobra.Command {
 
 func runDelete(ctx context.Context, client pb.DeployClient, deployment string, out io.Writer) error {
 	if _, err := client.Delete(ctx, &pb.DeleteRequest{Deployment: deployment}); err != nil {
-		return err
+		return cliclient.FormatError(err)
 	}
 	fmt.Fprintf(out, "Deleted deployment: %s\n", deployment)
 	return nil

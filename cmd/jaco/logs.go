@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -80,7 +81,7 @@ func runLogs(ctx context.Context, client pb.DeployClient, deployment, service st
 		SinceSeconds: sinceSeconds,
 	})
 	if err != nil {
-		return err
+		return cliclient.FormatError(err)
 	}
 	for {
 		ll, err := stream.Recv()
@@ -88,7 +89,7 @@ func runLogs(ctx context.Context, client pb.DeployClient, deployment, service st
 			return nil
 		}
 		if err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 		fmt.Fprintf(out, "[%s@%s] %s\n", ll.GetReplicaId(), ll.GetHost(), ll.GetLine())
 	}

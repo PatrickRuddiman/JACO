@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -74,7 +75,7 @@ func runApply(ctx context.Context, client pb.DeployClient, jacoBytes, composeByt
 		DryRun:      dryRun,
 	})
 	if err != nil {
-		return err
+		return cliclient.FormatError(err)
 	}
 	if dryRun {
 		renderDiff(out, resp.GetDiff())

@@ -68,6 +68,40 @@ func ExtractError(err error) *pb.Error {
 	}
 }
 
+// UnpackStatus returns the pb.Error code and message attached to a gRPC status
+// when a pb.Error detail is present. Returns ok=false when err is nil, not a
+// gRPC status, or carries no pb.Error detail. Unlike ExtractError it does not
+// synthesize a fallback from the raw status fields.
+func UnpackStatus(err error) (code, message string, ok bool) {
+	if err == nil {
+		return "", "", false
+	}
+	st, isGRPC := status.FromError(err)
+	if !isGRPC {
+		return "", "", false
+	}
+	for _, d := range st.Details() {
+		if e, cast := d.(*pb.Error); cast {
+			return e.GetCode(), e.GetMessage(), true
+		}
+	}
+	return "", "", false
+}
+
+// FormatError returns a human-readable error string from a gRPC error. When
+// the error carries a pb.Error detail the format is "Error: <code>: <message>".
+// When no pb.Error detail is present it falls back to err.Error(). Returns nil
+// when err is nil.
+func FormatError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if code, message, ok := UnpackStatus(err); ok {
+		return fmt.Errorf("Error: %s: %s", code, message)
+	}
+	return err
+}
+
 // errInvalidWriter is reserved for future helper that detects when the
 // renderer is being asked to write to a non-Writer (currently unused).
 var errInvalidWriter = errors.New("renderer requires a non-nil writer")
