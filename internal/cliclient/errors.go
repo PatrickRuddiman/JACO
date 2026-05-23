@@ -45,9 +45,14 @@ func RenderConnectionError(w io.Writer, addr, reason string) {
 	fmt.Fprintf(w, "Connection error: %s: %s\n", addr, reason)
 }
 
-// ExtractError attempts to decode a typed pb.Error from a gRPC status error's
-// details. Returns nil when err is not a status or carries no Error proto;
-// callers fall back to err.Error() in that case.
+// ExtractError decodes a typed pb.Error from a gRPC status error's details.
+// When the error is a gRPC status but carries no pb.Error detail, a
+// synthetic pb.Error is constructed from the status code and message so
+// callers always have something renderable for any non-nil status error.
+//
+// Returns nil only when err is nil or when err is not a gRPC status error
+// (for example, a plain error returned from local code). For any non-nil
+// gRPC status error this always returns a non-nil *pb.Error.
 func ExtractError(err error) *pb.Error {
 	if err == nil {
 		return nil
