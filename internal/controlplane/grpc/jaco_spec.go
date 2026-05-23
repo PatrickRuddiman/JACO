@@ -46,21 +46,15 @@ type JacoRouteDecl struct {
 // pre-1.0 and name is now the single source of truth.
 func ParseJacoYAML(body []byte) (*JacoYAML, error) {
 	// Pre-check: reject compose_service before struct decode so the error
-	// message is clear regardless of struct tag changes.
-	var raw map[string]any
+	// message is clear regardless of struct tag changes. Walk the entire
+	// decoded tree, not just services[*], so the field is caught no matter
+	// where a user tucks it (top-level, nested subtree, YAML merge target).
+	var raw any
 	if err := yaml.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("parse jaco yaml: %w", err)
 	}
-	if svcs, ok := raw["services"]; ok {
-		if list, ok := svcs.([]any); ok {
-			for _, item := range list {
-				if m, ok := item.(map[string]any); ok {
-					if _, has := m["compose_service"]; has {
-						return nil, fmt.Errorf("compose_service is no longer supported; rename \"name\" to match the compose service key")
-					}
-				}
-			}
-		}
+	if containsKey(raw, "compose_service") {
+		return nil, fmt.Errorf("compose_service is no longer supported; rename \"name\" to match the compose service key")
 	}
 
 	var j JacoYAML
@@ -159,6 +153,41 @@ func toRoutes(deployment string, decls []JacoRouteDecl) []*pb.Route {
 		})
 	}
 	return out
+}
+
+// containsKey recursively walks a decoded YAML tree and reports whether any
+// map node in the tree (at any depth) has the given key. Used to catch
+// deprecated keys regardless of where the user placed them.
+func containsKey(node any, key string) bool {
+	switch v := node.(type) {
+	case map[string]any:
+		if _, ok := v[key]; ok {
+			return true
+		}
+		for _, child := range v {
+			if containsKey(child, key) {
+				return true
+			}
+		}
+	case map[any]any:
+		// yaml.v3 normally decodes to map[string]any, but defensive handling
+		// for any code path that lands here with an interface-keyed map.
+		for k, child := range v {
+			if ks, ok := k.(string); ok && ks == key {
+				return true
+			}
+			if containsKey(child, key) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if containsKey(child, key) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func placementToProto(s string) pb.ServiceSpec_PlacementMode {

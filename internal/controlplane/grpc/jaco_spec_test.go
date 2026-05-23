@@ -145,21 +145,67 @@ func contains(s, sub string) bool {
 }
 
 // TestParseJacoYAML_RejectsComposeServiceField — any YAML that includes
-// compose_service must be rejected with the documented error.
+// compose_service must be rejected with the documented error, no matter
+// where in the document the key appears.
 func TestParseJacoYAML_RejectsComposeServiceField(t *testing.T) {
-	input := []byte(`deployment: d
+	const want = "compose_service is no longer supported"
+	cases := []struct {
+		name  string
+		input []byte
+	}{
+		{
+			name: "under services entry (original placement)",
+			input: []byte(`deployment: d
 services:
   - name: web
     replicas: 1
     compose_service: web
-`)
-	_, err := ParseJacoYAML(input)
-	if err == nil {
-		t.Fatal("expected error for compose_service field; got nil")
+`),
+		},
+		{
+			name: "at top level",
+			input: []byte(`deployment: d
+compose_service: web
+services:
+  - name: web
+    replicas: 1
+`),
+		},
+		{
+			name: "nested under a non-services key",
+			input: []byte(`deployment: d
+metadata:
+  legacy:
+    compose_service: web
+services:
+  - name: web
+    replicas: 1
+`),
+		},
+		{
+			name: "inside a routes entry",
+			input: []byte(`deployment: d
+services:
+  - name: web
+    replicas: 1
+routes:
+  - domain: example.com
+    service: web
+    port: 80
+    compose_service: web
+`),
+		},
 	}
-	const want = "compose_service is no longer supported"
-	if !contains(err.Error(), want) {
-		t.Errorf("error = %q; want %q substring", err.Error(), want)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseJacoYAML(tc.input)
+			if err == nil {
+				t.Fatal("expected error for compose_service field; got nil")
+			}
+			if !contains(err.Error(), want) {
+				t.Errorf("error = %q; want %q substring", err.Error(), want)
+			}
+		})
 	}
 }
 
