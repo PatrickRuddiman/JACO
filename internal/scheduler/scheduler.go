@@ -123,8 +123,17 @@ func (s *Scheduler) Reconcile(_ context.Context) {
 	}
 
 	// Abort any rollouts that timed out before placing new replicas.
+	// When CheckTimeouts aborts a plan, also skip the per-deployment
+	// reconcile this tick so the abort's DeploymentRollback lands cleanly
+	// without immediately re-starting a "roll the upgrade back" rollout
+	// on the same pass — that fires naturally on the next tick from the
+	// post-rollback state.
+	abortedThisTick := map[string]bool{}
 	if s.rollouts != nil {
-		_, _ = s.rollouts.CheckTimeouts(context.Background())
+		aborted, _ := s.rollouts.CheckTimeouts(context.Background())
+		for _, name := range aborted {
+			abortedThisTick[name] = true
+		}
 	}
 
 	deployments := s.state.Deployments.List()
@@ -133,6 +142,9 @@ func (s *Scheduler) Reconcile(_ context.Context) {
 	var batch []*pb.Command
 
 	for _, dep := range deployments {
+		if abortedThisTick[dep.GetName()] {
+			continue
+		}
 		project, err := compose.LoadBytes(dep.GetComposeYaml(), "deploy-compose.yml")
 		if err != nil {
 			// Mark Deployment pending so the operator can see the failure
@@ -289,6 +301,13 @@ func (s *Scheduler) driveRollout(dep *pb.Deployment, svc *pb.ServiceSpec, totalS
 	key := state.RolloutPlanKey(dep.GetName(), svc.GetName())
 	plan, ok := s.state.RolloutPlans.Get(key)
 	if !ok || plan.GetState() != pb.RolloutState_ROLLOUT_STATE_IN_PROGRESS {
+		// Refuse to restart a rollout whose plan already exists for this
+		// revision — ABORTED / COMPLETED are terminal states. Otherwise
+		// CheckTimeouts → Abort would just re-fire Start on the next
+		// reconcile in an infinite loop.
+		if ok && plan.GetTargetRevision() == dep.GetAppliedRevision() {
+			return -1
+		}
 		if err := s.rollouts.Start(dep.GetName(), svc.GetName(), dep.GetAppliedRevision(), int(totalSteps)); err != nil {
 			// Start refuses when another plan is already IN_PROGRESS;
 			// fall back to "wait" (no upsert this pass).

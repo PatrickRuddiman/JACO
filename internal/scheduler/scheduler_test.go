@@ -2,7 +2,9 @@ package scheduler_test
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	hraft "github.com/hashicorp/raft"
 	"google.golang.org/protobuf/proto"
@@ -12,8 +14,23 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	"github.com/PatrickRuddiman/jaco/internal/scheduler"
+	"github.com/PatrickRuddiman/jaco/internal/scheduler/rollout"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
+
+// fakeClock matches the rollout package's clock contract.
+type fakeClock struct{ now atomic.Pointer[time.Time] }
+
+func newFakeClock(start time.Time) *fakeClock {
+	c := &fakeClock{}
+	c.now.Store(&start)
+	return c
+}
+func (c *fakeClock) Now() time.Time { return *c.now.Load() }
+func (c *fakeClock) Advance(d time.Duration) {
+	n := c.Now().Add(d)
+	c.now.Store(&n)
+}
 
 const sampleCompose = `services:
   web:
@@ -224,6 +241,74 @@ func TestReconcile_ImageChangeRollsOneAtATime(t *testing.T) {
 	}
 	if got := countWithImage(st, "nginx:1.27"); got != 0 {
 		t.Errorf("after third reconcile, nginx:1.27 count = %d, want 0", got)
+	}
+}
+
+// TestReconcile_RolloutAbortsOnStepTimeout drives an image change with the
+// formal rollout state machine wired, never reports the new replica
+// RUNNING, advances the clock past StepTimeout, and asserts the plan
+// transitions to ABORTED + the deployment's revisions flip back via the
+// CheckTimeouts → Abort → DeploymentRollback batch.
+func TestReconcile_RolloutAbortsOnStepTimeout(t *testing.T) {
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	f := fsm.New(st, brokers)
+	clock := newFakeClock(time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC))
+	var raftIdx uint64
+	applier := func(data []byte) error {
+		raftIdx++
+		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
+		return nil
+	}
+	rollouts := rollout.New(st, applier, clock)
+	s := scheduler.New(st, brokers, &fakeLeader{leader: true}, applier, rollouts)
+
+	seedNode(t, f, "node-a", &raftIdx)
+	seedNode(t, f, "node-b", &raftIdx)
+	seedNode(t, f, "node-c", &raftIdx)
+	seedDeployment(t, f, "sample", 3, sampleCompose, &raftIdx)
+
+	// Initial reconcile lands 3 replicas on nginx:1.27.
+	s.Reconcile(context.Background())
+	if got := st.ReplicasDesired.Len(); got != 3 {
+		t.Fatalf("preconditions: ReplicasDesired = %d, want 3", got)
+	}
+
+	// New revision triggers a rollout.
+	raftIdx++
+	cmd := &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_DeploymentApply{
+		DeploymentApply: &pb.DeploymentApply{
+			Deployment: "sample", Revision: 2,
+			ComposeYaml: []byte("services:\n  web:\n    image: nginx:1.28\n  api:\n    image: api:1.0\n"),
+			Services: []*pb.ServiceSpec{{
+				Name: "web", Replicas: 3, ComposeService: "web",
+				Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD,
+			}},
+		},
+	}}
+	data, _ := proto.Marshal(cmd)
+	f.Apply(&hraft.Log{Index: raftIdx, Data: data})
+
+	// First reconcile starts the plan + upserts replica 0.
+	s.Reconcile(context.Background())
+
+	// Confirm the plan is IN_PROGRESS.
+	plan, ok := st.RolloutPlans.Get(state.RolloutPlanKey("sample", "web"))
+	if !ok || plan.GetState() != pb.RolloutState_ROLLOUT_STATE_IN_PROGRESS {
+		t.Fatalf("plan = %+v; want IN_PROGRESS", plan)
+	}
+
+	// Advance the clock past StepTimeout without reporting the replica
+	// RUNNING. Next reconcile's CheckTimeouts should abort.
+	clock.Advance(rollout.StepTimeout + time.Second)
+	s.Reconcile(context.Background())
+
+	plan, _ = st.RolloutPlans.Get(state.RolloutPlanKey("sample", "web"))
+	if plan.GetState() != pb.RolloutState_ROLLOUT_STATE_ABORTED {
+		t.Errorf("plan.state = %v, want ABORTED", plan.GetState())
+	}
+	if plan.GetFailureReason() == "" {
+		t.Errorf("plan.failure_reason is empty; want non-empty after step_timeout abort")
 	}
 }
 
