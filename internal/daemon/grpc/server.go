@@ -16,12 +16,16 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/fsm"
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	"github.com/PatrickRuddiman/jaco/internal/daemon/admission"
+	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
+	"github.com/PatrickRuddiman/jaco/internal/runtime/health"
+	"github.com/PatrickRuddiman/jaco/internal/runtime/reconciler"
 	"github.com/PatrickRuddiman/jaco/internal/scheduler"
 	schedhealth "github.com/PatrickRuddiman/jaco/internal/scheduler/health"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
@@ -56,6 +60,10 @@ type Server struct {
 	// instead of disappearing into goroutine panics. nil → log.Default().
 	logger *log.Logger
 
+	// docker is the optional runtime engine handle. nil → no runtime
+	// reconciler is spawned in startSubsystems.
+	docker dockerx.Docker
+
 	mu      sync.Mutex
 	started bool
 }
@@ -85,6 +93,12 @@ type Options struct {
 	// Logger receives subsystem errors. nil → log.Default(). Tests pass a
 	// log.Logger writing to an io.Discard to suppress noise.
 	Logger *log.Logger
+
+	// Docker is the runtime engine handle. nil → skip runtime wiring (the
+	// daemon still runs the control plane + scheduler, but doesn't create
+	// containers). cmd/jacod wires dockerx.New; tests usually pass nil or
+	// an in-memory fake.
+	Docker dockerx.Docker
 }
 
 // New builds a Server. Doesn't start anything yet — call Serve.
@@ -127,6 +141,7 @@ func New(opts Options) (*Server, error) {
 		gate:       gate,
 		socketPath: opts.UnixSocketPath,
 		logger:     logger,
+		docker:     opts.Docker,
 	}
 	cluster := &clusterServer{
 		gate:     gate,
@@ -181,7 +196,7 @@ func (s *Server) OpenRaft(hostname, bindAddr string) error {
 	s.brokers = brokers
 	s.fsm = f
 
-	s.startSubsystems(node, st, brokers)
+	s.startSubsystems(node, st, brokers, hostname)
 	return nil
 }
 
@@ -193,7 +208,7 @@ func (s *Server) OpenRaft(hostname, bindAddr string) error {
 // v0 wires scheduler.Run (desired-state reconciler, leader-only) and
 // scheduler/health.Restarter.Run (restart policy, leader-only). Runtime,
 // discovery, and ingress wiring lands in subsequent iters.
-func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *watch.Registry) {
+func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *watch.Registry, hostname string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.subsystemsCancel = cancel
 
@@ -219,6 +234,37 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 			s.logger.Printf("scheduler/health.Restarter.Run exited: %v", err)
 		}
 	}()
+
+	// Runtime reconciler: skipped when no Docker handle was injected (the
+	// daemon still serves the control plane + scheduler in that mode). On
+	// hosts where docker is unreachable, opts.Docker should already be
+	// nil — cmd/jacod logs a warning + continues.
+	if s.docker != nil {
+		// SubmitFn writes ReplicaObserved back through raft.Apply directly
+		// (leader path). Follower-side Internal.Submit forwarding lands in
+		// a later iter — for now the runtime works on whichever node is
+		// also the leader.
+		submit := func(ctx context.Context, obs *pb.ReplicaObserved) error {
+			cmd := &pb.Command{
+				Identity: "runtime",
+				Payload:  &pb.Command_ReplicaObservedUpdate{ReplicaObservedUpdate: &pb.ReplicaObservedUpdate{Replica: obs}},
+			}
+			data, err := proto.Marshal(cmd)
+			if err != nil {
+				return fmt.Errorf("marshal: %w", err)
+			}
+			_, err = node.Apply(data, 0)
+			return err
+		}
+		rec := reconciler.New(s.docker, st, brokers, hostname, health.SubmitFn(submit), s.logger)
+		s.subsystemsWG.Add(1)
+		go func() {
+			defer s.subsystemsWG.Done()
+			if err := rec.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				s.logger.Printf("runtime.Reconciler.Run exited: %v", err)
+			}
+		}()
+	}
 }
 
 // Raft returns the daemon's raft handle. nil pre-OpenRaft.

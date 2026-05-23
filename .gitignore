@@ -1,5 +1,17 @@
 /jaco
+/jacod
 /dist/
 *.test
 *.out
 coverage.*
+
+# Local secrets (Tailscale auth keys, Azure creds, etc).
+test_infra/.env.local
+
+# Editor / agent metadata.
+.agents/
+.claude/
+skills-lock.json
+
+# Original Azure template archive.
+template.zip

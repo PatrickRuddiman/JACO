@@ -19,6 +19,7 @@ import (
 
 	"github.com/PatrickRuddiman/jaco/internal/daemon/config"
 	dgrpc "github.com/PatrickRuddiman/jaco/internal/daemon/grpc"
+	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 )
 
 var version = "dev"
@@ -53,10 +54,21 @@ func run(ctx context.Context, configPath string, logOut io.Writer) error {
 	logger.Printf("starting (version=%s data_dir=%s unix_socket=%s)",
 		version, cfg.DataDir, cfg.UnixSocket)
 
+	// Best-effort docker connection. If the engine is unreachable, jacod
+	// keeps the control plane running but skips the runtime reconciler —
+	// useful for staging boxes without docker and for unit tests.
+	var docker dockerx.Docker
+	if d, dockerErr := dockerx.New(""); dockerErr != nil {
+		logger.Printf("docker unreachable, runtime disabled: %v", dockerErr)
+	} else {
+		docker = d
+	}
+
 	server, err := dgrpc.New(dgrpc.Options{
 		UnixSocketPath: cfg.UnixSocket,
 		DataDir:        cfg.DataDir,
 		ClusterAddr:    cfg.ClusterAddr,
+		Docker:         docker,
 	})
 	if err != nil {
 		return fmt.Errorf("gRPC server: %w", err)
