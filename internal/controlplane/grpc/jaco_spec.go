@@ -63,6 +63,21 @@ func ParseJacoYAML(body []byte) (*JacoYAML, error) {
 	return &j, nil
 }
 
+// ValidateJacoYAMLBytes parses and validates a jaco YAML manifest from raw
+// bytes. Returns a non-nil error if parsing fails or any intrinsic invariant
+// is violated. This is the CLI-facing surface for local lint; it calls
+// ParseJacoYAML + validateJacoYAML in one step without touching a cluster.
+func ValidateJacoYAMLBytes(data []byte) error {
+	j, err := ParseJacoYAML(data)
+	if err != nil {
+		return err
+	}
+	if code, msg, ok := validateJacoYAML(j); !ok {
+		return &validationFault{Code: code, Message: msg}
+	}
+	return nil
+}
+
 // validateJacoYAML checks intrinsic invariants (non-empty deployment, services
 // have valid placement, routes reference declared services). Returns the same
 // shape as compose's ValidationError so callers can wrap uniformly.
