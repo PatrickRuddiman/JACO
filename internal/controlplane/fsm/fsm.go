@@ -102,9 +102,16 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 		}
 
 	case *pb.Command_NodeRemove:
-		f.State.Nodes.Remove(p.NodeRemove.GetHostname(), idx)
+		hostname := p.NodeRemove.GetHostname()
+		f.State.Nodes.Remove(hostname, idx)
+		// Free every /24 the departing node owned so the pool slots return.
+		for _, sn := range f.State.Subnets.List() {
+			if sn.GetHost() == hostname {
+				f.State.Subnets.Remove(state.SubnetKey(sn.GetDeployment(), sn.GetNetwork(), sn.GetHost()), idx)
+			}
+		}
 		return pb.AuditEventType_AUDIT_EVENT_TYPE_NODE_REMOVE, map[string]string{
-			"hostname": p.NodeRemove.GetHostname(),
+			"hostname": hostname,
 		}
 
 	case *pb.Command_NodeUpdateSelf:
@@ -187,6 +194,12 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 		for _, rd := range f.State.ReplicasDesired.List() {
 			if rd.GetDeployment() == name {
 				f.State.ReplicasDesired.Remove(rd.GetId(), idx)
+			}
+		}
+		// Free every per-host /24 allocated for this deployment.
+		for _, sn := range f.State.Subnets.List() {
+			if sn.GetDeployment() == name {
+				f.State.Subnets.Remove(state.SubnetKey(sn.GetDeployment(), sn.GetNetwork(), sn.GetHost()), idx)
 			}
 		}
 		f.State.Deployments.Remove(name, idx)
@@ -345,7 +358,25 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 
 	case *pb.Command_SubnetFree:
 		sf := p.SubnetFree
-		f.State.Subnets.Remove(state.SubnetKey(sf.GetDeployment(), sf.GetNetwork(), sf.GetHost()), idx)
+		// Remove by the most-specific key when all three fields are set;
+		// otherwise cascade-remove every entry matching the set fields
+		// (empty network and/or host act as wildcards).
+		if sf.GetDeployment() != "" && sf.GetNetwork() != "" && sf.GetHost() != "" {
+			f.State.Subnets.Remove(state.SubnetKey(sf.GetDeployment(), sf.GetNetwork(), sf.GetHost()), idx)
+			return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
+		}
+		for _, sn := range f.State.Subnets.List() {
+			if sf.GetDeployment() != "" && sn.GetDeployment() != sf.GetDeployment() {
+				continue
+			}
+			if sf.GetNetwork() != "" && sn.GetNetwork() != sf.GetNetwork() {
+				continue
+			}
+			if sf.GetHost() != "" && sn.GetHost() != sf.GetHost() {
+				continue
+			}
+			f.State.Subnets.Remove(state.SubnetKey(sn.GetDeployment(), sn.GetNetwork(), sn.GetHost()), idx)
+		}
 		return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
 
 	case *pb.Command_TokenIssue:

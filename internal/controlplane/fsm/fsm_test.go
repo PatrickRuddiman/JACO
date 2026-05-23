@@ -179,6 +179,99 @@ func TestApplyDeploymentApplyThenDeleteCascadesRoutes(t *testing.T) {
 	}
 }
 
+// seedSubnet applies a SubnetAllocate so the test can build a known
+// (deployment, network, host) -> cidr layout in state.
+func seedSubnet(t *testing.T, f *fsm.FSM, idx uint64, dep, net, host, cidr string) {
+	t.Helper()
+	applyCmd(t, f, idx, &pb.Command{
+		Ts: timestamppb.Now(),
+		Payload: &pb.Command_SubnetAllocate{SubnetAllocate: &pb.SubnetAllocate{
+			Deployment: dep, Network: net, Host: host, Cidr: cidr,
+		}},
+	})
+}
+
+func TestApplySubnetFree_FullKeyRemovesOne(t *testing.T) {
+	f, s, _ := newFSM(t)
+	seedSubnet(t, f, 1, "sample", "frontend", "host-a", "10.244.0.0/24")
+	seedSubnet(t, f, 2, "sample", "frontend", "host-b", "10.244.1.0/24")
+
+	applyCmd(t, f, 3, &pb.Command{
+		Ts:      timestamppb.Now(),
+		Payload: &pb.Command_SubnetFree{SubnetFree: &pb.SubnetFree{Deployment: "sample", Network: "frontend", Host: "host-a"}},
+	})
+
+	if _, ok := s.Subnets.Get(state.SubnetKey("sample", "frontend", "host-a")); ok {
+		t.Errorf("host-a subnet should be freed")
+	}
+	if _, ok := s.Subnets.Get(state.SubnetKey("sample", "frontend", "host-b")); !ok {
+		t.Errorf("host-b subnet should survive a full-key free of host-a")
+	}
+}
+
+func TestApplySubnetFree_EmptyHostCascadesAllHosts(t *testing.T) {
+	f, s, _ := newFSM(t)
+	seedSubnet(t, f, 1, "sample", "frontend", "host-a", "10.244.0.0/24")
+	seedSubnet(t, f, 2, "sample", "frontend", "host-b", "10.244.1.0/24")
+	seedSubnet(t, f, 3, "other", "frontend", "host-a", "10.244.2.0/24")
+
+	applyCmd(t, f, 4, &pb.Command{
+		Ts:      timestamppb.Now(),
+		Payload: &pb.Command_SubnetFree{SubnetFree: &pb.SubnetFree{Deployment: "sample", Network: "frontend"}},
+	})
+
+	if _, ok := s.Subnets.Get(state.SubnetKey("sample", "frontend", "host-a")); ok {
+		t.Errorf("sample/frontend/host-a should be freed by cascade")
+	}
+	if _, ok := s.Subnets.Get(state.SubnetKey("sample", "frontend", "host-b")); ok {
+		t.Errorf("sample/frontend/host-b should be freed by cascade")
+	}
+	if _, ok := s.Subnets.Get(state.SubnetKey("other", "frontend", "host-a")); !ok {
+		t.Errorf("other deployment's subnet must be untouched")
+	}
+}
+
+func TestApplyDeploymentDelete_FreesAllDeploymentSubnets(t *testing.T) {
+	f, s, _ := newFSM(t)
+	seedSubnet(t, f, 1, "sample", "frontend", "host-a", "10.244.0.0/24")
+	seedSubnet(t, f, 2, "sample", "backend", "host-b", "10.244.1.0/24")
+	seedSubnet(t, f, 3, "keepme", "frontend", "host-a", "10.244.2.0/24")
+
+	applyCmd(t, f, 4, &pb.Command{
+		Ts:      timestamppb.Now(),
+		Payload: &pb.Command_DeploymentDelete{DeploymentDelete: &pb.DeploymentDelete{Deployment: "sample"}},
+	})
+
+	if s.Subnets.Len() != 1 {
+		t.Errorf("Subnets.Len = %d, want 1 (only keepme survives)", s.Subnets.Len())
+	}
+	if _, ok := s.Subnets.Get(state.SubnetKey("keepme", "frontend", "host-a")); !ok {
+		t.Errorf("keepme subnet must survive deletion of sample")
+	}
+}
+
+func TestApplyNodeRemove_FreesAllHostSubnets(t *testing.T) {
+	f, s, _ := newFSM(t)
+	seedSubnet(t, f, 1, "sample", "frontend", "host-a", "10.244.0.0/24")
+	seedSubnet(t, f, 2, "other", "backend", "host-a", "10.244.1.0/24")
+	seedSubnet(t, f, 3, "sample", "frontend", "host-b", "10.244.2.0/24")
+
+	applyCmd(t, f, 4, &pb.Command{
+		Ts:      timestamppb.Now(),
+		Payload: &pb.Command_NodeRemove{NodeRemove: &pb.NodeRemove{Hostname: "host-a"}},
+	})
+
+	if _, ok := s.Subnets.Get(state.SubnetKey("sample", "frontend", "host-a")); ok {
+		t.Errorf("sample/frontend/host-a should be freed when host-a leaves")
+	}
+	if _, ok := s.Subnets.Get(state.SubnetKey("other", "backend", "host-a")); ok {
+		t.Errorf("other/backend/host-a should be freed when host-a leaves")
+	}
+	if _, ok := s.Subnets.Get(state.SubnetKey("sample", "frontend", "host-b")); !ok {
+		t.Errorf("host-b subnet must survive removal of host-a")
+	}
+}
+
 func TestApplyReplicaCounterIncrement(t *testing.T) {
 	f, s, _ := newFSM(t)
 
