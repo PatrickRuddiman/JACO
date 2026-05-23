@@ -173,6 +173,49 @@ func TestGenerateNodeKeypair_BothDNSAndIPSANs(t *testing.T) {
 	}
 }
 
+func TestGenerateNodeKeypair_VerifyHostnameByIP(t *testing.T) {
+	// Asserts the end-to-end TLS-validation property the IP SAN exists for:
+	// a client dialing the node by IP literal must pass cert verification.
+	// crypto/tls drives this via Certificate.VerifyHostname(host), which
+	// matches against IPAddresses when host parses as an IP literal.
+	caCertPEM, caKeyPEM, err := ca.GenerateClusterCA()
+	if err != nil {
+		t.Fatalf("GenerateClusterCA: %v", err)
+	}
+
+	targetIP := net.ParseIP("100.96.111.6")
+	_, csrPEM, err := ca.GenerateNodeKeypair("jaco-1", targetIP)
+	if err != nil {
+		t.Fatalf("GenerateNodeKeypair: %v", err)
+	}
+	nodeCertPEM, err := ca.SignNodeCSR(csrPEM, caCertPEM, caKeyPEM)
+	if err != nil {
+		t.Fatalf("SignNodeCSR: %v", err)
+	}
+
+	block, _ := pem.Decode(nodeCertPEM)
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse node cert: %v", err)
+	}
+
+	// Cert must validate when the dialer's target is the IP literal that
+	// went into the SAN.
+	if err := cert.VerifyHostname(targetIP.String()); err != nil {
+		t.Errorf("VerifyHostname(%q) failed: %v", targetIP.String(), err)
+	}
+
+	// And must validate against the DNS SAN.
+	if err := cert.VerifyHostname("jaco-1"); err != nil {
+		t.Errorf("VerifyHostname(%q) failed: %v", "jaco-1", err)
+	}
+
+	// Negative: a different IP not in the SAN must be rejected.
+	if err := cert.VerifyHostname("10.0.0.99"); err == nil {
+		t.Errorf("VerifyHostname(10.0.0.99) accepted; expected rejection (SAN was %v)", cert.IPAddresses)
+	}
+}
+
 func TestGenerateNodeKeypair_IPDeduplication(t *testing.T) {
 	// Passing the same IP twice must not produce duplicate IP SANs.
 	ip := net.ParseIP("10.0.0.1")
