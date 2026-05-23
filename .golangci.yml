@@ -1,0 +1,119 @@
+# golangci-lint configuration for JACO. Schema: v2 (golangci-lint >= v2).
+#
+# Starter ruleset — correctness-focused. Opinionated style linters
+# (exhaustruct, wsl, nlreturn, gochecknoglobals, …) are intentionally
+# off: they generate noise without a corresponding bug-finding payoff.
+#
+# Formatting (gofmt / goimports) is intentionally NOT enforced here —
+# bringing the existing codebase to gofmt-clean is a separate task.
+# When that task lands, flip on the `formatters` block below.
+#
+# When a rule fires in vendored / generated / legacy code, narrow here
+# rather than chasing the codebase: CI's job is to be green and to
+# surface NEW regressions, not to retroactively style-police existing
+# files. Codebase cleanup belongs in its own PR series.
+
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  settings:
+    errcheck:
+      # Defer-Close on conns / files / writers is idiomatic in Go and
+      # the return value carries no actionable signal — the surrounding
+      # function is already returning, often with the caller's error.
+      # Same for best-effort filesystem cleanup.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*google.golang.org/grpc.ClientConn).Close
+        - (*compress/gzip.Writer).Close
+        - (*compress/gzip.Reader).Close
+        - (*gopkg.in/yaml.v3.Encoder).Close
+        - (*github.com/hashicorp/raft-boltdb/v2.BoltStore).Close
+        - (*golang.zx2c4.com/wireguard/wgctrl.Client).Close
+        - (*encoding/json.Encoder).Encode
+        - os.Remove
+        - os.RemoveAll
+        - fmt.Fprintln
+        - fmt.Fprintf
+        - fmt.Fprint
+    staticcheck:
+      # SA-prefix = correctness bugs; keep on except SA1019 (deprecated
+      # Docker types — SDK is mid-migration to container.*; tracked
+      # separately). ST-prefix = style checks; QF-prefix = quick-fix
+      # suggestions — both off so existing code passes without churn.
+      checks:
+        - all
+        - -SA1019
+        - -SA4006  # unused write — fires in test scaffolding
+        - -SA9003  # empty branch — placeholder code in lifecycle
+        - -ST1000  # missing package comment
+        - -ST1003  # naming conventions
+        - -ST1005  # error string capitalization
+        - -ST1020  # comment form on exported func
+        - -ST1021  # comment form on exported type
+        - -ST1022  # comment form on exported var
+        - -QF1001  # De Morgan's law
+        - -QF1003  # tagged switch suggestion
+        - -QF1008  # embedded field suggestion
+  exclusions:
+    rules:
+      # Generated protobuf / gRPC code — owned by buf, not us.
+      - path: "\\.pb\\.go$"
+        linters:
+          - errcheck
+          - govet
+          - ineffassign
+          - staticcheck
+          - unused
+      - path: "_grpc\\.pb\\.go$"
+        linters:
+          - errcheck
+          - govet
+          - ineffassign
+          - staticcheck
+          - unused
+      # Test files: errcheck on t.Setenv / os.Setenv / defer cleanup
+      # is noise; ineffassign on test scaffolding (e.g. immediately
+      # reassigning `ctx` after WithTimeout to swap in an auth ctx) is
+      # also benign. Keep the rest of the linters on.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - ineffassign
+      # Known unused struct fields kept for forthcoming features
+      # (cliclient TLS ServerName override, scheduler reconcile-loop
+      # state machine). Cleanup tracked separately.
+      - path: internal/cliclient/client\.go
+        text: "field serverNm is unused"
+      - path: internal/scheduler/scheduler\.go
+        text: "field (mu|active|cancel) is unused"
+    paths:
+      - dist
+      - testdata
+      - pkg/proto
+
+# Formatters: enable once the codebase is gofmt/goimports clean.
+# formatters:
+#   enable:
+#     - gofmt
+#     - goimports
+#   settings:
+#     goimports:
+#       local-prefixes:
+#         - github.com/PatrickRuddiman/jaco
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

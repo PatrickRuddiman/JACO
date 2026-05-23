@@ -74,9 +74,13 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: v1.62.2
+          # v2.12.2 is the first release built with go1.25, which the
+          # module pins via go.mod. Earlier versions refuse to load the
+          # config: "Go language version used to build golangci-lint is
+          # lower than the targeted Go version".
+          version: v2.12.2
 
   govulncheck:
     name: govulncheck
