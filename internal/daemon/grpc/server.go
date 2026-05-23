@@ -32,7 +32,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/discovery/wgmesh"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/rebuild"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/storage"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
 	hraft "github.com/hashicorp/raft"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/health"
@@ -524,6 +524,10 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 		// (leader path). Follower-side Internal.Submit forwarding lands in
 		// a later iter — for now the runtime works on whichever node is
 		// also the leader.
+		// Bug 011 diagnostic: log every SubmitFn error so silent failures
+		// in follower → leader forwarding surface in journal. health.Watcher
+		// doesn't log SubmitFn errors itself.
+		var submitErrLogOnce sync.Once
 		submit := func(ctx context.Context, obs *pb.ReplicaObserved) error {
 			cmd := &pb.Command{
 				Identity: "runtime",
@@ -536,6 +540,9 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 			if _, applyErr := node.Apply(data, 0); applyErr == nil {
 				return nil
 			} else if !errors.Is(applyErr, hraft.ErrNotLeader) {
+				submitErrLogOnce.Do(func() {
+					s.logger.Printf("submit raft.Apply (non-leader path): %v", applyErr)
+				})
 				return applyErr
 			}
 			// Not the leader — forward to whichever node is. Look up
@@ -543,14 +550,25 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 			// Internal.Submit there. Plaintext; same v0 wire model.
 			leaderAddr := leaderGRPCAddr(st, node)
 			if leaderAddr == "" {
+				submitErrLogOnce.Do(func() {
+					s.logger.Printf("submit: no leader gRPC address known (state.Nodes lookup empty)")
+				})
 				return fmt.Errorf("submit: no leader gRPC address known")
 			}
-			conn, dialErr := grpc.NewClient(leaderAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+			conn, dialErr := grpc.NewClient(leaderAddr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})))
 			if dialErr != nil {
+				submitErrLogOnce.Do(func() {
+					s.logger.Printf("submit dial leader %s: %v", leaderAddr, dialErr)
+				})
 				return fmt.Errorf("submit: dial leader %s: %w", leaderAddr, dialErr)
 			}
 			defer conn.Close()
 			_, rpcErr := pb.NewInternalClient(conn).Submit(ctx, &pb.SubmitRequest{CommandBytes: data})
+			if rpcErr != nil {
+				submitErrLogOnce.Do(func() {
+					s.logger.Printf("submit Internal.Submit to %s: %v", leaderAddr, rpcErr)
+				})
+			}
 			return rpcErr
 		}
 		rec := reconciler.New(s.docker, st, brokers, hostname, health.SubmitFn(submit), s.logger)
@@ -699,7 +717,7 @@ func (s *Server) publishSelf(ctx context.Context, node *raftnode.Node, st *state
 	if leaderAddr == "" {
 		return fmt.Errorf("no leader gRPC address known")
 	}
-	conn, err := grpc.NewClient(leaderAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(leaderAddr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})))
 	if err != nil {
 		return fmt.Errorf("dial leader: %w", err)
 	}
