@@ -76,7 +76,7 @@ func runValidate(cmd *cobra.Command, jacoPath, composePath string) error {
 
 	// Cross-check: every jaco service must reference a real compose service.
 	if jacoPath != "" && composePath != "" {
-		if err := crossValidate(jacoBytes, composeBytes); err != nil {
+		if err := crossValidate(jacoBytes, composePath); err != nil {
 			return formatValidationError(err)
 		}
 	}
@@ -111,13 +111,16 @@ func validationCodeAndMessage(err error) (code string, message string) {
 
 // crossValidate asserts that every service declared in the jaco manifest has a
 // matching key in the compose file. Each JacoServiceDecl uses compose_service
-// (defaulting to name) as the compose-side key.
-func crossValidate(jacoBytes, composeBytes []byte) error {
+// (defaulting to name) as the compose-side key. Loads the compose file from
+// composePath (not from pre-read bytes) so the loader's workingDir matches
+// the file's real directory — relative env_file/extends/include paths
+// resolve against the right place instead of "." .
+func crossValidate(jacoBytes []byte, composePath string) error {
 	jacoSpec, err := grpcsrv.ParseJacoYAML(jacoBytes)
 	if err != nil {
 		return fmt.Errorf("parse jaco yaml: %w", err)
 	}
-	project, err := compose.LoadBytes(composeBytes, "compose.yaml")
+	project, _, err := compose.Load(composePath)
 	if err != nil {
 		return fmt.Errorf("parse compose yaml: %w", err)
 	}
