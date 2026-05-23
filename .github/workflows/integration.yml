@@ -1,0 +1,56 @@
+# JACO integration test workflow. Gated on the "privileged" label so
+# only PRs explicitly tagged for it consume the privileged runner. The
+# job needs CAP_NET_ADMIN (wireguard / nftables) and a running docker
+# daemon, so it's expected to run on a self-hosted privileged runner or
+# a GitHub-hosted ubuntu-latest with `sudo` available.
+#
+# Each integration test self-skips when its JACO_INTEGRATION_* env var
+# is unset, so the workflow runs every tag in sequence via
+# scripts/test/integration.sh.
+
+name: integration
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+
+jobs:
+  integration:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'privileged')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install engines
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y docker.io nftables wireguard-tools
+          sudo systemctl start docker
+
+      - name: Run Pebble (ACME test server)
+        run: |
+          docker run -d --name pebble \
+            -p 14000:14000 -p 15000:15000 \
+            -e PEBBLE_VA_NOSLEEP=1 \
+            letsencrypt/pebble:latest
+          # Give Pebble a moment to come up.
+          sleep 3
+
+      - name: Run integration tests
+        env:
+          JACO_INTEGRATION_DOCKER: "1"
+          JACO_INTEGRATION_NFTABLES: "1"
+          JACO_INTEGRATION_WG: "1"
+          JACO_INTEGRATION_PEBBLE: "https://localhost:14000/dir"
+        run: |
+          sudo -E bash scripts/test/integration.sh
+
+      - name: Tear down Pebble
+        if: always()
+        run: docker rm -f pebble || true
