@@ -47,6 +47,10 @@ type Server struct {
 	tcpAddr      string // resolved listener address (the port may be 0 → ephemeral)
 
 	cluster *clusterServer
+	tokens  *tokensProxy
+	deploy  *deployProxy
+	audit   *auditProxy
+	watch   *watchProxy
 
 	// Populated by OpenRaft after Cluster.Init or Cluster.Join lands. The
 	// pre-OpenRaft state is "raft handle nil; RPCs that need raft return
@@ -226,6 +230,18 @@ func New(opts Options) (*Server, error) {
 	pb.RegisterClusterServer(gs, cluster)
 	pb.RegisterInternalServer(gs, &internalServer{server: server})
 
+	// Register the four lazily-resolved control-plane services. Their
+	// target handlers get filled by wireControlPlane in startSubsystems
+	// after OpenRaft populates state + raft.
+	server.tokens = &tokensProxy{}
+	server.deploy = &deployProxy{}
+	server.audit = &auditProxy{}
+	server.watch = &watchProxy{}
+	pb.RegisterTokensServer(gs, server.tokens)
+	pb.RegisterDeployServer(gs, server.deploy)
+	pb.RegisterAuditServer(gs, server.audit)
+	pb.RegisterWatchServer(gs, server.watch)
+
 	return server, nil
 }
 
@@ -284,6 +300,9 @@ func (s *Server) OpenRaft(hostname, bindAddr string) error {
 func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *watch.Registry, hostname string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.subsystemsCancel = cancel
+
+	// Fill the control-plane proxies now that state + raft are populated.
+	s.wireControlPlane()
 
 	apply := func(cmd []byte) error {
 		_, err := node.Apply(cmd, 0)
