@@ -53,18 +53,26 @@ JACO_TOKEN=<operator_token> jaco node issue-join-token
 # prints: token=… leader_addrs=…
 ```
 
-On each follower:
+On each follower (gRPC port defaults to `7000`, see
+`/etc/jaco/jacod.yaml::listen_addr`):
 
 ```sh
-sudo jaco node join --peer <leader-host>:<gRPC-port> --token <single-use>
+sudo jaco node join --peer <leader-host>:7000 --token <single-use>
 ```
 
-After all nodes report `READY` in `jaco status`, ship a deployment:
+After all nodes report `READY` in `jaco node list`, ship a deployment.
+Every operator-facing command needs `--server <any-node>:7000` (the
+gRPC port from `/etc/jaco/jacod.yaml::listen_addr`) plus the operator
+token:
 
 ```sh
-JACO_TOKEN=<operator_token> jaco apply path/to/jaco.yaml
-JACO_TOKEN=<operator_token> jaco status my-deployment   # -w to follow
-JACO_TOKEN=<operator_token> jaco logs   my-deployment/web --follow
+export JACO_TOKEN=<operator_token>
+export LEADER=<leader-host>:7000
+
+jaco apply  --server $LEADER path/to/jaco.yaml
+jaco status --server $LEADER my-deployment           # -w to follow
+jaco logs   --server $LEADER my-deployment/web --follow
+jaco node   list --server $LEADER
 ```
 
 ## Network model

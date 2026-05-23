@@ -7,7 +7,9 @@
 # Filesystem root for raft store, node certs, wg keys, ACME blobs.
 data_dir: /var/lib/jaco
 
-# Cluster gRPC TLS endpoint — peers + remote CLI dial here.
+# Cross-host gRPC endpoint — peers + remote CLI dial here. v0 ships
+# plaintext TCP (Tailscale / WireGuard wraps the wire); TLS-with-
+# cluster-CA lands in a follow-up.
 listen_addr: 0.0.0.0:7000
 
 # Raft TCP transport — peer-to-peer log replication. Must differ from
