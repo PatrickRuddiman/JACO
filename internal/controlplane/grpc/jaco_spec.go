@@ -18,17 +18,16 @@ type JacoYAML struct {
 	Routes     []JacoRouteDecl   `yaml:"routes"`
 }
 
-// JacoServiceDecl is one service entry. ComposeService names a service in the
-// adjacent compose file; Replicas is the desired count; Placement picks the
-// scheduler mode (spread / pack / hosts) and Hosts pins targets when
-// Placement=hosts.
+// JacoServiceDecl is one service entry. Name must equal the corresponding
+// service key in the adjacent compose file. Replicas is the desired count;
+// Placement picks the scheduler mode (spread / pack / hosts) and Hosts pins
+// targets when Placement=hosts.
 type JacoServiceDecl struct {
-	Name           string   `yaml:"name"`
-	Replicas       int      `yaml:"replicas"`
-	Placement      string   `yaml:"placement"`
-	Hosts          []string `yaml:"hosts"`
-	ComposeService string   `yaml:"compose_service"`
-	Networks       []string `yaml:"networks"`
+	Name      string   `yaml:"name"`
+	Replicas  int      `yaml:"replicas"`
+	Placement string   `yaml:"placement"`
+	Hosts     []string `yaml:"hosts"`
+	Networks  []string `yaml:"networks"`
 }
 
 // JacoRouteDecl is one Caddy-served HTTP(S) route.
@@ -42,7 +41,28 @@ type JacoRouteDecl struct {
 // ParseJacoYAML unmarshals the manifest and applies defaults (Placement spread,
 // TLS auto). Returns a typed JacoYAML; validation against the compose file
 // happens in validateJacoYAML.
+//
+// It rejects input that contains compose_service keys: the field was removed
+// pre-1.0 and name is now the single source of truth.
 func ParseJacoYAML(body []byte) (*JacoYAML, error) {
+	// Pre-check: reject compose_service before struct decode so the error
+	// message is clear regardless of struct tag changes.
+	var raw map[string]any
+	if err := yaml.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("parse jaco yaml: %w", err)
+	}
+	if svcs, ok := raw["services"]; ok {
+		if list, ok := svcs.([]any); ok {
+			for _, item := range list {
+				if m, ok := item.(map[string]any); ok {
+					if _, has := m["compose_service"]; has {
+						return nil, fmt.Errorf("compose_service is no longer supported; rename \"name\" to match the compose service key")
+					}
+				}
+			}
+		}
+	}
+
 	var j JacoYAML
 	if err := yaml.Unmarshal(body, &j); err != nil {
 		return nil, fmt.Errorf("parse jaco yaml: %w", err)
@@ -50,9 +70,6 @@ func ParseJacoYAML(body []byte) (*JacoYAML, error) {
 	for i := range j.Services {
 		if j.Services[i].Placement == "" {
 			j.Services[i].Placement = "spread"
-		}
-		if j.Services[i].ComposeService == "" {
-			j.Services[i].ComposeService = j.Services[i].Name
 		}
 	}
 	for i := range j.Routes {
@@ -119,12 +136,11 @@ func toServiceSpecs(decls []JacoServiceDecl) []*pb.ServiceSpec {
 	out := make([]*pb.ServiceSpec, 0, len(decls))
 	for _, d := range decls {
 		out = append(out, &pb.ServiceSpec{
-			Name:           d.Name,
-			Replicas:       int32(d.Replicas),
-			Placement:      placementToProto(d.Placement),
-			Hosts:          append([]string(nil), d.Hosts...),
-			ComposeService: d.ComposeService,
-			Networks:       append([]string(nil), d.Networks...),
+			Name:      d.Name,
+			Replicas:  int32(d.Replicas),
+			Placement: placementToProto(d.Placement),
+			Hosts:     append([]string(nil), d.Hosts...),
+			Networks:  append([]string(nil), d.Networks...),
 		})
 	}
 	return out

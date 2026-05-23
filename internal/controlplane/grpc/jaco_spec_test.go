@@ -144,6 +144,45 @@ func contains(s, sub string) bool {
 	return false
 }
 
+// TestParseJacoYAML_RejectsComposeServiceField — any YAML that includes
+// compose_service must be rejected with the documented error.
+func TestParseJacoYAML_RejectsComposeServiceField(t *testing.T) {
+	input := []byte(`deployment: d
+services:
+  - name: web
+    replicas: 1
+    compose_service: web
+`)
+	_, err := ParseJacoYAML(input)
+	if err == nil {
+		t.Fatal("expected error for compose_service field; got nil")
+	}
+	const want = "compose_service is no longer supported"
+	if !contains(err.Error(), want) {
+		t.Errorf("error = %q; want %q substring", err.Error(), want)
+	}
+}
+
+// TestParseJacoYAML_HappyPath — valid YAML without compose_service
+// parses cleanly with name as the compose key.
+func TestParseJacoYAML_HappyPath(t *testing.T) {
+	input := []byte(`deployment: myapp
+services:
+  - name: web
+    replicas: 2
+`)
+	j, err := ParseJacoYAML(input)
+	if err != nil {
+		t.Fatalf("ParseJacoYAML: %v", err)
+	}
+	if len(j.Services) != 1 || j.Services[0].Name != "web" {
+		t.Errorf("unexpected services: %+v", j.Services)
+	}
+	if j.Services[0].Placement != "spread" {
+		t.Errorf("default placement = %q; want spread", j.Services[0].Placement)
+	}
+}
+
 // TestValidationFault_Error — formatter for the validationFault type
 // surfaces its Message verbatim.
 func TestValidationFault_Error(t *testing.T) {

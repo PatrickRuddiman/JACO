@@ -15,12 +15,10 @@ const sampleJacoYAML = `deployment: sample
 services:
   - name: web
     replicas: 3
-    compose_service: web
     networks: [frontend]
   - name: api
     replicas: 2
     placement: pack
-    compose_service: api
 routes:
   - domain: web.example.com
     service: web
@@ -201,11 +199,11 @@ func TestDeploy_ApplyRejectsUnknownComposeService(t *testing.T) {
 	deploy := newDeployClient(t, c)
 	ctx := authContext(c.OperatorToken)
 
+	// name "ghost" doesn't exist as a service key in the compose file.
 	bad := `deployment: sample
 services:
-  - name: web
+  - name: ghost
     replicas: 1
-    compose_service: ghost
 `
 	_, err := deploy.Apply(ctx, &pb.ApplyRequest{
 		JacoYaml:    []byte(bad),
@@ -217,6 +215,33 @@ services:
 	sErr, _ := status.FromError(err)
 	if !strings.Contains(sErr.Message(), "validation_failed") {
 		t.Errorf("message = %q; want validation_failed", sErr.Message())
+	}
+}
+
+func TestDeploy_ApplyRejectsComposeServiceField(t *testing.T) {
+	c := setupTwoNodeCluster(t)
+	deploy := newDeployClient(t, c)
+	ctx := authContext(c.OperatorToken)
+
+	// compose_service is no longer supported; should be rejected loudly.
+	bad := `deployment: sample
+services:
+  - name: web
+    replicas: 1
+    compose_service: web
+`
+	_, err := deploy.Apply(ctx, &pb.ApplyRequest{
+		JacoYaml:    []byte(bad),
+		ComposeYaml: []byte(sampleComposeYAML),
+	})
+	if err == nil {
+		t.Fatalf("expected error for compose_service field")
+	}
+	// The gRPC status code is "validation_failed"; the detailed message is
+	// tested directly via TestParseJacoYAML_RejectsComposeServiceField.
+	sErr, _ := status.FromError(err)
+	if !strings.Contains(sErr.Message(), "validation_failed") {
+		t.Errorf("message = %q; want 'validation_failed'", sErr.Message())
 	}
 }
 

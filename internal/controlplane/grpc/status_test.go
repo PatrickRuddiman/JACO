@@ -47,7 +47,6 @@ const statusJacoYAML = `deployment: sample
 services:
   - name: web
     replicas: 2
-    compose_service: web
 routes:
   - domain: web.example.com
     service: web
@@ -90,7 +89,6 @@ func TestStatus_FiltersByDeployment(t *testing.T) {
 services:
   - name: web
     replicas: 1
-    compose_service: web
 `
 	applyDeployment(t, c, otherYAML, statusComposeYAML)
 

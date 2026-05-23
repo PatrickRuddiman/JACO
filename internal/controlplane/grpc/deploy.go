@@ -68,16 +68,16 @@ func (d *deployServer) Apply(ctx context.Context, req *pb.ApplyRequest) (*pb.App
 		return nil, errorStatus(codes.InvalidArgument, "validation_failed", err.Error())
 	}
 
-	// Confirm every JacoServiceDecl.compose_service exists in compose.
+	// Confirm every service name matches a key in the compose file.
 	composeNames := map[string]bool{}
 	for _, s := range composeProject.Services {
 		composeNames[s.Name] = true
 	}
 	for _, s := range jacoSpec.Services {
-		if !composeNames[s.ComposeService] {
+		if !composeNames[s.Name] {
 			return nil, errorStatus(codes.InvalidArgument, "validation_failed",
-				fmt.Sprintf("service %q references compose_service %q which is not in the compose file",
-					s.Name, s.ComposeService))
+				fmt.Sprintf("service %q not found in the compose file; name must equal a compose service key",
+					s.Name))
 		}
 	}
 
