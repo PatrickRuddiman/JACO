@@ -74,12 +74,24 @@ func Start(ctx context.Context, d dockerx.Docker, spec compose.ContainerSpec, ga
 	}
 	if existing != nil {
 		if matchesRaftIndex(existing.Labels, spec.RaftIndex) {
-			// Idempotent path — the cluster's desired state already matches
-			// what's running.
-			return existing.ID, nil
-		}
-		if err := stopAndRemove(ctx, d, existing.ID); err != nil {
-			return "", fmt.Errorf("stop+remove stale %s: %w", existing.ID, err)
+			// Bug 015: label-match is necessary but not sufficient — the
+			// container might be in "exited" after a host reboot. Probe
+			// running state and ContainerStart it back when needed.
+			if existing.State == "running" {
+				return existing.ID, nil
+			}
+			if err := d.ContainerStart(ctx, existing.ID, container.StartOptions{}); err != nil {
+				// Couldn't restart — fall through to full re-create.
+				if rmErr := stopAndRemove(ctx, d, existing.ID); rmErr != nil {
+					return "", fmt.Errorf("stop+remove stale (after start failure %v): %w", err, rmErr)
+				}
+			} else {
+				return existing.ID, nil
+			}
+		} else {
+			if err := stopAndRemove(ctx, d, existing.ID); err != nil {
+				return "", fmt.Errorf("stop+remove stale %s: %w", existing.ID, err)
+			}
 		}
 	}
 
