@@ -9,6 +9,7 @@ package raftnode
 import (
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -17,14 +18,21 @@ import (
 	boltdb "github.com/hashicorp/raft-boltdb/v2"
 )
 
-// Config holds everything New needs. All fields except LogOutput are required.
+// Config holds everything New needs. All fields except LogOutput +
+// AdvertiseAddr are required.
 type Config struct {
-	DataDir   string
-	BindAddr  string
-	LocalID   string
-	Bootstrap bool
-	FSM       hraft.FSM
-	LogOutput io.Writer
+	DataDir  string
+	BindAddr string
+	// AdvertiseAddr is the host:port peers should dial to reach this node's
+	// raft transport. When empty, raft derives it from BindAddr; when
+	// BindAddr is unspecified (0.0.0.0 / ::) that derivation fails with
+	// "local bind address is not advertisable" — callers should resolve a
+	// real interface IP (see internal/daemon/netdetect) and pass it here.
+	AdvertiseAddr string
+	LocalID       string
+	Bootstrap     bool
+	FSM           hraft.FSM
+	LogOutput     io.Writer
 }
 
 // Node owns a running raft.Raft and the stores backing it.
@@ -72,7 +80,15 @@ func New(cfg Config) (*Node, error) {
 		return nil, fmt.Errorf("snapshot store: %w", err)
 	}
 
-	trans, err := hraft.NewTCPTransport(cfg.BindAddr, nil, 3, 10*time.Second, logOut)
+	var advertise net.Addr
+	if cfg.AdvertiseAddr != "" {
+		resolved, err := net.ResolveTCPAddr("tcp", cfg.AdvertiseAddr)
+		if err != nil {
+			return nil, fmt.Errorf("resolve advertise %q: %w", cfg.AdvertiseAddr, err)
+		}
+		advertise = resolved
+	}
+	trans, err := hraft.NewTCPTransport(cfg.BindAddr, advertise, 3, 10*time.Second, logOut)
 	if err != nil {
 		return nil, fmt.Errorf("tcp transport: %w", err)
 	}

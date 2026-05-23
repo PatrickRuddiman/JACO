@@ -51,7 +51,8 @@ type Server struct {
 	tcpListener  net.Listener // cross-host control; nil when ListenAddr unset
 	gate         *admission.InitGate
 	socketPath   string
-	tcpAddr      string // resolved listener address (the port may be 0 → ephemeral)
+	tcpAddr      string // resolved listener bind address (the port may be 0 → ephemeral)
+	tcpAdvertise string // host:port to gossip in publishSelf + NodeJoin (falls back to tcpAddr)
 
 	cluster *clusterServer
 	tokens  *tokensProxy
@@ -114,9 +115,21 @@ type Options struct {
 	// the connection. TLS-with-cluster-CA is a follow-up iter.
 	ListenAddr string
 
+	// ListenAdvertiseAddr is the host:port peers should be told to dial
+	// for ListenAddr. When empty, defaults to ListenAddr. Must be a
+	// routable IP (not 0.0.0.0); cmd/jacod resolves this from
+	// netdetect.PickAdvertiseIP when the operator's config has an
+	// unspecified bind.
+	ListenAdvertiseAddr string
+
 	// ClusterAddr is the raft TCP transport listen address. Used by
 	// Cluster.Init to bind raft so peers can dial.
 	ClusterAddr string
+
+	// ClusterAdvertiseAddr is the host:port raft tells peers to dial for
+	// its transport. Same auto-detect story as ListenAdvertiseAddr;
+	// empty → ClusterAddr.
+	ClusterAdvertiseAddr string
 
 	// Hostname overrides os.Hostname() at handler time. Tests use this;
 	// production leaves it empty.
@@ -233,23 +246,29 @@ func New(opts Options) (*Server, error) {
 		dynTLS = dyn
 	}
 
+	tcpAdvertise := opts.ListenAdvertiseAddr
+	if tcpAdvertise == "" {
+		tcpAdvertise = tcpAddr
+	}
 	*server = Server{
-		gs:          gs,
-		listener:    lis,
-		tcpListener: tcpLis,
-		gate:        gate,
-		socketPath:  opts.UnixSocketPath,
-		tcpAddr:     tcpAddr,
-		logger:      logger,
-		docker:      opts.Docker,
-		tlsDyn:      dynTLS,
+		gs:           gs,
+		listener:     lis,
+		tcpListener:  tcpLis,
+		gate:         gate,
+		socketPath:   opts.UnixSocketPath,
+		tcpAddr:      tcpAddr,
+		tcpAdvertise: tcpAdvertise,
+		logger:       logger,
+		docker:       opts.Docker,
+		tlsDyn:       dynTLS,
 	}
 	cluster := &clusterServer{
-		gate:     gate,
-		dataDir:  opts.DataDir,
-		bindAddr: opts.ClusterAddr,
-		hostname: opts.Hostname,
-		server:   server,
+		gate:          gate,
+		dataDir:       opts.DataDir,
+		bindAddr:      opts.ClusterAddr,
+		advertiseAddr: opts.ClusterAdvertiseAddr,
+		hostname:      opts.Hostname,
+		server:        server,
 	}
 	server.cluster = cluster
 	pb.RegisterClusterServer(gs, cluster)
@@ -274,7 +293,12 @@ func New(opts Options) (*Server, error) {
 // raft/state/brokers/fsm handles. Called from Cluster.Init (after
 // bootstrap.Run) and from Cluster.Join (after persistJoin). Idempotent —
 // returns nil + leaves existing handles alone if already opened.
-func (s *Server) OpenRaft(hostname, bindAddr string) error {
+//
+// advertiseAddr is the host:port peers should dial; empty falls back to
+// bindAddr (legacy single-IP path for tests). When bindAddr is 0.0.0.0:N
+// the caller MUST supply a real advertiseAddr or raft will refuse to
+// start with "local bind address is not advertisable".
+func (s *Server) OpenRaft(hostname, bindAddr, advertiseAddr string) error {
 	s.raftMu.Lock()
 	defer s.raftMu.Unlock()
 	if s.raft != nil {
@@ -295,11 +319,12 @@ func (s *Server) OpenRaft(hostname, bindAddr string) error {
 	f := fsm.New(st, brokers)
 
 	node, err := raftnode.New(raftnode.Config{
-		DataDir:   s.cluster.dataDir,
-		BindAddr:  bindAddr,
-		LocalID:   hostname,
-		Bootstrap: false, // raft state already on disk
-		FSM:       f,
+		DataDir:       s.cluster.dataDir,
+		BindAddr:      bindAddr,
+		AdvertiseAddr: advertiseAddr,
+		LocalID:       hostname,
+		Bootstrap:     false, // raft state already on disk
+		FSM:           f,
 	})
 	if err != nil {
 		return fmt.Errorf("raftnode.New: %w", err)
@@ -687,9 +712,19 @@ func (s *Server) Gate() *admission.InitGate { return s.gate }
 // SocketPath returns the path the daemon is listening on.
 func (s *Server) SocketPath() string { return s.socketPath }
 
-// TCPAddr returns the resolved cross-host listener address (after net.Listen
-// substituted any :0 port). Empty when ListenAddr was unset.
+// TCPAddr returns the resolved cross-host listener bind address (after
+// net.Listen substituted any :0 port). Empty when ListenAddr was unset.
 func (s *Server) TCPAddr() string { return s.tcpAddr }
+
+// TCPAdvertiseAddr returns the host:port to gossip to peers. Equals
+// opts.ListenAdvertiseAddr when explicitly set; otherwise falls back to
+// the bound TCPAddr. Used in NodeJoin requests and the publishSelf path.
+func (s *Server) TCPAdvertiseAddr() string {
+	if s.tcpAdvertise != "" {
+		return s.tcpAdvertise
+	}
+	return s.tcpAddr
+}
 
 // publishSelf raft-Applies a NodeUpdateSelf so peers see our current
 // wireguard pubkey + grpc address. Direct apply on the leader; follower
@@ -701,7 +736,7 @@ func (s *Server) publishSelf(ctx context.Context, node *raftnode.Node, st *state
 		Payload: &pb.Command_NodeUpdateSelf{NodeUpdateSelf: &pb.NodeUpdateSelf{
 			Hostname:        hostname,
 			WireguardPubkey: pubKey[:],
-			GrpcAddress:     s.tcpAddr,
+			GrpcAddress:     s.TCPAdvertiseAddr(),
 		}},
 	}
 	data, err := proto.Marshal(cmd)
