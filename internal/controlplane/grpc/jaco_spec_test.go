@@ -196,10 +196,11 @@ routes:
 	}
 }
 
-// TestValidateJacoYAML_RouteConflict — same domain + same path + different
-// service must be rejected with the documented error message.
+// TestValidateJacoYAML_RouteConflict — (domain, path) is the uniqueness
+// key: any duplicate must be rejected, regardless of whether the other
+// fields (service, port, tls) agree.
 func TestValidateJacoYAML_RouteConflict(t *testing.T) {
-	t.Run("conflict on path /api/", func(t *testing.T) {
+	t.Run("conflict on path /api/ different services", func(t *testing.T) {
 		j := &JacoYAML{
 			Deployment: "d",
 			Services: []JacoServiceDecl{
@@ -215,7 +216,7 @@ func TestValidateJacoYAML_RouteConflict(t *testing.T) {
 		if ok {
 			t.Fatal("validation passed; expected conflict rejection")
 		}
-		want := `route conflict: domain "jaco.sh" path "/api/" maps to multiple services`
+		want := `route conflict: domain "jaco.sh" path "/api/" is declared more than once; (domain, path) combinations must be unique`
 		if msg != want {
 			t.Errorf("msg = %q, want %q", msg, want)
 		}
@@ -237,9 +238,52 @@ func TestValidateJacoYAML_RouteConflict(t *testing.T) {
 		if ok {
 			t.Fatal("validation passed; expected catch-all conflict rejection")
 		}
-		want := `route conflict: domain "jaco.sh" path "" maps to multiple services`
+		want := `route conflict: domain "jaco.sh" path "" is declared more than once; (domain, path) combinations must be unique`
 		if msg != want {
 			t.Errorf("msg = %q, want %q", msg, want)
+		}
+	})
+
+	t.Run("conflict on same service different port", func(t *testing.T) {
+		// Regression: previously the conflict check only fired when the
+		// service field differed. Two routes with the same (domain, path)
+		// and same service but different port slipped through and produced
+		// nondeterministic Caddy config.
+		j := &JacoYAML{
+			Deployment: "d",
+			Services: []JacoServiceDecl{
+				{Name: "api", Placement: "spread"},
+			},
+			Routes: []JacoRouteDecl{
+				{Domain: "jaco.sh", Path: "/api/", Service: "api", Port: 8080, TLS: "auto"},
+				{Domain: "jaco.sh", Path: "/api/", Service: "api", Port: 9090, TLS: "auto"},
+			},
+		}
+		_, msg, ok := validateJacoYAML(j)
+		if ok {
+			t.Fatal("validation passed; expected port-divergence rejection")
+		}
+		want := `route conflict: domain "jaco.sh" path "/api/" is declared more than once; (domain, path) combinations must be unique`
+		if msg != want {
+			t.Errorf("msg = %q, want %q", msg, want)
+		}
+	})
+
+	t.Run("conflict on same service different tls", func(t *testing.T) {
+		// Regression: tls divergence also slipped through the old check.
+		j := &JacoYAML{
+			Deployment: "d",
+			Services: []JacoServiceDecl{
+				{Name: "api", Placement: "spread"},
+			},
+			Routes: []JacoRouteDecl{
+				{Domain: "jaco.sh", Path: "/api/", Service: "api", Port: 8080, TLS: "auto"},
+				{Domain: "jaco.sh", Path: "/api/", Service: "api", Port: 8080, TLS: "off"},
+			},
+		}
+		_, _, ok := validateJacoYAML(j)
+		if ok {
+			t.Fatal("validation passed; expected tls-divergence rejection")
 		}
 	})
 

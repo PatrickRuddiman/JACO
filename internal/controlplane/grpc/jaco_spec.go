@@ -95,9 +95,11 @@ func validateJacoYAML(j *JacoYAML) (code string, message string, ok bool) {
 		}
 		serviceNames[s.Name] = true
 	}
-	// routeKey tracks (domain, path) → service to detect conflicts.
+	// (domain, path) is the uniqueness key — Caddy can only dispatch one
+	// upstream per request, so any duplicate (regardless of service/port/tls)
+	// would silently shadow another route. Reject all duplicates up front.
 	type domainPath struct{ domain, path string }
-	routeServices := map[domainPath]string{}
+	seenRoutes := map[domainPath]bool{}
 	for _, r := range j.Routes {
 		if r.Domain == "" {
 			return "validation_failed", "route domain is required", false
@@ -114,10 +116,10 @@ func validateJacoYAML(j *JacoYAML) (code string, message string, ok bool) {
 			return "validation_failed", fmt.Sprintf("route %q has unknown tls %q (want auto|off)", r.Domain, r.TLS), false
 		}
 		key := domainPath{r.Domain, r.Path}
-		if existing, seen := routeServices[key]; seen && existing != r.Service {
-			return "validation_failed", fmt.Sprintf("route conflict: domain %q path %q maps to multiple services", r.Domain, r.Path), false
+		if seenRoutes[key] {
+			return "validation_failed", fmt.Sprintf("route conflict: domain %q path %q is declared more than once; (domain, path) combinations must be unique", r.Domain, r.Path), false
 		}
-		routeServices[key] = r.Service
+		seenRoutes[key] = true
 	}
 	return "", "", true
 }
