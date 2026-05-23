@@ -4,10 +4,9 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"fmt"
+	"io"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -15,7 +14,6 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 
-	"github.com/PatrickRuddiman/jaco/internal/controlplane/ca"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -77,88 +75,55 @@ func nodeIssueJoinTokenCmd() *cobra.Command {
 
 func nodeJoinCmd() *cobra.Command {
 	c := &cobra.Command{
-		Use:   "join",
-		Short: "Join this node to an existing cluster (unauthenticated; gated by join token)",
+		Use:   "join --peer <host:port> --token <single-use>",
+		Short: "Join this node to an existing cluster (RPCs the local jacod)",
+		Long: `Join this node to an existing cluster.
+
+This RPCs the local jacod over its unix socket; the daemon does all the
+work (generates a CSR, dials the peer, exchanges via Cluster.NodeJoin for
+a signed cert + cluster CA, persists everything under $JACO_DATA_DIR/node/,
+opens its raft node, and connects to the existing cluster).`,
 	}
 	var (
-		address       string
-		joinToken     string
-		hostname      string
-		caCertPath    string
-		advertiseAddr string
+		socket    string
+		peer      string
+		joinToken string
 	)
-	c.Flags().StringVar(&address, "address", "", "leader gRPC address (host:port); required")
-	c.Flags().StringVar(&joinToken, "join-token", "", "single-use join token (or JACO_JOIN_TOKEN); required")
-	c.Flags().StringVar(&hostname, "name", "", "this node's hostname / raft local-id; required")
-	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM (TLS pin); required")
-	c.Flags().StringVar(&advertiseAddr, "advertise", "", "this node's raft transport address (host:port); required")
-	_ = c.MarkFlagRequired("address")
-	_ = c.MarkFlagRequired("name")
-	_ = c.MarkFlagRequired("ca-cert")
-	_ = c.MarkFlagRequired("advertise")
+	c.Flags().StringVar(&socket, "socket", socketDefault(), "local jacod unix socket")
+	c.Flags().StringVar(&peer, "peer", "", "leader / any-cluster-member gRPC address (host:port); required")
+	c.Flags().StringVar(&joinToken, "token", "", "single-use join token (or JACO_JOIN_TOKEN env)")
+	_ = c.MarkFlagRequired("peer")
 
 	c.RunE = func(_ *cobra.Command, _ []string) error {
 		if joinToken == "" {
 			joinToken = os.Getenv("JACO_JOIN_TOKEN")
 		}
 		if joinToken == "" {
-			return fmt.Errorf("--join-token or JACO_JOIN_TOKEN env is required")
+			return fmt.Errorf("--token or JACO_JOIN_TOKEN env is required")
 		}
-		dataDir := os.Getenv("JACO_DATA_DIR")
-		if dataDir == "" {
-			dataDir = "/var/lib/jaco"
-		}
-		if err := os.MkdirAll(filepath.Join(dataDir, "node"), 0o700); err != nil {
-			return fmt.Errorf("create node dir: %w", err)
-		}
-
-		keyPEM, csrPEM, err := ca.GenerateNodeKeypair(hostname)
-		if err != nil {
-			return fmt.Errorf("generate keypair: %w", err)
-		}
-
-		conn, err := dialServer(address, mustReadFile(caCertPath))
+		conn, err := dialDaemon(socket)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		resp, err := pb.NewClusterClient(conn).NodeJoin(ctx, &pb.NodeJoinRequest{
-			Name:          hostname,
-			JoinToken:     joinToken,
-			CsrPem:        csrPEM,
-			AdvertiseAddr: advertiseAddr,
-		})
-		if err != nil {
-			return err
-		}
-
-		// Persist the signed cert + CA + cluster_id + peers for the eventual
-		// `jaco serve` startup (task 17).
-		if err := os.WriteFile(filepath.Join(dataDir, "node", hostname+".key"), keyPEM, 0o600); err != nil {
-			return fmt.Errorf("write key: %w", err)
-		}
-		if err := os.WriteFile(filepath.Join(dataDir, "node", hostname+".crt"), resp.GetSignedCert(), 0o644); err != nil {
-			return fmt.Errorf("write cert: %w", err)
-		}
-		if err := os.WriteFile(filepath.Join(dataDir, "node", "ca.crt"), resp.GetCaCert(), 0o644); err != nil {
-			return fmt.Errorf("write ca: %w", err)
-		}
-		joinMeta := map[string]any{
-			"cluster_id": resp.GetClusterId(),
-			"peer_addrs": resp.GetPeerAddrs(),
-			"hostname":   hostname,
-			"advertise":  advertiseAddr,
-		}
-		metaBytes, _ := json.MarshalIndent(joinMeta, "", "  ")
-		if err := os.WriteFile(filepath.Join(dataDir, "node", "join.json"), metaBytes, 0o644); err != nil {
-			return fmt.Errorf("write join meta: %w", err)
-		}
-		fmt.Printf("Joined cluster %s; run `jaco serve` to start the daemon.\n", resp.GetClusterId())
-		return nil
+		return runNodeJoin(ctx, pb.NewClusterClient(conn), peer, joinToken, os.Stdout)
 	}
 	return c
+}
+
+// runNodeJoin is the unit-testable body: takes a pb.ClusterClient so tests
+// inject a fake without spinning up jacod.
+func runNodeJoin(ctx context.Context, client pb.ClusterClient, peer, token string, out io.Writer) error {
+	if _, err := client.Join(ctx, &pb.ClusterJoinRequest{
+		PeerAddr:  peer,
+		JoinToken: token,
+	}); err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "Joined cluster.")
+	return nil
 }
 
 // --- jaco node remove --------------------------------------------------------
