@@ -106,6 +106,7 @@ func newDaemon(t *testing.T) (*dgrpc.Server, pb.ClusterClient, string) {
 		UnixSocketPath: sock,
 		DataDir:        dataDir,
 		Hostname:       "node-b",
+		ClusterAddr:    freePort(t),
 	})
 	if err != nil {
 		t.Fatalf("dgrpc.New: %v", err)

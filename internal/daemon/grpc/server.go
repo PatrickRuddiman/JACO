@@ -15,6 +15,10 @@ import (
 
 	"google.golang.org/grpc"
 
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/fsm"
+	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	"github.com/PatrickRuddiman/jaco/internal/daemon/admission"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
@@ -22,12 +26,21 @@ import (
 // Server bundles the daemon-side gRPC server with its unix socket listener
 // + the InitGate that governs which RPCs accept while uninitialized.
 type Server struct {
-	gs        *grpc.Server
-	listener  net.Listener
-	gate      *admission.InitGate
+	gs         *grpc.Server
+	listener   net.Listener
+	gate       *admission.InitGate
 	socketPath string
 
 	cluster *clusterServer
+
+	// Populated by OpenRaft after Cluster.Init or Cluster.Join lands. The
+	// pre-OpenRaft state is "raft handle nil; RPCs that need raft return
+	// Unavailable + cluster_uninitialized via the gate".
+	raftMu  sync.RWMutex
+	raft    *raftnode.Node
+	state   *state.State
+	brokers *watch.Registry
+	fsm     *fsm.FSM
 
 	mu      sync.Mutex
 	started bool
@@ -86,21 +99,79 @@ func New(opts Options) (*Server, error) {
 		grpc.StreamInterceptor(gate.StreamInterceptor(nil)),
 	)
 
+	server := &Server{
+		gs:         gs,
+		listener:   lis,
+		gate:       gate,
+		socketPath: opts.UnixSocketPath,
+	}
 	cluster := &clusterServer{
 		gate:     gate,
 		dataDir:  opts.DataDir,
 		bindAddr: opts.ClusterAddr,
 		hostname: opts.Hostname,
+		server:   server,
 	}
+	server.cluster = cluster
 	pb.RegisterClusterServer(gs, cluster)
 
-	return &Server{
-		gs:         gs,
-		listener:   lis,
-		gate:       gate,
-		socketPath: opts.UnixSocketPath,
-		cluster:    cluster,
-	}, nil
+	return server, nil
+}
+
+// OpenRaft opens the persisted raft state and populates the Server's
+// raft/state/brokers/fsm handles. Called from Cluster.Init (after
+// bootstrap.Run) and from Cluster.Join (after persistJoin). Idempotent —
+// returns nil + leaves existing handles alone if already opened.
+func (s *Server) OpenRaft(hostname, bindAddr string) error {
+	s.raftMu.Lock()
+	defer s.raftMu.Unlock()
+	if s.raft != nil {
+		return nil
+	}
+	if hostname == "" {
+		return fmt.Errorf("OpenRaft: hostname is required")
+	}
+	if bindAddr == "" {
+		return fmt.Errorf("OpenRaft: bindAddr is required")
+	}
+	if s.cluster == nil || s.cluster.dataDir == "" {
+		return fmt.Errorf("OpenRaft: dataDir is required")
+	}
+
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	f := fsm.New(st, brokers)
+
+	node, err := raftnode.New(raftnode.Config{
+		DataDir:   s.cluster.dataDir,
+		BindAddr:  bindAddr,
+		LocalID:   hostname,
+		Bootstrap: false, // raft state already on disk
+		FSM:       f,
+	})
+	if err != nil {
+		return fmt.Errorf("raftnode.New: %w", err)
+	}
+
+	s.raft = node
+	s.state = st
+	s.brokers = brokers
+	s.fsm = f
+	return nil
+}
+
+// Raft returns the daemon's raft handle. nil pre-OpenRaft.
+func (s *Server) Raft() *raftnode.Node {
+	s.raftMu.RLock()
+	defer s.raftMu.RUnlock()
+	return s.raft
+}
+
+// State returns the daemon's state.State. nil pre-OpenRaft.
+func (s *Server) State() *state.State {
+	s.raftMu.RLock()
+	defer s.raftMu.RUnlock()
+	return s.state
 }
 
 // Serve blocks until Stop is called or the listener errors.
@@ -133,6 +204,15 @@ func (s *Server) Stop(ctx context.Context) {
 		s.gs.Stop()
 	}
 	_ = os.Remove(s.socketPath)
+
+	// Close raft + release the bolt-store file lock so a follow-on jacod
+	// boot (or test) can re-open the same data dir.
+	s.raftMu.Lock()
+	if s.raft != nil {
+		_ = s.raft.Shutdown()
+		s.raft = nil
+	}
+	s.raftMu.Unlock()
 }
 
 // Gate returns the InitGate so callers can flip MarkInitialized after a

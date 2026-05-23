@@ -18,8 +18,23 @@ import (
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
+// freePort returns a tcp port nothing's listening on. Closes the listener
+// but the port may be momentarily reused by something else; for tests
+// running in tight loops this is rare enough not to matter.
+func freePort(t *testing.T) string {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := lis.Addr().String()
+	_ = lis.Close()
+	return addr
+}
+
 // startServerWithDataDir spins up a jacod gRPC server with a working
-// DataDir + Hostname override (so Init can actually run bootstrap.Run).
+// DataDir + Hostname override + a free-port ClusterAddr so post-Init the
+// raft re-open lands on the same port bootstrap recorded.
 func startServerWithDataDir(t *testing.T, dataDir string) (*grpc.ClientConn, *dgrpc.Server) {
 	t.Helper()
 	sock := filepath.Join(t.TempDir(), "jacod.sock")
@@ -27,7 +42,7 @@ func startServerWithDataDir(t *testing.T, dataDir string) (*grpc.ClientConn, *dg
 		UnixSocketPath: sock,
 		DataDir:        dataDir,
 		Hostname:       "test-host",
-		// BindAddr left empty → bootstrap.Run defaults to 127.0.0.1:0.
+		ClusterAddr:    freePort(t),
 	})
 	if err != nil {
 		t.Fatalf("dgrpc.New: %v", err)
@@ -164,5 +179,40 @@ func TestInit_GatedMethodsUnblockedAfterInit(t *testing.T) {
 	_, err = c.Bootstrap(context.Background(), &pb.BootstrapRequest{})
 	if st, _ := status.FromError(err); st.Code() != codes.Unimplemented {
 		t.Errorf("post-Init Bootstrap code = %v, want Unimplemented", st.Code())
+	}
+}
+
+func TestInit_OpensRaftAndStatusReportsLeader(t *testing.T) {
+	// After Init, Cluster.Status should report a non-zero raft_index +
+	// the leader (which is this node since we're a single-node cluster).
+	conn, _ := startServerWithDataDir(t, t.TempDir())
+	c := pb.NewClusterClient(conn)
+
+	if _, err := c.Init(context.Background(), &pb.ClusterInitRequest{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait briefly for raft to elect itself leader.
+	var resp *pb.ClusterStatusResponse
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		var err error
+		resp, err = c.Status(context.Background(), &pb.ClusterStatusRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.GetLeader() != "" && resp.GetRaftIndex() > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if resp.GetLeader() == "" {
+		t.Errorf("Status.Leader empty post-Init (raft hasn't elected yet?)")
+	}
+	if resp.GetRaftIndex() == 0 {
+		t.Errorf("Status.RaftIndex = 0; bootstrap should have applied ClusterInit + ≥1 raft log entries")
+	}
+	if !resp.GetInitialized() {
+		t.Errorf("Status.Initialized = false post-Init")
 	}
 }

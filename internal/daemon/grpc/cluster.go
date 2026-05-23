@@ -33,10 +33,28 @@ type clusterServer struct {
 	dataDir  string
 	hostname string // override for tests; defaults to os.Hostname() at handler time
 	bindAddr string // raft TCP transport addr; cfg.ClusterAddr in production
+	server   *Server // back-reference so handlers can call OpenRaft / read raft handle
 
 	// mu guards the single-flight Init / Join. Concurrent Init calls would
 	// race on raft store creation; serialize them at the handler layer.
 	mu sync.Mutex
+}
+
+// effectiveHostname returns the test override when set, else os.Hostname().
+func (c *clusterServer) effectiveHostname() (string, error) {
+	if c.hostname != "" {
+		return c.hostname, nil
+	}
+	return os.Hostname()
+}
+
+// effectiveBindAddr returns the configured raft bind, defaulting to
+// 127.0.0.1:0 (ephemeral) when unset — same as bootstrap.Run's own default.
+func (c *clusterServer) effectiveBindAddr() string {
+	if c.bindAddr != "" {
+		return c.bindAddr
+	}
+	return "127.0.0.1:0"
 }
 
 // Init creates a brand-new single-node cluster on this daemon. Refuses when
@@ -58,21 +76,11 @@ func (c *clusterServer) Init(_ context.Context, req *pb.ClusterInitRequest) (*pb
 			"cluster_already_initialized: raft state on disk; restart jacod to pick it up")
 	}
 
-	hostname := c.hostname
-	if hostname == "" {
-		var err error
-		hostname, err = os.Hostname()
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "hostname: %v", err)
-		}
+	hostname, err := c.effectiveHostname()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "hostname: %v", err)
 	}
-
-	bindAddr := c.bindAddr
-	if bindAddr == "" {
-		// Single-node bootstrap with no peers can listen on loopback —
-		// the recorded address only matters once peers join.
-		bindAddr = "127.0.0.1:0"
-	}
+	bindAddr := c.effectiveBindAddr()
 
 	result, err := bootstrap.Run(bootstrap.Options{
 		DataDir:  c.dataDir,
@@ -84,6 +92,12 @@ func (c *clusterServer) Init(_ context.Context, req *pb.ClusterInitRequest) (*pb
 			return nil, status.Errorf(codes.FailedPrecondition, "cluster_already_initialized: %v", err)
 		}
 		return nil, status.Errorf(codes.Internal, "bootstrap: %v", err)
+	}
+
+	// Re-open raft for steady-state operation. bootstrap.Run shut down its
+	// own raft handle to release the bolt file lock.
+	if err := c.server.OpenRaft(hostname, bindAddr); err != nil {
+		return nil, status.Errorf(codes.Internal, "open raft post-bootstrap: %v", err)
 	}
 
 	c.gate.MarkInitialized()
@@ -119,13 +133,9 @@ func (c *clusterServer) Join(ctx context.Context, req *pb.ClusterJoinRequest) (*
 		return nil, status.Error(codes.InvalidArgument, "join_token is required")
 	}
 
-	hostname := c.hostname
-	if hostname == "" {
-		var err error
-		hostname, err = os.Hostname()
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "hostname: %v", err)
-		}
+	hostname, err := c.effectiveHostname()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "hostname: %v", err)
 	}
 
 	keyPEM, csrPEM, err := ca.GenerateNodeKeypair(hostname)
@@ -159,6 +169,14 @@ func (c *clusterServer) Join(ctx context.Context, req *pb.ClusterJoinRequest) (*
 
 	if err := persistJoin(c.dataDir, hostname, advertise, keyPEM, resp); err != nil {
 		return nil, status.Errorf(codes.Internal, "persist: %v", err)
+	}
+
+	// NB: opening raft post-Join requires the cluster's raft to already
+	// know about us (raft.AddVoter on the leader fires inside the peer's
+	// Cluster.NodeJoin handler). We open our local raft node here against
+	// the existing peer set; raft will catch up via snapshot+log.
+	if err := c.server.OpenRaft(hostname, advertise); err != nil {
+		return nil, status.Errorf(codes.Internal, "open raft post-join: %v", err)
 	}
 
 	c.gate.MarkInitialized()
@@ -195,11 +213,20 @@ func persistJoin(dataDir, hostname, advertise string, keyPEM []byte, resp *pb.No
 }
 
 // Status reports the daemon's initialized flag. Always callable, even pre-
-// init — the InitGate's AllowedPreInit list lets it through.
+// init — the InitGate's AllowedPreInit list lets it through. Post-Init the
+// response carries the raft leader + last index + the cluster's node list.
 func (c *clusterServer) Status(_ context.Context, _ *pb.ClusterStatusRequest) (*pb.ClusterStatusResponse, error) {
-	return &pb.ClusterStatusResponse{
+	resp := &pb.ClusterStatusResponse{
 		Initialized: c.gate.IsInitialized(),
-	}, nil
+	}
+	if raftNode := c.server.Raft(); raftNode != nil {
+		resp.Leader = string(raftNode.Raft.Leader())
+		resp.RaftIndex = raftNode.Raft.LastIndex()
+	}
+	if st := c.server.State(); st != nil {
+		resp.Nodes = st.Nodes.List()
+	}
+	return resp, nil
 }
 
 // raftExists reports whether $dataDir/raft/log.db exists. bootstrap.Run does
