@@ -236,7 +236,7 @@ func New(opts Options) (*Server, error) {
 	// target handlers get filled by wireControlPlane in startSubsystems
 	// after OpenRaft populates state + raft.
 	server.tokens = &tokensProxy{}
-	server.deploy = &deployProxy{}
+	server.deploy = &deployProxy{server: server}
 	server.audit = &auditProxy{}
 	server.watch = &watchProxy{}
 	pb.RegisterTokensServer(gs, server.tokens)

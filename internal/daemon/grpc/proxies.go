@@ -63,6 +63,7 @@ type deployProxy struct {
 	pb.UnimplementedDeployServer
 	mu     sync.RWMutex
 	target pb.DeployServer
+	server *Server // back-reference so Logs can call streamLocalLogs
 }
 
 func (p *deployProxy) set(t pb.DeployServer) { p.mu.Lock(); p.target = t; p.mu.Unlock() }
@@ -100,12 +101,16 @@ func (p *deployProxy) Status(ctx context.Context, req *pb.DeployStatusRequest) (
 	}
 	return t.Status(ctx, req)
 }
+// Logs is implemented locally on the daemon — the controlplane stub
+// returns Unimplemented because it needs a dockerx handle + hostname,
+// which only the daemon has. v0 ships local-only: streams logs for any
+// replica whose Host=this-node and skips remote replicas. Cross-host
+// fanout (Internal.Logs) is a follow-up.
 func (p *deployProxy) Logs(req *pb.LogsRequest, stream pb.Deploy_LogsServer) error {
-	t := p.get()
-	if t == nil {
+	if p.server == nil {
 		return errUnavail
 	}
-	return t.Logs(req, stream)
+	return p.server.streamLocalLogs(req, stream)
 }
 
 type auditProxy struct {
