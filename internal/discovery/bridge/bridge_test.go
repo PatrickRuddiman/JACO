@@ -161,6 +161,9 @@ func TestEnsure_CreatesNetworkWithLabelsAndIPAM(t *testing.T) {
 		if got := n.Options["com.docker.network.bridge.name"]; got != bridge.LinuxBridgeName("sample", "frontend") {
 			t.Errorf("bridge name option = %q", got)
 		}
+		if got := n.Options["com.docker.network.driver.mtu"]; got != "1420" {
+			t.Errorf("mtu option = %q, want 1420", got)
+		}
 		if len(n.IPAM.Config) != 1 {
 			t.Fatalf("IPAM config len = %d", len(n.IPAM.Config))
 		}

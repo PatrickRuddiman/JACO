@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 
 	"github.com/docker/docker/api/types/filters"
@@ -19,6 +20,11 @@ import (
 
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 )
+
+// BridgeMTU is the MTU set on every JACO docker bridge. Capped below the
+// default 1500 to leave room for WireGuard encapsulation overhead so
+// cross-host packets routed over jaco0 don't fragment (issue #28).
+const BridgeMTU = 1420
 
 // DockerNetworkName returns the user-facing docker network identifier used
 // by NetworkConnect calls. compose's "default" network is renamed to
@@ -126,6 +132,9 @@ func Ensure(ctx context.Context, d dockerx.Docker, deployment, network, cidr, cl
 		},
 		Options: map[string]string{
 			"com.docker.network.bridge.name": LinuxBridgeName(deployment, network),
+			// Cap MTU below the WireGuard overhead so cross-host packets
+			// (issue #28) don't fragment when routed over jaco0.
+			"com.docker.network.driver.mtu": strconv.Itoa(BridgeMTU),
 		},
 	}
 	if _, err := d.NetworkCreate(ctx, name, opts); err != nil {
