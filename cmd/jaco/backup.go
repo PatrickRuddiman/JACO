@@ -68,7 +68,10 @@ func backupCmd() *cobra.Command {
 				break
 			}
 			if err != nil {
-				return fmt.Errorf("stream recv: %w", cliclient.FormatError(err))
+				// cliclient.FormatError already produces an operator-facing
+				// "Error: <code>: <message>" line; wrapping it with another
+				// prefix here yields a confusing double "Error:" in stderr.
+				return cliclient.FormatError(err)
 			}
 			n, err := f.Write(chunk.GetData())
 			if err != nil {
