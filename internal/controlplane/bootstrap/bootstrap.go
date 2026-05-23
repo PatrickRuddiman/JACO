@@ -37,7 +37,14 @@ type Options struct {
 	// empty, raft derives advertise from BindAddr — fine for tests that
 	// bind to a real loopback IP, broken for production 0.0.0.0 binds.
 	AdvertiseAddr string
-	LogOut        io.Writer // raft log destination; nil silences
+	// ListenAdvertiseAddr is the host:port peers will dial to reach this
+	// node's cross-host gRPC listener. The node cert's IP SAN is derived
+	// from this address (not AdvertiseAddr): the cert is presented by the
+	// gRPC TLS listener, and clients dial that listener by its IP. When
+	// empty, falls back to AdvertiseAddr (common case where listen and
+	// cluster advertise IPs match).
+	ListenAdvertiseAddr string
+	LogOut              io.Writer // raft log destination; nil silences
 }
 
 // Result is what the CLI prints (and tests assert against).
@@ -77,15 +84,29 @@ func Run(opts Options) (*Result, error) {
 		return nil, fmt.Errorf("generate cluster CA: %w", err)
 	}
 
-	// Parse the advertise IP (if any) so it ends up as an IP SAN on the node cert.
-	// AdvertiseAddr is "host:port"; strip the port and try to parse as IP.
-	var advertiseIP net.IP
-	if opts.AdvertiseAddr != "" {
-		if host, _, err := net.SplitHostPort(opts.AdvertiseAddr); err == nil {
-			advertiseIP = net.ParseIP(host) // nil when host is a DNS name — that's fine
+	// Collect IP SANs for the node cert. The gRPC listen advertise IP is
+	// what matters for TLS validation (clients dial the gRPC listener by
+	// IP); the raft transport advertise IP is included too when distinct
+	// so that any code path dialing the raft advertise face by IP also
+	// validates. ListenAdvertiseAddr defaults to AdvertiseAddr — in the
+	// common case both values are the same and dedupe in
+	// ca.GenerateNodeKeypair collapses them into one SAN.
+	listenAdvertise := opts.ListenAdvertiseAddr
+	if listenAdvertise == "" {
+		listenAdvertise = opts.AdvertiseAddr
+	}
+	var listenIP, clusterIP net.IP
+	if listenAdvertise != "" {
+		if host, _, err := net.SplitHostPort(listenAdvertise); err == nil {
+			listenIP = net.ParseIP(host) // nil when host is a DNS name — that's fine
 		}
 	}
-	nodeKeyPEM, csrPEM, err := ca.GenerateNodeKeypair(opts.Name, advertiseIP)
+	if opts.AdvertiseAddr != "" {
+		if host, _, err := net.SplitHostPort(opts.AdvertiseAddr); err == nil {
+			clusterIP = net.ParseIP(host)
+		}
+	}
+	nodeKeyPEM, csrPEM, err := ca.GenerateNodeKeypair(opts.Name, listenIP, clusterIP)
 	if err != nil {
 		return nil, fmt.Errorf("generate node keypair: %w", err)
 	}
