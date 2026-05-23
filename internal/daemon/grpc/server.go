@@ -28,6 +28,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/daemon/admission"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/firewall"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/wgmesh"
+	"github.com/PatrickRuddiman/jaco/internal/ingress/rebuild"
 	"google.golang.org/grpc/credentials/insecure"
 	hraft "github.com/hashicorp/raft"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
@@ -420,6 +421,26 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 		}()
 	} else {
 		s.logger.Printf("firewall unavailable (%v), drift detector skipped", err)
+	}
+
+	// Ingress: the Reloader fires whenever Routes / ReplicasObserved /
+	// Certs / ChallengeTokens change, rebuilds the Caddy JSON config,
+	// and execs `caddy reload`. Skipped when the caddy binary isn't on
+	// PATH (typical on dev hosts) — the Builder still runs but the
+	// Loader is a no-op so the daemon doesn't crash.
+	if caddyAvailable() {
+		// ACME email empty until we plumb config; operators set it via
+		// the future jacod.yaml.acme_email field.
+		rl := rebuild.New(brokers, ingressBuilder(st, ""), ingressLoader())
+		s.subsystemsWG.Add(1)
+		go func() {
+			defer s.subsystemsWG.Done()
+			if err := rl.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				s.logger.Printf("ingress.Reloader.Run exited: %v", err)
+			}
+		}()
+	} else {
+		s.logger.Printf("caddy binary not found on PATH, ingress reload loop skipped")
 	}
 
 	// Runtime reconciler: skipped when no Docker handle was injected (the
