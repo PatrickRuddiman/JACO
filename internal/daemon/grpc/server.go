@@ -26,6 +26,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	"github.com/PatrickRuddiman/jaco/internal/daemon/admission"
+	dnsmgr "github.com/PatrickRuddiman/jaco/internal/discovery/dns"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/firewall"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/wgmesh"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/rebuild"
@@ -422,6 +423,19 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 	} else {
 		s.logger.Printf("firewall unavailable (%v), drift detector skipped", err)
 	}
+
+	// Discovery: per-bridge DNS Manager. Spawns a UDP+TCP listener per
+	// (deployment, network) subnet on the bridge gateway IP. Skips
+	// gracefully when listeners can't bind (no docker bridge yet, or
+	// missing CAP_NET_BIND_SERVICE).
+	dnsMgr := &dnsmgr.Manager{State: st, Brokers: brokers, Logger: s.logger, Hostname: hostname}
+	s.subsystemsWG.Add(1)
+	go func() {
+		defer s.subsystemsWG.Done()
+		if err := dnsMgr.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			s.logger.Printf("dns.Manager.Run exited: %v", err)
+		}
+	}()
 
 	// Ingress: the Reloader fires whenever Routes / ReplicasObserved /
 	// Certs / ChallengeTokens change, rebuilds the Caddy JSON config,
