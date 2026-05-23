@@ -35,7 +35,10 @@ func (s *Server) streamDeploymentLogs(req *pb.LogsRequest, stream pb.Deploy_Logs
 	if st == nil {
 		return status.Error(codes.Unavailable, "state_unavailable")
 	}
-	hostname := s.cluster.hostname
+	hostname, err := s.cluster.effectiveHostname()
+	if err != nil {
+		return status.Errorf(codes.Internal, "hostname: %v", err)
+	}
 
 	hosts := map[string]bool{}
 	for _, r := range st.ReplicasDesired.List() {
@@ -142,9 +145,9 @@ func (s *Server) streamLocalLogs(req *pb.LogsRequest, sender logsSender) error {
 	if st == nil {
 		return status.Error(codes.Unavailable, "state_unavailable")
 	}
-	hostname := s.cluster.hostname
-	if hostname == "" {
-		return status.Error(codes.Internal, "hostname_not_resolved")
+	hostname, err := s.cluster.effectiveHostname()
+	if err != nil {
+		return status.Errorf(codes.Internal, "hostname: %v", err)
 	}
 
 	wanted := req.GetDeployment()
