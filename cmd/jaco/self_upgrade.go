@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -124,10 +125,47 @@ func runSelfUpgrade(ctx context.Context, url, prefix string, pubKey string, fetc
 		return fmt.Errorf("rename jacod (jaco was restored): %w", err)
 	}
 
-	// 7. systemctl restart + health poll — left to the operator. Full
-	// restart-and-poll orchestration lands alongside the daemon-entry
-	// scheduler/runtime/ingress wiring (later iters of task 38).
+	// 7. systemctl restart jacod + health poll. On poll failure roll
+	// back both binaries from .prev and surface the failure so the
+	// operator knows the upgrade was aborted (task 37 deferral).
+	if err := postUpgradeRestart(ctx, jacoBin, jacodBin); err != nil {
+		// Try to roll back to the previous binaries.
+		if _, statErr := os.Stat(jacoBin + ".prev"); statErr == nil {
+			_ = os.Rename(jacoBin+".prev", jacoBin)
+		}
+		if _, statErr := os.Stat(jacodBin + ".prev"); statErr == nil {
+			_ = os.Rename(jacodBin+".prev", jacodBin)
+		}
+		// Attempt one more restart with the rolled-back binaries.
+		_ = exec.CommandContext(ctx, "systemctl", "restart", "jacod").Run()
+		return fmt.Errorf("post-upgrade health check failed; rolled back: %w", err)
+	}
 	return nil
+}
+
+// postUpgradeRestart restarts jacod via systemctl + polls
+// `<bin>/jacod --version` for up-to-3 seconds as a liveness check.
+// Returns the first error encountered. On hosts without systemctl
+// (developer machines, container CI) the restart step is a soft skip
+// — the binaries swap landed but the restart is the operator's job.
+func postUpgradeRestart(ctx context.Context, jacoBin, jacodBin string) error {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, "systemctl", "restart", "jacod")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl restart jacod: %w: %s", err, string(out))
+	}
+	// Poll `<bin> --version` — jacod prints the embedded version and
+	// exits 0 when the new binary is healthy enough to start.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if out, err := exec.CommandContext(ctx, jacodBin, "--version").Output(); err == nil && len(out) > 0 {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("jacod did not report a version within 3s post-restart")
 }
 
 // fetcher abstracts HTTP for testability.
