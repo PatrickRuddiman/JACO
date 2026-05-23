@@ -78,14 +78,11 @@ func (i *internalServer) EnsureSubnet(_ context.Context, req *pb.EnsureSubnetReq
 		return nil, status.Error(codes.InvalidArgument, "deployment, network and host are required")
 	}
 
-	st := i.server.State()
-	allocator, err := ipam.New(st, func(b []byte) error {
-		_, applyErr := r.Apply(b, 0)
-		return applyErr
-	}, i.server.ipamPool)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "ipam init: %v", err)
+	allocator := i.server.IPAMAllocator()
+	if allocator == nil {
+		return nil, status.Error(codes.Unavailable, "ipam_unavailable: allocator not initialized")
 	}
+	st := i.server.State()
 
 	before := st.Subnets.Len()
 	sn, err := allocator.Allocate(req.GetDeployment(), req.GetNetwork(), req.GetHost())

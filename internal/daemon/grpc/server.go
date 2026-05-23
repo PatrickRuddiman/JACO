@@ -70,6 +70,13 @@ type Server struct {
 	brokers *watch.Registry
 	fsm     *fsm.FSM
 
+	// ipamAllocator is the single per-leader /24 allocator. Shared between
+	// the Internal.EnsureSubnet RPC handler and the local reconciler's
+	// ensureSubnet closure so their read-nextFree-apply sequences serialize
+	// on one mutex (separate instances would race on the free pool). Set in
+	// startSubsystems under raftMu.
+	ipamAllocator *ipam.IPAM
+
 	// subsystemsCancel cancels every steady-state goroutine spawned by
 	// OpenRaft (scheduler.Run, restarter.Run, etc). Reset to nil after Stop
 	// drains subsystemsWG.
@@ -391,6 +398,15 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 		return err
 	}
 
+	// Single shared /24 allocator (we already hold raftMu here). The
+	// EnsureSubnet RPC handler and the reconciler's ensureSubnet closure
+	// both use this instance so allocations serialize on one mutex.
+	if allocator, err := ipam.New(st, apply, s.ipamPool); err != nil {
+		s.logger.Printf("ipam allocator init: %v (per-host subnet allocation disabled)", err)
+	} else {
+		s.ipamAllocator = allocator
+	}
+
 	rollouts := rollout.New(st, apply, rollout.SystemClock())
 	sched := scheduler.New(st, brokers, node, apply, rollouts)
 	s.subsystemsWG.Add(1)
@@ -615,7 +631,47 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 			}
 			return rpcErr
 		}
-		rec := reconciler.New(s.docker, st, brokers, hostname, health.SubmitFn(submit), s.logger)
+		// ensureSubnet allocates this host's /24 for a replica's network.
+		// On the leader it uses the shared allocator directly; on a follower
+		// it forwards to the leader's Internal.EnsureSubnet. Pool exhaustion
+		// is normalized to reconciler.ErrSubnetPoolExhausted; everything else
+		// is transient and retried on the reconciler's next tick.
+		ensureSubnet := func(ctx context.Context, deployment, network, host string) (string, error) {
+			if node.IsLeader() {
+				allocator := s.IPAMAllocator()
+				if allocator == nil {
+					return "", fmt.Errorf("ensureSubnet: ipam allocator not initialized")
+				}
+				sn, err := allocator.Allocate(deployment, network, host)
+				if err != nil {
+					if ipam.IsExhausted(err) {
+						return "", reconciler.ErrSubnetPoolExhausted
+					}
+					return "", err
+				}
+				return sn.GetCidr(), nil
+			}
+			leaderAddr := leaderGRPCAddr(st, node)
+			if leaderAddr == "" {
+				return "", fmt.Errorf("ensureSubnet: no leader gRPC address known")
+			}
+			conn, dialErr := grpc.NewClient(leaderAddr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})))
+			if dialErr != nil {
+				return "", fmt.Errorf("ensureSubnet: dial leader %s: %w", leaderAddr, dialErr)
+			}
+			defer conn.Close()
+			resp, rpcErr := pb.NewInternalClient(conn).EnsureSubnet(ctx, &pb.EnsureSubnetRequest{
+				Deployment: deployment, Network: network, Host: host,
+			})
+			if rpcErr != nil {
+				if status.Code(rpcErr) == codes.ResourceExhausted {
+					return "", reconciler.ErrSubnetPoolExhausted
+				}
+				return "", rpcErr
+			}
+			return resp.GetCidr(), nil
+		}
+		rec := reconciler.New(s.docker, st, brokers, hostname, health.SubmitFn(submit), reconciler.EnsureSubnetFn(ensureSubnet), s.logger)
 		s.subsystemsWG.Add(1)
 		go func() {
 			defer s.subsystemsWG.Done()
@@ -638,6 +694,13 @@ func (s *Server) State() *state.State {
 	s.raftMu.RLock()
 	defer s.raftMu.RUnlock()
 	return s.state
+}
+
+// IPAMAllocator returns the shared per-leader /24 allocator. nil pre-OpenRaft.
+func (s *Server) IPAMAllocator() *ipam.IPAM {
+	s.raftMu.RLock()
+	defer s.raftMu.RUnlock()
+	return s.ipamAllocator
 }
 
 // Serve blocks until Stop is called or one of the listeners errors. When a
