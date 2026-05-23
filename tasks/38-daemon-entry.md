@@ -15,16 +15,15 @@ Ship `cmd/jacod/main.go` — the long-running daemon that owns raft, the gRPC se
 - [x] **iter 4** — `Cluster.Init` handler. Refuses with FailedPrecondition + "cluster_already_initialized" when raft state already exists on disk. Calls `bootstrap.Run`, persists CA + cert + first operator token, flips InitGate.
 - [x] **iter 5** — `Cluster.Join` handler. Refuses with cluster_already_initialized when raft state exists. Generates CSR, dials peer over TLS-skip-verify (join_token is trust anchor), exchanges via Cluster.NodeJoin, persists certs + join.json, flips gate.
 - [x] **iter 6** — `Server.OpenRaft` opens raft + state + brokers + fsm from persisted state. Called post-Init and post-Join. Cluster.Status now reports raft Leader + RaftIndex + Nodes.
-- [ ] **Deferred — iter 10+**: wire the steady-state goroutines once `Initialized=true` flips:
-  - `scheduler.Scheduler.Run(ctx)` (task 21)
-  - `scheduler/health.Restarter.Run(ctx)` (task 23)
+- [x] **iter 10** — wire `scheduler.Scheduler.Run(ctx)` (task 21) and `scheduler/health.Restarter.Run(ctx)` (task 23) from `Server.OpenRaft`. Goroutines self-gate on raft leadership; Stop cancels them and waits up to 5s before raft.Shutdown. Verified by `TestSubsystems_SchedulerMaterializesReplicaDesired` (raft-applies a DeploymentApply, asserts ReplicasDesired populates within debounce window) and `TestSubsystems_StopDrainsGoroutinesCleanly`.
+- [ ] **Deferred — iter 11+**: wire the remaining steady-state goroutines:
+  - `runtime/lifecycle.Reconcile` orphan sweep on boot (task 17) — requires dockerx.Docker handle.
+  - `runtime/health.Watcher` per-replica goroutines (task 18) — subscribes to ReplicasDesired host=self.
   - `discovery/firewall.Reconciler.Loop(ctx)` (task 30) — only if `firewall.IsAvailable()` returns nil.
   - `discovery/wgmesh.Sync` (task 26) — only if kernel WG is present.
-  - `ingress/rebuild.Reloader.Run(ctx)` (task 34) — needs caddy/v2 dep.
-  - `runtime/lifecycle.Reconcile` orphan sweep on boot (task 17).
-  - `runtime/health.Watcher` per-replica goroutines (task 18).
   - `discovery/dns` per-bridge UDP+TCP listener (task 29).
-  Substantial wiring across multiple slice boundaries — each subsystem has its own iter.
+  - `ingress/rebuild.Reloader.Run(ctx)` (task 34) — needs caddy/v2 dep.
+  Each subsystem has its own iter; runtime + health unblock single-node container creation.
 - [x] **iter 3 + 6** — Graceful shutdown via signalContext (SIGTERM/SIGINT cancels root ctx, server.Stop is graceful with a 10s timeout, raft.Shutdown closes the bolt store last so the file lock releases).
 - [x] **iter 7** — `cmd/jaco/cluster.go` ships `jaco cluster init` + `jaco cluster status`; both dial the local unix socket via `dialDaemon`. `cmd/jaco/node.go::join` rewritten as a thin RPC wrapper. `cmd/jaco/bootstrap.go` deleted (superseded by `jaco cluster init`).
 - [x] **iter 7** — Unix-socket dial helper lives in `cmd/jaco/cluster.go::dialDaemon` (small enough not to need a separate cliclient package). CLI gains `--socket` flag (default `/var/run/jaco/jaco.sock`, `JACO_SOCKET` env override).

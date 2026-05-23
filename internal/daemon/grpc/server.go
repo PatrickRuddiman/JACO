@@ -8,10 +8,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -20,6 +22,8 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	"github.com/PatrickRuddiman/jaco/internal/daemon/admission"
+	"github.com/PatrickRuddiman/jaco/internal/scheduler"
+	schedhealth "github.com/PatrickRuddiman/jaco/internal/scheduler/health"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -41,6 +45,16 @@ type Server struct {
 	state   *state.State
 	brokers *watch.Registry
 	fsm     *fsm.FSM
+
+	// subsystemsCancel cancels every steady-state goroutine spawned by
+	// OpenRaft (scheduler.Run, restarter.Run, etc). Reset to nil after Stop
+	// drains subsystemsWG.
+	subsystemsCancel context.CancelFunc
+	subsystemsWG     sync.WaitGroup
+
+	// logger receives subsystem errors so they surface in jacod's stderr
+	// instead of disappearing into goroutine panics. nil → log.Default().
+	logger *log.Logger
 
 	mu      sync.Mutex
 	started bool
@@ -67,6 +81,10 @@ type Options struct {
 	// Hostname overrides os.Hostname() at handler time. Tests use this;
 	// production leaves it empty.
 	Hostname string
+
+	// Logger receives subsystem errors. nil → log.Default(). Tests pass a
+	// log.Logger writing to an io.Discard to suppress noise.
+	Logger *log.Logger
 }
 
 // New builds a Server. Doesn't start anything yet — call Serve.
@@ -99,11 +117,16 @@ func New(opts Options) (*Server, error) {
 		grpc.StreamInterceptor(gate.StreamInterceptor(nil)),
 	)
 
+	logger := opts.Logger
+	if logger == nil {
+		logger = log.Default()
+	}
 	server := &Server{
 		gs:         gs,
 		listener:   lis,
 		gate:       gate,
 		socketPath: opts.UnixSocketPath,
+		logger:     logger,
 	}
 	cluster := &clusterServer{
 		gate:     gate,
@@ -157,7 +180,45 @@ func (s *Server) OpenRaft(hostname, bindAddr string) error {
 	s.state = st
 	s.brokers = brokers
 	s.fsm = f
+
+	s.startSubsystems(node, st, brokers)
 	return nil
+}
+
+// startSubsystems spins up every per-host goroutine that depends on raft +
+// state being open. Called from OpenRaft under s.raftMu (so the goroutines
+// see fully-populated handles). All goroutines self-cancel when
+// s.subsystemsCancel fires from Stop.
+//
+// v0 wires scheduler.Run (desired-state reconciler, leader-only) and
+// scheduler/health.Restarter.Run (restart policy, leader-only). Runtime,
+// discovery, and ingress wiring lands in subsequent iters.
+func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *watch.Registry) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.subsystemsCancel = cancel
+
+	apply := func(cmd []byte) error {
+		_, err := node.Apply(cmd, 0)
+		return err
+	}
+
+	sched := scheduler.New(st, brokers, node, apply)
+	s.subsystemsWG.Add(1)
+	go func() {
+		defer s.subsystemsWG.Done()
+		if err := sched.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			s.logger.Printf("scheduler.Run exited: %v", err)
+		}
+	}()
+
+	restarter := schedhealth.New(st, brokers, node, apply)
+	s.subsystemsWG.Add(1)
+	go func() {
+		defer s.subsystemsWG.Done()
+		if err := restarter.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			s.logger.Printf("scheduler/health.Restarter.Run exited: %v", err)
+		}
+	}()
 }
 
 // Raft returns the daemon's raft handle. nil pre-OpenRaft.
@@ -204,6 +265,24 @@ func (s *Server) Stop(ctx context.Context) {
 		s.gs.Stop()
 	}
 	_ = os.Remove(s.socketPath)
+
+	// Cancel steady-state goroutines BEFORE shutting raft so they don't
+	// race against a nil raft handle. WaitGroup drains with a 5s budget;
+	// after that we proceed regardless to avoid hanging the daemon.
+	s.raftMu.Lock()
+	cancel := s.subsystemsCancel
+	s.subsystemsCancel = nil
+	s.raftMu.Unlock()
+	if cancel != nil {
+		cancel()
+		done := make(chan struct{})
+		go func() { s.subsystemsWG.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			s.logger.Printf("subsystems shutdown timed out after 5s")
+		}
+	}
 
 	// Close raft + release the bolt-store file lock so a follow-on jacod
 	// boot (or test) can re-open the same data dir.
