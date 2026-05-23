@@ -31,6 +31,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/discovery/firewall"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/wgmesh"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/rebuild"
+	"github.com/PatrickRuddiman/jaco/internal/ingress/storage"
 	"google.golang.org/grpc/credentials/insecure"
 	hraft "github.com/hashicorp/raft"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
@@ -489,6 +490,12 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 	// PATH (typical on dev hosts) — the Builder still runs but the
 	// Loader is a no-op so the daemon doesn't crash.
 	if caddyAvailable() {
+		// Construct + register the raft-backed Storage with caddy so
+		// configs referencing module "jaco" resolve at load time
+		// (task 33 deferral). hostname is the lessee in cert locks.
+		jacoStorage := storage.New(st, apply, hostname, nil)
+		storage.SetDefaultStorage(jacoStorage)
+
 		// ACME email empty until we plumb config; operators set it via
 		// the future jacod.yaml.acme_email field.
 		rl := rebuild.New(brokers, ingressBuilder(st, ""), ingressLoader())

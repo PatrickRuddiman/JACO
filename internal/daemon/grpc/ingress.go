@@ -6,6 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync/atomic"
+
+	"github.com/caddyserver/caddy/v2"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/config"
@@ -55,15 +58,40 @@ func ingressBuilder(st *state.State, acmeEmail string) func() ([]byte, error) {
 	}
 }
 
-// ingressLoader is the rebuild.Loader concrete impl. Writes the rendered
-// bytes to ingressConfigPath and execs `caddy reload --config <path>`.
-// Returns nil when caddy isn't on PATH so the daemon doesn't crash on dev
-// hosts; the Reloader skips writing in that case.
+// ingressLoader is the rebuild.Loader concrete impl. Default mode is
+// embedded — calls caddy.Load directly, no IPC, no exec (task 32
+// deferral). JACO_INGRESS_EXEC=1 falls back to the v0 path that writes
+// /etc/caddy/jaco.json + execs `caddy reload`, useful when the operator
+// wants caddy crashes to stay isolated from jacod.
 func ingressLoader() func(ctx context.Context, cfg []byte) error {
+	if os.Getenv("JACO_INGRESS_EXEC") == "1" {
+		return ingressLoaderExec()
+	}
+	return ingressLoaderEmbedded()
+}
+
+// ingressLoaderEmbedded calls caddy.Load on every config — caddy handles
+// the first-config-vs-reload distinction internally. Panics in caddy
+// surface back into the daemon's main goroutine; operators wanting
+// isolation can flip JACO_INGRESS_EXEC=1.
+func ingressLoaderEmbedded() func(ctx context.Context, cfg []byte) error {
+	var started atomic.Bool
+	return func(_ context.Context, cfg []byte) error {
+		if err := caddy.Load(cfg, false); err != nil {
+			return fmt.Errorf("caddy.Load: %w", err)
+		}
+		started.Store(true)
+		return nil
+	}
+}
+
+// ingressLoaderExec is the v0 fallback: write the config to disk + exec
+// `caddy reload`. Skips silently when caddy isn't on PATH.
+func ingressLoaderExec() func(ctx context.Context, cfg []byte) error {
 	caddyBin, _ := exec.LookPath("caddy")
 	return func(ctx context.Context, cfg []byte) error {
 		if caddyBin == "" {
-			return nil // gracefully skip — Reloader will see byte-identical on the next pass
+			return nil
 		}
 		if err := os.MkdirAll(filepath.Dir(ingressConfigPath), 0o755); err != nil {
 			return fmt.Errorf("mkdir caddy config dir: %w", err)
@@ -79,11 +107,16 @@ func ingressLoader() func(ctx context.Context, cfg []byte) error {
 	}
 }
 
-// caddyAvailable reports whether the caddy binary is on PATH. The daemon
-// uses this as the feature gate for spawning the ingress Reloader.
+// caddyAvailable reports whether the daemon can do ingress reloads —
+// always true when the embedded path is on (default; caddy/v2 is
+// imported), and falls back to "caddy binary on PATH" when the operator
+// flips JACO_INGRESS_EXEC=1.
 func caddyAvailable() bool {
-	_, err := exec.LookPath("caddy")
-	return err == nil
+	if os.Getenv("JACO_INGRESS_EXEC") == "1" {
+		_, err := exec.LookPath("caddy")
+		return err == nil
+	}
+	return true
 }
 
 func replicaStateString(s pb.ReplicaState) string {
