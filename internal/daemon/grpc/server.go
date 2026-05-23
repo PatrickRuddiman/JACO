@@ -37,6 +37,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/runtime/reconciler"
 	"github.com/PatrickRuddiman/jaco/internal/scheduler"
 	schedhealth "github.com/PatrickRuddiman/jaco/internal/scheduler/health"
+	"github.com/PatrickRuddiman/jaco/internal/scheduler/rollout"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -313,7 +314,8 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 		return err
 	}
 
-	sched := scheduler.New(st, brokers, node, apply)
+	rollouts := rollout.New(st, apply, rollout.SystemClock())
+	sched := scheduler.New(st, brokers, node, apply, rollouts)
 	s.subsystemsWG.Add(1)
 	go func() {
 		defer s.subsystemsWG.Done()

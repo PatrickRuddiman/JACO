@@ -43,7 +43,7 @@ func newScheduler(t *testing.T, leader bool) (*scheduler.Scheduler, *state.State
 		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
 		return nil
 	}
-	s := scheduler.New(st, brokers, lead, applier)
+	s := scheduler.New(st, brokers, lead, applier, nil)
 	return s, st, f, lead
 }
 
@@ -281,7 +281,7 @@ func TestReconcile_PinnedHostFailureMarksDeploymentPending(t *testing.T) {
 		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
 		return nil
 	}
-	s := scheduler.New(st, brokers, &fakeLeader{leader: true}, applier)
+	s := scheduler.New(st, brokers, &fakeLeader{leader: true}, applier, nil)
 
 	seedNode(t, f, "node-a", &raftIdx)
 	// Apply a deployment pinning to node-z (which doesn't exist).

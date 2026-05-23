@@ -24,6 +24,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/runtime/compose"
 	"github.com/PatrickRuddiman/jaco/internal/scheduler/counter"
 	"github.com/PatrickRuddiman/jaco/internal/scheduler/placement"
+	"github.com/PatrickRuddiman/jaco/internal/scheduler/rollout"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -50,14 +51,20 @@ type Scheduler struct {
 	leader  LeaderStatus
 	apply   Applier
 
+	// rollouts drives image-change orchestration. nil → fall back to the
+	// minimal one-replica-per-pass image swap from iter 29 (still safe;
+	// just no formal plan / audit / rollback-on-failure).
+	rollouts *rollout.Rollout
+
 	mu     sync.Mutex
 	active bool
 	cancel context.CancelFunc
 }
 
-// New constructs a Scheduler.
-func New(s *state.State, brokers *watch.Registry, leader LeaderStatus, apply Applier) *Scheduler {
-	return &Scheduler{state: s, brokers: brokers, leader: leader, apply: apply}
+// New constructs a Scheduler. rollouts may be nil for callers that don't
+// need the formal rollout state machine (existing tests).
+func New(s *state.State, brokers *watch.Registry, leader LeaderStatus, apply Applier, rollouts *rollout.Rollout) *Scheduler {
+	return &Scheduler{state: s, brokers: brokers, leader: leader, apply: apply, rollouts: rollouts}
 }
 
 // Run drives the reconcile loop. Blocks until ctx is cancelled. Should be
@@ -113,6 +120,11 @@ func (s *Scheduler) Run(ctx context.Context) error {
 func (s *Scheduler) Reconcile(_ context.Context) {
 	if !s.leader.IsLeader() {
 		return
+	}
+
+	// Abort any rollouts that timed out before placing new replicas.
+	if s.rollouts != nil {
+		_, _ = s.rollouts.CheckTimeouts(context.Background())
 	}
 
 	deployments := s.state.Deployments.List()
@@ -196,14 +208,19 @@ func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, no
 		})
 	}
 
-	// Detect a rolling image change: every current replica of this service
-	// already has the same (non-empty) image and that image differs from
-	// `image`. In that case, only emit one upsert per reconcile pass so we
-	// preserve the replicas-1 invariant (at most one replica down at any
-	// time). Adds / removes / host migrations bypass this gate — they're
-	// not image changes.
+	// Image-change detection. If the formal rollout state machine is
+	// wired (s.rollouts != nil), drive it: start a plan on first
+	// detection, only emit upsert for the CurrentStep replica per pass,
+	// AdvanceStep when StepReady, Complete when CurrentStep ==
+	// TotalSteps. When s.rollouts is nil (test paths that don't need
+	// the formal machine) fall back to the minimal one-at-a-time gate
+	// from iter 29.
 	rolling := isRollingImageChange(currentByID, image)
 	imageChangedThisPass := false
+	rolloutStep := int32(-1) // -1 = no plan driving this pass
+	if s.rollouts != nil && rolling {
+		rolloutStep = s.driveRollout(dep, svc, int32(svc.GetReplicas()))
+	}
 
 	// 2. Adds + updates.
 	desiredIDs := map[string]bool{}
@@ -221,12 +238,20 @@ func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, no
 			if cur.GetHost() == d.host && cur.GetImage() == image {
 				continue // already matches desired
 			}
-			// Image-only change while rolling — only allow one per pass.
+			// Image-only change while rolling — gate by either the
+			// rollout-driven CurrentStep (when rollouts != nil) or the
+			// iter-29 one-at-a-time fallback (when nil).
 			if rolling && cur.GetHost() == d.host && cur.GetImage() != image {
-				if imageChangedThisPass {
-					continue
+				if rolloutStep >= 0 {
+					if d.index != rolloutStep {
+						continue
+					}
+				} else {
+					if imageChangedThisPass {
+						continue
+					}
+					imageChangedThisPass = true
 				}
-				imageChangedThisPass = true
 			}
 		}
 		cmds = append(cmds, &pb.Command{
@@ -251,6 +276,53 @@ func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, no
 	}
 
 	return cmds
+}
+
+// driveRollout returns the replica index the current reconcile pass
+// should upsert. -1 means "no rollout in progress / no advance this
+// pass" (callers fall back to nothing-to-do for image changes).
+//
+// On first detection of an image change, Start a plan for replicas 0…N-1.
+// When a plan is IN_PROGRESS and the current-step replica is RUNNING with
+// fresh health, AdvanceStep. When CurrentStep == TotalSteps, Complete.
+func (s *Scheduler) driveRollout(dep *pb.Deployment, svc *pb.ServiceSpec, totalSteps int32) int32 {
+	key := state.RolloutPlanKey(dep.GetName(), svc.GetName())
+	plan, ok := s.state.RolloutPlans.Get(key)
+	if !ok || plan.GetState() != pb.RolloutState_ROLLOUT_STATE_IN_PROGRESS {
+		if err := s.rollouts.Start(dep.GetName(), svc.GetName(), dep.GetAppliedRevision(), int(totalSteps)); err != nil {
+			// Start refuses when another plan is already IN_PROGRESS;
+			// fall back to "wait" (no upsert this pass).
+			return -1
+		}
+		// First step is index 0.
+		return 0
+	}
+	cur := plan.GetCurrentStep()
+	if cur >= plan.GetTotalSteps() {
+		_ = s.rollouts.Complete(dep.GetName(), svc.GetName())
+		return -1
+	}
+	ready, _, err := s.rollouts.StepReady(dep.GetName(), svc.GetName())
+	if err != nil {
+		return -1
+	}
+	if ready {
+		if err := s.rollouts.AdvanceStep(dep.GetName(), svc.GetName()); err != nil {
+			return -1
+		}
+		// AdvanceStep bumped current_step; the new step is what we
+		// upsert this pass. Re-read for the latest value.
+		plan, ok = s.state.RolloutPlans.Get(key)
+		if !ok {
+			return -1
+		}
+		cur = plan.GetCurrentStep()
+		if cur >= plan.GetTotalSteps() {
+			_ = s.rollouts.Complete(dep.GetName(), svc.GetName())
+			return -1
+		}
+	}
+	return cur
 }
 
 // isRollingImageChange reports whether all current replicas for the
