@@ -216,6 +216,116 @@ func TestBuildCaddyConfig_RoutesSortedByDomain(t *testing.T) {
 	}
 }
 
+func TestBuildCaddyConfig_PathMatcherWithCatchAll(t *testing.T) {
+	// Two routes for the same domain: /api/ → api service, "" → web service.
+	// Expected: one host block with subroutes, /api/* first then web catch-all.
+	routes := []config.Route{
+		{Domain: "jaco.sh", Deployment: "app", Service: "api", Port: 8080, TLSAuto: true, Path: "/api/"},
+		{Domain: "jaco.sh", Deployment: "app", Service: "web", Port: 80, TLSAuto: true, Path: ""},
+	}
+	replicas := []config.ReplicaObservedView{
+		{ID: "app-api-0", Deployment: "app", Service: "api", State: "running", LastHealthAt: pinnedNow().Add(-1 * time.Second)},
+		{ID: "app-web-0", Deployment: "app", Service: "web", State: "running", LastHealthAt: pinnedNow().Add(-1 * time.Second)},
+	}
+	services := map[string]config.ServiceMeta{
+		config.MetaKey("app", "api"): {Deployment: "app", Service: "api", ReplicaIPs: map[string]string{"app-api-0": "10.0.0.1"}},
+		config.MetaKey("app", "web"): {Deployment: "app", Service: "web", ReplicaIPs: map[string]string{"app-web-0": "10.0.0.2"}},
+	}
+	got, err := config.BuildCaddyConfig(routes, replicas, services, opts())
+	if err != nil {
+		t.Fatalf("BuildCaddyConfig: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	rts := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["jaco"].(map[string]any)["routes"].([]any)
+
+	// First entry should be the jaco.sh host block; last is fallback.
+	if len(rts) != 2 { // 1 domain block + fallback
+		t.Fatalf("routes len = %d, want 2 (1 domain + fallback)", len(rts))
+	}
+
+	domainBlock := rts[0].(map[string]any)
+	// Match should be host=jaco.sh
+	matches := domainBlock["match"].([]any)
+	host := matches[0].(map[string]any)["host"].([]any)
+	if host[0] != "jaco.sh" {
+		t.Errorf("host = %v, want jaco.sh", host[0])
+	}
+
+	// Handle should be a subroute with 2 sub-routes.
+	handle := domainBlock["handle"].([]any)[0].(map[string]any)
+	if handle["handler"] != "subroute" {
+		t.Errorf("handler = %v, want subroute", handle["handler"])
+	}
+	subRoutes := handle["routes"].([]any)
+	if len(subRoutes) != 2 {
+		t.Fatalf("subroutes len = %d, want 2 (/api/ + catch-all)", len(subRoutes))
+	}
+
+	// First subroute: path=/api/* → api service upstream 10.0.0.1:8080
+	firstSub := subRoutes[0].(map[string]any)
+	firstMatch := firstSub["match"].([]any)[0].(map[string]any)
+	pathMatcher := firstMatch["path"].([]any)
+	if pathMatcher[0] != "/api/*" {
+		t.Errorf("first sub-route path = %v, want /api/*", pathMatcher[0])
+	}
+	firstUpstreams := firstSub["handle"].([]any)[0].(map[string]any)["upstreams"].([]any)
+	if firstUpstreams[0].(map[string]any)["dial"] != "10.0.0.1:8080" {
+		t.Errorf("api upstream dial = %v, want 10.0.0.1:8080", firstUpstreams[0])
+	}
+
+	// Second subroute: catch-all → web service upstream 10.0.0.2:80
+	secondSub := subRoutes[1].(map[string]any)
+	// Catch-all has no match key.
+	if _, hasMatch := secondSub["match"]; hasMatch {
+		t.Error("catch-all subroute should have no match key")
+	}
+	secondUpstreams := secondSub["handle"].([]any)[0].(map[string]any)["upstreams"].([]any)
+	if secondUpstreams[0].(map[string]any)["dial"] != "10.0.0.2:80" {
+		t.Errorf("web upstream dial = %v, want 10.0.0.2:80", secondUpstreams[0])
+	}
+}
+
+func TestBuildCaddyConfig_LongestPrefixFirst(t *testing.T) {
+	// Three routes for jaco.sh: /api/v2/, /api/, and catch-all.
+	// Expected order in subroutes: /api/v2/* first, /api/* second, catch-all last.
+	routes := []config.Route{
+		{Domain: "jaco.sh", Deployment: "app", Service: "web", Port: 80, TLSAuto: true, Path: ""},
+		{Domain: "jaco.sh", Deployment: "app", Service: "apiv1", Port: 8080, TLSAuto: true, Path: "/api/"},
+		{Domain: "jaco.sh", Deployment: "app", Service: "apiv2", Port: 9090, TLSAuto: true, Path: "/api/v2/"},
+	}
+	got, err := config.BuildCaddyConfig(routes, nil, nil, opts())
+	if err != nil {
+		t.Fatalf("BuildCaddyConfig: %v", err)
+	}
+	var parsed map[string]any
+	_ = json.Unmarshal(got, &parsed)
+	rts := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["jaco"].(map[string]any)["routes"].([]any)
+	domainBlock := rts[0].(map[string]any)
+	handle := domainBlock["handle"].([]any)[0].(map[string]any)
+	subRoutes := handle["routes"].([]any)
+	if len(subRoutes) != 3 {
+		t.Fatalf("subroutes = %d, want 3", len(subRoutes))
+	}
+	// First should be /api/v2/*
+	firstPath := subRoutes[0].(map[string]any)["match"].([]any)[0].(map[string]any)["path"].([]any)[0]
+	if firstPath != "/api/v2/*" {
+		t.Errorf("first subroute path = %v, want /api/v2/*", firstPath)
+	}
+	// Second should be /api/*
+	secondPath := subRoutes[1].(map[string]any)["match"].([]any)[0].(map[string]any)["path"].([]any)[0]
+	if secondPath != "/api/*" {
+		t.Errorf("second subroute path = %v, want /api/*", secondPath)
+	}
+	// Third should be catch-all (no match)
+	if _, hasMatch := subRoutes[2].(map[string]any)["match"]; hasMatch {
+		t.Error("third subroute (catch-all) should have no match key")
+	}
+}
+
 func TestBuildCaddyConfig_ACMEPolicyShape(t *testing.T) {
 	routes := []config.Route{
 		{Domain: "web.example.com", Deployment: "sample", Service: "web", Port: 80, TLSAuto: true},

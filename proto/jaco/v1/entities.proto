@@ -142,6 +142,9 @@ message Route {
   string service = 3;
   int32 port = 4;
   bool tls_auto = 5;
+  // path is an optional URL path prefix (e.g. "/api/"). Default "" means
+  // catch-all. Caddy uses longest-prefix-first ordering for matching.
+  string path = 6;
 }
 
 // ----- Ingress entities -----

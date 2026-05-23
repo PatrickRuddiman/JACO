@@ -959,6 +959,9 @@ type Route struct {
 	Service       string                 `protobuf:"bytes,3,opt,name=service,proto3" json:"service,omitempty"`
 	Port          int32                  `protobuf:"varint,4,opt,name=port,proto3" json:"port,omitempty"`
 	TlsAuto       bool                   `protobuf:"varint,5,opt,name=tls_auto,json=tlsAuto,proto3" json:"tls_auto,omitempty"`
+	// Path is an optional URL path prefix (e.g. "/api/"). Default "" means
+	// catch-all. Caddy uses longest-prefix-first ordering for matching.
+	Path          string                 `protobuf:"bytes,6,opt,name=path,proto3" json:"path,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1026,6 +1029,13 @@ func (x *Route) GetTlsAuto() bool {
 		return x.TlsAuto
 	}
 	return false
+}
+
+func (x *Route) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
 }
 
 type Cert struct {

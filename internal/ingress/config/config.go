@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -29,6 +30,10 @@ type Route struct {
 	Service    string
 	Port       int
 	TLSAuto    bool
+	// Path is an optional URL path prefix (e.g. "/api/"). Default "" means
+	// catch-all. Multiple routes for the same domain are emitted into one
+	// Caddy host block ordered longest-prefix-first.
+	Path string
 }
 
 // ReplicaObservedView is the subset of pb.ReplicaObserved BuildCaddyConfig
@@ -71,6 +76,12 @@ type BuildOpts struct {
 // BuildCaddyConfig emits the Caddy JSON for the given (routes, replicas,
 // services). Returned bytes are indented JSON with alphabetically-sorted
 // keys (deterministic for golden-file tests).
+//
+// When multiple routes share the same domain, they are grouped into a single
+// Caddy host block. Within that block the path-specific routes are emitted
+// longest-prefix-first (so Caddy's first-match rule picks the most specific
+// path), followed by the catch-all route (empty path) as the unconditional
+// final handler.
 func BuildCaddyConfig(routes []Route, replicas []ReplicaObservedView, services map[string]ServiceMeta, opts BuildOpts) ([]byte, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -78,12 +89,6 @@ func BuildCaddyConfig(routes []Route, replicas []ReplicaObservedView, services m
 	if opts.ACMECA == "" {
 		opts.ACMECA = "https://acme-v02.api.letsencrypt.org/directory"
 	}
-
-	// Sort routes by domain for deterministic output.
-	sortedRoutes := append([]Route(nil), routes...)
-	sort.Slice(sortedRoutes, func(i, j int) bool {
-		return sortedRoutes[i].Domain < sortedRoutes[j].Domain
-	})
 
 	// Index replicas by (deployment, service).
 	healthyByService := map[string][]ReplicaObservedView{}
@@ -101,34 +106,72 @@ func BuildCaddyConfig(routes []Route, replicas []ReplicaObservedView, services m
 		healthyByService[k] = v
 	}
 
-	cfgRoutes := make([]any, 0, len(sortedRoutes)+1)
-	for _, route := range sortedRoutes {
-		meta, ok := services[MetaKey(route.Deployment, route.Service)]
-		var upstreams []any
-		if ok {
-			for _, r := range healthyByService[MetaKey(route.Deployment, route.Service)] {
-				ip, hasIP := meta.ReplicaIPs[r.ID]
-				if !hasIP {
-					continue
-				}
-				upstreams = append(upstreams, map[string]any{
-					"dial": fmt.Sprintf("%s:%d", ip, route.Port),
-				})
+	// Group routes by domain; collect unique domains in sorted order.
+	type domainEntry struct {
+		domain string
+		routes []Route
+	}
+	domainMap := map[string][]Route{}
+	for _, r := range routes {
+		domainMap[r.Domain] = append(domainMap[r.Domain], r)
+	}
+	domains := make([]string, 0, len(domainMap))
+	for d := range domainMap {
+		domains = append(domains, d)
+	}
+	sort.Strings(domains)
+
+	// sortedRoutes is used for TLS policy building.
+	var sortedRoutes []Route
+	for _, d := range domains {
+		sortedRoutes = append(sortedRoutes, domainMap[d]...)
+	}
+
+	cfgRoutes := make([]any, 0, len(domains)+1)
+	for _, domain := range domains {
+		domRoutes := domainMap[domain]
+
+		// Within this domain: separate path routes from catch-all (empty path).
+		var pathRoutes []Route
+		var catchAll *Route
+		for i := range domRoutes {
+			if domRoutes[i].Path == "" {
+				r := domRoutes[i]
+				catchAll = &r
+			} else {
+				pathRoutes = append(pathRoutes, domRoutes[i])
 			}
 		}
+		// Sort path routes longest-prefix-first for deterministic Caddy ordering.
+		sort.Slice(pathRoutes, func(i, j int) bool {
+			li, lj := len(pathRoutes[i].Path), len(pathRoutes[j].Path)
+			if li != lj {
+				return li > lj // longer first
+			}
+			return pathRoutes[i].Path < pathRoutes[j].Path
+		})
+
+		if len(pathRoutes) == 0 {
+			// Single route for this domain (catch-all or path-only).
+			r := domRoutes[0]
+			cfgRoutes = append(cfgRoutes, buildSingleRoute(domain, r, healthyByService, services))
+			continue
+		}
+
+		// Multiple routes: emit a subroutes block inside a host-matched route.
+		// Caddy v2: outer match=host, handle=[{handler:"subroute", routes:[...]}]
+		var subRoutes []any
+		for _, r := range pathRoutes {
+			subRoutes = append(subRoutes, buildPathRoute(r, healthyByService, services))
+		}
+		if catchAll != nil {
+			subRoutes = append(subRoutes, buildProxyHandle(*catchAll, healthyByService, services))
+		}
 		cfgRoutes = append(cfgRoutes, map[string]any{
-			"match": []any{map[string]any{"host": []any{route.Domain}}},
+			"match": []any{map[string]any{"host": []any{domain}}},
 			"handle": []any{map[string]any{
-				"handler":   "reverse_proxy",
-				"upstreams": upstreams,
-				"load_balancing": map[string]any{
-					"selection_policy": map[string]any{"policy": "random"},
-					"retries":          2,
-					"try_duration":     "0s",
-				},
-				"health_checks": map[string]any{
-					"passive": map[string]any{"fail_duration": "10s"},
-				},
+				"handler": "subroute",
+				"routes":  subRoutes,
 			}},
 		})
 	}
@@ -158,6 +201,97 @@ func BuildCaddyConfig(routes []Route, replicas []ReplicaObservedView, services m
 	}
 
 	return json.MarshalIndent(root, "", "  ")
+}
+
+// buildUpstreams returns the upstream list for a route.
+func buildUpstreams(route Route, healthyByService map[string][]ReplicaObservedView, services map[string]ServiceMeta) []any {
+	meta, ok := services[MetaKey(route.Deployment, route.Service)]
+	var upstreams []any
+	if ok {
+		for _, r := range healthyByService[MetaKey(route.Deployment, route.Service)] {
+			ip, hasIP := meta.ReplicaIPs[r.ID]
+			if !hasIP {
+				continue
+			}
+			upstreams = append(upstreams, map[string]any{
+				"dial": fmt.Sprintf("%s:%d", ip, route.Port),
+			})
+		}
+	}
+	return upstreams
+}
+
+// buildProxyHandle returns a reverse_proxy handler object (no match).
+func buildProxyHandle(route Route, healthyByService map[string][]ReplicaObservedView, services map[string]ServiceMeta) any {
+	return map[string]any{
+		"handle": []any{map[string]any{
+			"handler":   "reverse_proxy",
+			"upstreams": buildUpstreams(route, healthyByService, services),
+			"load_balancing": map[string]any{
+				"selection_policy": map[string]any{"policy": "random"},
+				"retries":          2,
+				"try_duration":     "0s",
+			},
+			"health_checks": map[string]any{
+				"passive": map[string]any{"fail_duration": "10s"},
+			},
+		}},
+	}
+}
+
+// buildSingleRoute emits a top-level Caddy route for a single route entry.
+func buildSingleRoute(domain string, route Route, healthyByService map[string][]ReplicaObservedView, services map[string]ServiceMeta) any {
+	match := map[string]any{"host": []any{domain}}
+	if route.Path != "" {
+		match["path"] = []any{pathGlob(route.Path)}
+	}
+	return map[string]any{
+		"match": []any{match},
+		"handle": []any{map[string]any{
+			"handler":   "reverse_proxy",
+			"upstreams": buildUpstreams(route, healthyByService, services),
+			"load_balancing": map[string]any{
+				"selection_policy": map[string]any{"policy": "random"},
+				"retries":          2,
+				"try_duration":     "0s",
+			},
+			"health_checks": map[string]any{
+				"passive": map[string]any{"fail_duration": "10s"},
+			},
+		}},
+	}
+}
+
+// buildPathRoute emits a subroute entry for a path-prefixed route.
+func buildPathRoute(route Route, healthyByService map[string][]ReplicaObservedView, services map[string]ServiceMeta) any {
+	return map[string]any{
+		"match": []any{map[string]any{"path": []any{pathGlob(route.Path)}}},
+		"handle": []any{map[string]any{
+			"handler":   "reverse_proxy",
+			"upstreams": buildUpstreams(route, healthyByService, services),
+			"load_balancing": map[string]any{
+				"selection_policy": map[string]any{"policy": "random"},
+				"retries":          2,
+				"try_duration":     "0s",
+			},
+			"health_checks": map[string]any{
+				"passive": map[string]any{"fail_duration": "10s"},
+			},
+		}},
+	}
+}
+
+// pathGlob converts a path prefix like "/api/" into the Caddy path glob
+// "/api/*". A path that already ends in "*" or "/" is handled correctly:
+// if it ends in "/" we append "*"; otherwise we use it as-is.
+func pathGlob(path string) string {
+	if strings.HasSuffix(path, "*") {
+		return path
+	}
+	if strings.HasSuffix(path, "/") {
+		return path + "*"
+	}
+	return path + "/*"
 }
 
 // fallbackRoute matches anything not matched above and returns 404 with the
