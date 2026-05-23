@@ -7,12 +7,20 @@
 #
 # Targets: linux + darwin × amd64 + arm64 — 4 tarballs in ./dist/.
 #
+# Each tarball ships:
+#   jaco              CLI client
+#   jacod             daemon (long-running, systemd-managed)
+#   jacod.yaml        config template for /etc/jaco/jacod.yaml
+#   install.sh        installs both binaries + unit + jaco user + data dir
+#   uninstall.sh      symmetric uninstaller
+#   jaco.service      systemd unit (ExecStart=/usr/local/bin/jacod)
+#   LICENSE
+#   README.md
+#
 # Acceptance criteria checked by `make release` + the per-task ACs:
 #   - `VERSION=test bash build/release.sh` exits 0.
 #   - All four tarballs land in dist/.
 #   - dist/SHA256SUMS lists exactly 4 entries.
-#   - Each tarball contains: <name>/, jaco, install.sh, jaco.service,
-#     LICENSE, README.md.
 
 set -euo pipefail
 
@@ -31,18 +39,24 @@ build_one() {
   local stage_dir="$DIST_DIR/$stage_name"
   mkdir -p "$stage_dir"
 
-  echo "[release] building $os/$arch -> $stage_dir/jaco" >&2
+  echo "[release] building $os/$arch -> $stage_dir/{jaco,jacod}" >&2
   CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
     go build -trimpath \
       -ldflags "-s -w -X main.version=${VERSION}" \
       -o "$stage_dir/jaco" \
       "$REPO_ROOT/cmd/jaco"
+  CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+    go build -trimpath \
+      -ldflags "-s -w -X main.version=${VERSION}" \
+      -o "$stage_dir/jacod" \
+      "$REPO_ROOT/cmd/jacod"
 
   # Render install.sh from the template by substituting __VERSION__.
   sed "s/__VERSION__/${VERSION}/g" "$BUILD_DIR/install.sh.tpl" > "$stage_dir/install.sh"
   chmod 0755 "$stage_dir/install.sh"
 
   cp "$BUILD_DIR/jaco.service" "$stage_dir/jaco.service"
+  cp "$BUILD_DIR/jacod.yaml"   "$stage_dir/jacod.yaml"
   cp "$BUILD_DIR/uninstall.sh" "$stage_dir/uninstall.sh"
   chmod 0755 "$stage_dir/uninstall.sh"
   cp "$REPO_ROOT/LICENSE"      "$stage_dir/LICENSE"

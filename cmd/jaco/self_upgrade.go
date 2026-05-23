@@ -24,24 +24,26 @@ func init() {
 func selfUpgradeCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "self-upgrade --url <https://.../jaco-vX-os-arch.tar.gz>",
-		Short: "Verify + atomically swap the local jaco binary",
+		Short: "Verify + atomically swap the local jaco + jacod binaries",
 	}
-	var url, binPath string
+	var url, prefix string
 	c.Flags().StringVar(&url, "url", "", "tarball URL (https://.../jaco-vX-os-arch.tar.gz)")
-	c.Flags().StringVar(&binPath, "bin", "/usr/local/bin/jaco", "binary install path")
+	c.Flags().StringVar(&prefix, "prefix", "/usr/local/bin", "directory holding jaco + jacod")
 	_ = c.MarkFlagRequired("url")
 
 	c.RunE = func(_ *cobra.Command, _ []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
-		return runSelfUpgrade(ctx, url, binPath, packaging.EmbeddedPubKey, httpFetcher{})
+		return runSelfUpgrade(ctx, url, prefix, packaging.EmbeddedPubKey, httpFetcher{})
 	}
 	return c
 }
 
 // runSelfUpgrade is the unit-testable body. fetcher abstracts HTTP so tests
-// inject a fake serving canned tarball / checksum / signature bytes.
-func runSelfUpgrade(ctx context.Context, url, binPath, pubKey string, fetcher fetcher) error {
+// inject a fake serving canned tarball / checksum / signature bytes. prefix
+// is the directory holding both jaco + jacod (default /usr/local/bin); the
+// swap covers both atomically — fail before either binary is touched.
+func runSelfUpgrade(ctx context.Context, url, prefix string, pubKey string, fetcher fetcher) error {
 	if url == "" {
 		return fmt.Errorf("self-upgrade: --url is required")
 	}
@@ -72,36 +74,59 @@ func runSelfUpgrade(ctx context.Context, url, binPath, pubKey string, fetcher fe
 		return err
 	}
 
-	// 3. Extract the jaco binary from the tarball.
-	extracted := filepath.Join(tmp, "jaco-new")
-	if err := extractJacoBinary(tarballPath, extracted); err != nil {
-		return fmt.Errorf("extract: %w", err)
+	// 3. Extract BOTH binaries from the tarball.
+	jacoExtracted := filepath.Join(tmp, "jaco-new")
+	jacodExtracted := filepath.Join(tmp, "jacod-new")
+	if err := extractTarballEntry(tarballPath, "jaco", jacoExtracted); err != nil {
+		return fmt.Errorf("extract jaco: %w", err)
+	}
+	if err := extractTarballEntry(tarballPath, "jacod", jacodExtracted); err != nil {
+		return fmt.Errorf("extract jacod: %w", err)
 	}
 
-	// 4. Save the existing binary as <binPath>.prev.
-	prevPath := binPath + ".prev"
-	if _, err := os.Stat(binPath); err == nil {
-		if err := copyFile(binPath, prevPath); err != nil {
-			return fmt.Errorf("save previous binary: %w", err)
+	jacoBin := filepath.Join(prefix, "jaco")
+	jacodBin := filepath.Join(prefix, "jacod")
+
+	// 4. Save existing binaries as <bin>.prev.
+	for _, bin := range []string{jacoBin, jacodBin} {
+		if _, err := os.Stat(bin); err == nil {
+			if err := copyFile(bin, bin+".prev"); err != nil {
+				return fmt.Errorf("save previous %s: %w", filepath.Base(bin), err)
+			}
 		}
 	}
 
-	// 5. Atomic rename — must be on the same filesystem as binPath.
-	stagedPath := binPath + ".upgrading"
-	if err := copyFile(extracted, stagedPath); err != nil {
-		return fmt.Errorf("stage new binary: %w", err)
-	}
-	if err := os.Chmod(stagedPath, 0o755); err != nil {
-		return fmt.Errorf("chmod staged: %w", err)
-	}
-	if err := os.Rename(stagedPath, binPath); err != nil {
-		return fmt.Errorf("atomic rename: %w", err)
+	// 5. Stage both new binaries.
+	for src, dst := range map[string]string{
+		jacoExtracted:  jacoBin + ".upgrading",
+		jacodExtracted: jacodBin + ".upgrading",
+	} {
+		if err := copyFile(src, dst); err != nil {
+			return fmt.Errorf("stage %s: %w", filepath.Base(dst), err)
+		}
+		if err := os.Chmod(dst, 0o755); err != nil {
+			return fmt.Errorf("chmod %s: %w", filepath.Base(dst), err)
+		}
 	}
 
-	// 6 + 7. systemctl restart + health poll — left to the caller in v1.
-	// `jaco upgrade` returns after the swap; the operator restarts the
-	// service and runs `jaco status` to verify. Full restart-and-poll
-	// orchestration lands with the daemon entry.
+	// 6. Atomic rename — both binaries, back-to-back. After the first
+	// succeeds the operator is briefly in a mixed state; the rename pair
+	// is the closest we can get to "both at once" without a transactional
+	// filesystem.
+	if err := os.Rename(jacoBin+".upgrading", jacoBin); err != nil {
+		return fmt.Errorf("rename jaco: %w", err)
+	}
+	if err := os.Rename(jacodBin+".upgrading", jacodBin); err != nil {
+		// Best-effort rollback: restore jaco from .prev if we have one.
+		if _, statErr := os.Stat(jacoBin + ".prev"); statErr == nil {
+			_ = os.Rename(jacoBin+".prev", jacoBin)
+		}
+		return fmt.Errorf("rename jacod (jaco was restored): %w", err)
+	}
+
+	// 7. systemctl restart + health poll — left to the operator. Full
+	// restart-and-poll orchestration lands alongside the daemon-entry
+	// scheduler/runtime/ingress wiring (later iters of task 38).
 	return nil
 }
 
@@ -143,9 +168,9 @@ func siblingURL(url, name string) string {
 	return url[:idx+1] + name
 }
 
-// extractJacoBinary scans tarballPath for a `*/jaco` entry (the rendered
-// directory name from the release pipeline) and writes its body to dst.
-func extractJacoBinary(tarballPath, dst string) error {
+// extractTarballEntry scans tarballPath for an entry whose basename equals
+// name (e.g. "jaco" or "jacod") and writes its body to dst.
+func extractTarballEntry(tarballPath, name, dst string) error {
 	f, err := os.Open(tarballPath)
 	if err != nil {
 		return err
@@ -160,12 +185,12 @@ func extractJacoBinary(tarballPath, dst string) error {
 	for {
 		h, err := tr.Next()
 		if err == io.EOF {
-			return fmt.Errorf("tarball does not contain a jaco binary")
+			return fmt.Errorf("tarball does not contain a %s binary", name)
 		}
 		if err != nil {
 			return err
 		}
-		if filepath.Base(h.Name) != "jaco" {
+		if filepath.Base(h.Name) != name {
 			continue
 		}
 		if h.Typeflag != tar.TypeReg {

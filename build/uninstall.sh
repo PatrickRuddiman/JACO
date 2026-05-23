@@ -2,18 +2,22 @@
 # JACO uninstaller. Symmetric counterpart of install.sh:
 #   - stops + disables jaco.service
 #   - removes /etc/systemd/system/jaco.service
-#   - removes $JACO_PREFIX/bin/jaco
+#   - removes $JACO_PREFIX/bin/{jaco,jacod}
+#   - removes $JACO_CONFIG_DIR (jacod.yaml + anything else there)
 #   - removes $JACO_DATA_DIR (skip with --preserve-data)
 #   - removes the jaco system user (only when data dir is removed)
 #
-# Env overrides match install.sh (JACO_PREFIX, JACO_DATA_DIR, JACO_USER).
+# Env overrides match install.sh (JACO_PREFIX, JACO_DATA_DIR, JACO_USER,
+# JACO_CONFIG_DIR).
 
 set -euo pipefail
 
 PREFIX="${JACO_PREFIX:-/usr/local}"
 DATA_DIR="${JACO_DATA_DIR:-/var/lib/jaco}"
 USER_NAME="${JACO_USER:-jaco}"
-BIN_PATH="$PREFIX/bin/jaco"
+CONFIG_DIR="${JACO_CONFIG_DIR:-/etc/jaco}"
+JACO_BIN_PATH="$PREFIX/bin/jaco"
+JACOD_BIN_PATH="$PREFIX/bin/jacod"
 SERVICE_PATH="/etc/systemd/system/jaco.service"
 
 PRESERVE_DATA=0
@@ -47,9 +51,17 @@ remove_unit() {
   fi
 }
 
-remove_binary() {
-  if [[ -f "$BIN_PATH" ]]; then
-    rm -f "$BIN_PATH"
+remove_binaries() {
+  for bin in "$JACO_BIN_PATH" "$JACOD_BIN_PATH"; do
+    if [[ -f "$bin" ]]; then
+      rm -f "$bin"
+    fi
+  done
+}
+
+remove_config() {
+  if [[ -d "$CONFIG_DIR" ]]; then
+    rm -rf "$CONFIG_DIR"
   fi
 }
 
@@ -74,7 +86,8 @@ main() {
   require_root
   stop_service
   remove_unit
-  remove_binary
+  remove_binaries
+  remove_config
   if remove_data; then
     remove_user
     echo "JACO uninstalled (data + user removed)."

@@ -1,0 +1,34 @@
+# /etc/jaco/jacod.yaml — JACO daemon configuration.
+#
+# Closed schema; unknown keys reject. See internal/daemon/config for the
+# typed view + validation. After editing, `systemctl restart jacod` to
+# apply (the daemon does not hot-reload).
+
+# Filesystem root for raft store, node certs, wg keys, ACME blobs.
+data_dir: /var/lib/jaco
+
+# Cluster gRPC TLS endpoint — peers + remote CLI dial here.
+listen_addr: 0.0.0.0:7000
+
+# Raft TCP transport — peer-to-peer log replication. Must differ from
+# listen_addr.
+cluster_addr: 0.0.0.0:7001
+
+# Local-control socket — the `jaco` CLI dials this for cluster init/join,
+# status, apply, logs, etc. Mode 0660 owned by the jaco group.
+unix_socket: /var/run/jaco/jaco.sock
+
+# WireGuard UDP listen port. 51820 is the conventional Tailscale/WG port;
+# pick anything 1024-65535.
+wg_port: 51820
+
+# ACME contact address; empty disables registration contact. ACME issuance
+# still works without it but Let's Encrypt may refuse.
+acme_email: ""
+
+# Log level — one of debug | info | warn | error.
+log_level: info
+
+# IPAM pool. Must be a /16 — supplies up to 256 /24 subnets, one per
+# (deployment, network) pair.
+ipam_pool: 10.244.0.0/16
