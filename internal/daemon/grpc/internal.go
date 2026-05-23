@@ -45,3 +45,12 @@ func (i *internalServer) Submit(_ context.Context, req *pb.SubmitRequest) (*pb.S
 	}
 	return &pb.SubmitResponse{RaftIndex: idx}, nil
 }
+
+// Logs is the peer-facing fanout endpoint. A leader's Deploy.Logs handler
+// dials this on every node hosting a relevant replica so cross-host log
+// streams reach the operator. pb.Internal_LogsServer and
+// pb.Deploy_LogsServer are both aliases for grpc.ServerStreamingServer
+// [LogLine], so streamLocalLogs takes either.
+func (i *internalServer) Logs(req *pb.LogsRequest, stream pb.Internal_LogsServer) error {
+	return i.server.streamLocalLogs(req, stream)
+}

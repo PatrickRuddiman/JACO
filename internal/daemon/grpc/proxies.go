@@ -103,14 +103,15 @@ func (p *deployProxy) Status(ctx context.Context, req *pb.DeployStatusRequest) (
 }
 // Logs is implemented locally on the daemon — the controlplane stub
 // returns Unimplemented because it needs a dockerx handle + hostname,
-// which only the daemon has. v0 ships local-only: streams logs for any
-// replica whose Host=this-node and skips remote replicas. Cross-host
-// fanout (Internal.Logs) is a follow-up.
+// which only the daemon has. The handler streams local replicas
+// directly and dials Internal.Logs on each peer hosting remote replicas
+// of the same deployment/service, fanning everything into the operator
+// stream.
 func (p *deployProxy) Logs(req *pb.LogsRequest, stream pb.Deploy_LogsServer) error {
 	if p.server == nil {
 		return errUnavail
 	}
-	return p.server.streamLocalLogs(req, stream)
+	return p.server.streamDeploymentLogs(req, stream)
 }
 
 type auditProxy struct {
