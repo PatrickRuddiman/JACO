@@ -30,11 +30,9 @@ type Scope struct {
 // responsible for filtering.
 type ServiceMap map[string][]net.IP
 
-// Forwarder is the upstream resolver Hooks into for external hostnames.
-// Production uses net.DefaultResolver; tests inject a fake.
-type Forwarder interface {
-	LookupHost(host string) ([]net.IP, error)
-}
+// LookupHostFn is the upstream resolver Hooks into for external hostnames.
+// Production uses LookupHost (net.LookupHost-backed); tests inject a fake.
+type LookupHostFn func(host string) ([]net.IP, error)
 
 // Responder handles DNS queries within its scope. Snapshot() is called once
 // per query so callers can swap the ServiceMap atomically when watch events
@@ -44,12 +42,12 @@ type Responder struct {
 	mu       sync.RWMutex
 	services ServiceMap
 
-	forwarder Forwarder
+	forwarder LookupHostFn
 }
 
 // New constructs a Responder for the given scope. forwarder=nil disables
 // external-name forwarding (queries outside the scope return NXDOMAIN).
-func New(scope Scope, services ServiceMap, forwarder Forwarder) *Responder {
+func New(scope Scope, services ServiceMap, forwarder LookupHostFn) *Responder {
 	r := &Responder{scope: scope, forwarder: forwarder}
 	r.SetServices(services)
 	return r
@@ -137,7 +135,7 @@ func (r *Responder) answerA(resp *dns.Msg, name, originalName string) {
 	if r.forwarder == nil {
 		return
 	}
-	ips, err := r.forwarder.LookupHost(name)
+	ips, err := r.forwarder(name)
 	if err != nil {
 		return
 	}

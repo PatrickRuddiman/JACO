@@ -6,10 +6,9 @@ import (
 	"os/exec"
 )
 
-// nftLister shells out to `nft -j list table inet jaco`. Production wiring.
-type nftLister struct{}
-
-func (nftLister) List(ctx context.Context) ([]byte, error) {
+// NftList shells out to `nft -j list table inet jaco` and returns the raw
+// JSON. The Reconciler wires this to Lister; tests substitute a fake.
+func NftList(ctx context.Context) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "nft", "-j", "list", "table", "inet", "jaco")
 	out, err := cmd.Output()
 	if err != nil {
@@ -17,8 +16,3 @@ func (nftLister) List(ctx context.Context) ([]byte, error) {
 	}
 	return out, nil
 }
-
-// DefaultLister returns the production Lister that shells out to `nft`. nil
-// out the table at boot if the daemon doesn't own one yet — Reconciler.Tick
-// will then render+apply on its first pass.
-func DefaultLister() Lister { return nftLister{} }

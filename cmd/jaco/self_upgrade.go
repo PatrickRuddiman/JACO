@@ -35,16 +35,16 @@ func selfUpgradeCmd() *cobra.Command {
 	c.RunE = func(_ *cobra.Command, _ []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
-		return runSelfUpgrade(ctx, url, prefix, packaging.EmbeddedPubKey, httpFetcher{})
+		return runSelfUpgrade(ctx, url, prefix, packaging.EmbeddedPubKey, httpFetch)
 	}
 	return c
 }
 
-// runSelfUpgrade is the unit-testable body. fetcher abstracts HTTP so tests
+// runSelfUpgrade is the unit-testable body. fetch abstracts HTTP so tests
 // inject a fake serving canned tarball / checksum / signature bytes. prefix
 // is the directory holding both jaco + jacod (default /usr/local/bin); the
 // swap covers both atomically — fail before either binary is touched.
-func runSelfUpgrade(ctx context.Context, url, prefix string, pubKey string, fetcher fetcher) error {
+func runSelfUpgrade(ctx context.Context, url, prefix string, pubKey string, fetch func(ctx context.Context, url, dst string) error) error {
 	if url == "" {
 		return fmt.Errorf("self-upgrade: --url is required")
 	}
@@ -58,15 +58,15 @@ func runSelfUpgrade(ctx context.Context, url, prefix string, pubKey string, fetc
 	tarballPath := filepath.Join(tmp, filepath.Base(url))
 	checksumsPath := filepath.Join(tmp, "SHA256SUMS")
 	signaturePath := filepath.Join(tmp, "SHA256SUMS.minisig")
-	if err := fetcher.fetch(ctx, url, tarballPath); err != nil {
+	if err := fetch(ctx, url, tarballPath); err != nil {
 		return fmt.Errorf("fetch tarball: %w", err)
 	}
 	checksumsURL := siblingURL(url, "SHA256SUMS")
-	if err := fetcher.fetch(ctx, checksumsURL, checksumsPath); err != nil {
+	if err := fetch(ctx, checksumsURL, checksumsPath); err != nil {
 		return fmt.Errorf("fetch checksums: %w", err)
 	}
 	sigURL := siblingURL(url, "SHA256SUMS.minisig")
-	if err := fetcher.fetch(ctx, sigURL, signaturePath); err != nil {
+	if err := fetch(ctx, sigURL, signaturePath); err != nil {
 		return fmt.Errorf("fetch signature: %w", err)
 	}
 
@@ -168,14 +168,9 @@ func postUpgradeRestart(ctx context.Context, jacoBin, jacodBin string) error {
 	return fmt.Errorf("jacod did not report a version within 3s post-restart")
 }
 
-// fetcher abstracts HTTP for testability.
-type fetcher interface {
-	fetch(ctx context.Context, url, dst string) error
-}
-
-type httpFetcher struct{}
-
-func (httpFetcher) fetch(ctx context.Context, url, dst string) error {
+// httpFetch is the production fetcher passed to runSelfUpgrade. Tests
+// inject an in-memory fake serving canned bytes.
+func httpFetch(ctx context.Context, url, dst string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err

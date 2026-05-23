@@ -130,8 +130,8 @@ func TestReconcile_HappyPathNoDriftSilent(t *testing.T) {
 	aud := &recordingAudit{}
 	stat := &recordingStatus{}
 	r := &firewall.Reconciler{
-		Lister:       &fakeLister{body: []byte(validJSON)},
-		Applier:      apl,
+		Lister:       (&fakeLister{body: []byte(validJSON)}).List,
+		Applier:      apl.Apply,
 		Audit:        aud.fn(),
 		UpdateStatus: stat.fn(),
 		Render:       goodInput,
@@ -154,8 +154,8 @@ func TestReconcile_DriftDetectedReappliesAndAudits(t *testing.T) {
 	aud := &recordingAudit{}
 	stat := &recordingStatus{}
 	r := &firewall.Reconciler{
-		Lister:       &fakeLister{body: []byte(driftedJSON)},
-		Applier:      apl,
+		Lister:       (&fakeLister{body: []byte(driftedJSON)}).List,
+		Applier:      apl.Apply,
 		Audit:        aud.fn(),
 		UpdateStatus: stat.fn(),
 		Render:       goodInput,
@@ -177,8 +177,8 @@ func TestReconcile_ApplyFailureFlipsIsolationUnavailable(t *testing.T) {
 	aud := &recordingAudit{}
 	stat := &recordingStatus{}
 	r := &firewall.Reconciler{
-		Lister:       &fakeLister{body: []byte(driftedJSON)},
-		Applier:      apl,
+		Lister:       (&fakeLister{body: []byte(driftedJSON)}).List,
+		Applier:      apl.Apply,
 		Audit:        aud.fn(),
 		UpdateStatus: stat.fn(),
 		Render:       goodInput,
@@ -199,16 +199,16 @@ func TestReconcile_RecoveryFromIsolationUnavailableEmitsReady(t *testing.T) {
 	stat := &recordingStatus{}
 	// Start with drifted state + Apply error to set the degraded flag.
 	r := &firewall.Reconciler{
-		Lister:       &fakeLister{body: []byte(driftedJSON)},
-		Applier:      &recordingApplier{err: errors.New("transient")},
+		Lister:       (&fakeLister{body: []byte(driftedJSON)}).List,
+		Applier:      (&recordingApplier{err: errors.New("transient")}).Apply,
 		Audit:        aud.fn(),
 		UpdateStatus: stat.fn(),
 		Render:       goodInput,
 	}
 	_ = r.Tick(context.Background())
 	// Swap to healthy state + working applier.
-	r.Lister = &fakeLister{body: []byte(validJSON)}
-	r.Applier = apl
+	r.Lister = (&fakeLister{body: []byte(validJSON)}).List
+	r.Applier = apl.Apply
 	if err := r.Tick(context.Background()); err != nil {
 		t.Fatalf("second Tick: %v", err)
 	}
@@ -231,8 +231,8 @@ func TestReconcile_ListErrorIsTransientNotDegradation(t *testing.T) {
 	aud := &recordingAudit{}
 	stat := &recordingStatus{}
 	r := &firewall.Reconciler{
-		Lister:       &fakeLister{err: errors.New("nft exec failed")},
-		Applier:      apl,
+		Lister:       (&fakeLister{err: errors.New("nft exec failed")}).List,
+		Applier:      apl.Apply,
 		Audit:        aud.fn(),
 		UpdateStatus: stat.fn(),
 		Render:       goodInput,
