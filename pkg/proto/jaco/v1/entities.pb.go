@@ -465,8 +465,13 @@ type Node struct {
 	Status                NodeStatus             `protobuf:"varint,5,opt,name=status,proto3,enum=jaco.v1.NodeStatus" json:"status,omitempty"`
 	StatusDetails         map[string]string      `protobuf:"bytes,6,rep,name=status_details,json=statusDetails,proto3" json:"status_details,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	JoinedAt              *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=joined_at,json=joinedAt,proto3" json:"joined_at,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// grpc_address is the host:port of this node's cross-host gRPC
+	// listener (cfg.ListenAddr). Distinct from `address` (which is the
+	// raft transport addr). Followers dial this via Internal.Submit to
+	// forward ReplicaObserved updates to the leader.
+	GrpcAddress   string `protobuf:"bytes,8,opt,name=grpc_address,json=grpcAddress,proto3" json:"grpc_address,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Node) Reset() {
@@ -546,6 +551,13 @@ func (x *Node) GetJoinedAt() *timestamppb.Timestamp {
 		return x.JoinedAt
 	}
 	return nil
+}
+
+func (x *Node) GetGrpcAddress() string {
+	if x != nil {
+		return x.GrpcAddress
+	}
+	return ""
 }
 
 type ServiceSpec struct {
@@ -1695,7 +1707,7 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\aca_cert\x18\x02 \x01(\fR\x06caCert\x12\x15\n" +
 	"\x06ca_key\x18\x03 \x01(\fR\x05caKey\x129\n" +
 	"\n" +
-	"created_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\x90\x03\n" +
+	"created_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\xb3\x03\n" +
 	"\x04Node\x12\x1a\n" +
 	"\bhostname\x18\x01 \x01(\tR\bhostname\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x126\n" +
@@ -1703,7 +1715,8 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\x10wireguard_pubkey\x18\x04 \x01(\fR\x0fwireguardPubkey\x12+\n" +
 	"\x06status\x18\x05 \x01(\x0e2\x13.jaco.v1.NodeStatusR\x06status\x12G\n" +
 	"\x0estatus_details\x18\x06 \x03(\v2 .jaco.v1.Node.StatusDetailsEntryR\rstatusDetails\x127\n" +
-	"\tjoined_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\bjoinedAt\x1a@\n" +
+	"\tjoined_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\bjoinedAt\x12!\n" +
+	"\fgrpc_address\x18\b \x01(\tR\vgrpcAddress\x1a@\n" +
 	"\x12StatusDetailsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd9\x02\n" +

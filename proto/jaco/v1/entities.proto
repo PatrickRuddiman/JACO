@@ -78,6 +78,11 @@ message Node {
   NodeStatus status = 5;
   map<string, string> status_details = 6;
   google.protobuf.Timestamp joined_at = 7;
+  // grpc_address is the host:port of this node's cross-host gRPC
+  // listener (cfg.ListenAddr). Distinct from `address` (which is the
+  // raft transport addr). Followers dial this via Internal.Submit to
+  // forward ReplicaObserved updates to the leader.
+  string grpc_address = 8;
 }
 
 // ----- Deployment entities -----

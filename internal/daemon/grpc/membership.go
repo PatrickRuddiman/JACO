@@ -95,6 +95,7 @@ func (c *clusterServer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*p
 					Hostname:        req.GetName(),
 					Address:         req.GetAdvertiseAddr(),
 					WireguardPubkey: req.GetWireguardPubkey(),
+					GrpcAddress:     req.GetGrpcAddress(),
 				}},
 			},
 			{

@@ -28,6 +28,8 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/daemon/admission"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/firewall"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/wgmesh"
+	"google.golang.org/grpc/credentials/insecure"
+	hraft "github.com/hashicorp/raft"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/health"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/reconciler"
@@ -438,8 +440,25 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 			if err != nil {
 				return fmt.Errorf("marshal: %w", err)
 			}
-			_, err = node.Apply(data, 0)
-			return err
+			if _, applyErr := node.Apply(data, 0); applyErr == nil {
+				return nil
+			} else if !errors.Is(applyErr, hraft.ErrNotLeader) {
+				return applyErr
+			}
+			// Not the leader — forward to whichever node is. Look up
+			// the leader's gRPC address from state.Nodes and dial
+			// Internal.Submit there. Plaintext; same v0 wire model.
+			leaderAddr := leaderGRPCAddr(st, node)
+			if leaderAddr == "" {
+				return fmt.Errorf("submit: no leader gRPC address known")
+			}
+			conn, dialErr := grpc.NewClient(leaderAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if dialErr != nil {
+				return fmt.Errorf("submit: dial leader %s: %w", leaderAddr, dialErr)
+			}
+			defer conn.Close()
+			_, rpcErr := pb.NewInternalClient(conn).Submit(ctx, &pb.SubmitRequest{CommandBytes: data})
+			return rpcErr
 		}
 		rec := reconciler.New(s.docker, st, brokers, hostname, health.SubmitFn(submit), s.logger)
 		s.subsystemsWG.Add(1)
@@ -560,6 +579,26 @@ func (s *Server) SocketPath() string { return s.socketPath }
 // TCPAddr returns the resolved cross-host listener address (after net.Listen
 // substituted any :0 port). Empty when ListenAddr was unset.
 func (s *Server) TCPAddr() string { return s.tcpAddr }
+
+// leaderGRPCAddr returns the leader's cross-host gRPC address by matching
+// raft.Leader() (a raft transport addr) against state.Nodes[].Address and
+// returning the matched Node.GrpcAddress. Empty when the leader isn't
+// known or its gRPC address hasn't been recorded yet.
+func leaderGRPCAddr(st *state.State, node *raftnode.Node) string {
+	if st == nil || node == nil {
+		return ""
+	}
+	raftLeader := string(node.Leader())
+	if raftLeader == "" {
+		return ""
+	}
+	for _, n := range st.Nodes.List() {
+		if n.GetAddress() == raftLeader {
+			return n.GetGrpcAddress()
+		}
+	}
+	return ""
+}
 
 // auditTypeFromString maps the firewall reconciler's event-code strings
 // onto the pb.AuditEventType enum. Unknown codes fall through to the

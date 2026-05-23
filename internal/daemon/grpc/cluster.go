@@ -156,11 +156,18 @@ func (c *clusterServer) Join(ctx context.Context, req *pb.ClusterJoinRequest) (*
 	defer cancel()
 
 	advertise := c.bindAddr
+	// grpcAddr is the joiner's own cross-host gRPC listener address, used
+	// by the leader (or any other node) to dial back via Internal.Submit.
+	// If listen_addr is 0.0.0.0:N, peers won't be able to dial — operators
+	// should set listen_addr to a reachable interface IP. We don't try to
+	// rewrite 0.0.0.0 here; that's an operator-facing config concern.
+	grpcAddr := c.server.TCPAddr()
 	resp, err := pb.NewClusterClient(conn).NodeJoin(dialCtx, &pb.NodeJoinRequest{
 		Name:          hostname,
 		JoinToken:     req.GetJoinToken(),
 		CsrPem:        csrPEM,
 		AdvertiseAddr: advertise,
+		GrpcAddress:   grpcAddr,
 	})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "node join rpc: %v", err)

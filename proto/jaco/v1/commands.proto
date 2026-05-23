@@ -80,6 +80,7 @@ message NodeJoin {
   string address = 2;
   bytes server_cert_fingerprint = 3;
   bytes wireguard_pubkey = 4;
+  string grpc_address = 5;
 }
 
 message NodeRemove {

@@ -412,8 +412,11 @@ type NodeJoinRequest struct {
 	CsrPem          []byte                 `protobuf:"bytes,3,opt,name=csr_pem,json=csrPem,proto3" json:"csr_pem,omitempty"`
 	AdvertiseAddr   string                 `protobuf:"bytes,4,opt,name=advertise_addr,json=advertiseAddr,proto3" json:"advertise_addr,omitempty"`
 	WireguardPubkey []byte                 `protobuf:"bytes,5,opt,name=wireguard_pubkey,json=wireguardPubkey,proto3" json:"wireguard_pubkey,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// grpc_address is the host:port of the joining node's cross-host
+	// gRPC listener — see Node.grpc_address.
+	GrpcAddress   string `protobuf:"bytes,6,opt,name=grpc_address,json=grpcAddress,proto3" json:"grpc_address,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *NodeJoinRequest) Reset() {
@@ -479,6 +482,13 @@ func (x *NodeJoinRequest) GetWireguardPubkey() []byte {
 		return x.WireguardPubkey
 	}
 	return nil
+}
+
+func (x *NodeJoinRequest) GetGrpcAddress() string {
+	if x != nil {
+		return x.GrpcAddress
+	}
+	return ""
 }
 
 type NodeJoinResponse struct {
@@ -2498,14 +2508,15 @@ const file_jaco_v1_services_proto_rawDesc = "" +
 	"\x16IssueJoinTokenResponse\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x17\n" +
 	"\aca_cert\x18\x02 \x01(\fR\x06caCert\x12!\n" +
-	"\fleader_addrs\x18\x03 \x03(\tR\vleaderAddrs\"\xaf\x01\n" +
+	"\fleader_addrs\x18\x03 \x03(\tR\vleaderAddrs\"\xd2\x01\n" +
 	"\x0fNodeJoinRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
 	"join_token\x18\x02 \x01(\tR\tjoinToken\x12\x17\n" +
 	"\acsr_pem\x18\x03 \x01(\fR\x06csrPem\x12%\n" +
 	"\x0eadvertise_addr\x18\x04 \x01(\tR\radvertiseAddr\x12)\n" +
-	"\x10wireguard_pubkey\x18\x05 \x01(\fR\x0fwireguardPubkey\"\x8a\x01\n" +
+	"\x10wireguard_pubkey\x18\x05 \x01(\fR\x0fwireguardPubkey\x12!\n" +
+	"\fgrpc_address\x18\x06 \x01(\tR\vgrpcAddress\"\x8a\x01\n" +
 	"\x10NodeJoinResponse\x12\x1d\n" +
 	"\n" +
 	"cluster_id\x18\x01 \x01(\tR\tclusterId\x12\x1f\n" +

@@ -69,6 +69,9 @@ message NodeJoinRequest {
   bytes csr_pem = 3;
   string advertise_addr = 4;
   bytes wireguard_pubkey = 5;
+  // grpc_address is the host:port of the joining node's cross-host
+  // gRPC listener — see Node.grpc_address.
+  string grpc_address = 6;
 }
 message NodeJoinResponse {
   string cluster_id = 1;

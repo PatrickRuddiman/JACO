@@ -93,6 +93,7 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 			Address:               nj.GetAddress(),
 			ServerCertFingerprint: nj.GetServerCertFingerprint(),
 			WireguardPubkey:       nj.GetWireguardPubkey(),
+			GrpcAddress:           nj.GetGrpcAddress(),
 			Status:                pb.NodeStatus_NODE_STATUS_JOINING,
 			JoinedAt:              cmd.GetTs(),
 		}, idx)

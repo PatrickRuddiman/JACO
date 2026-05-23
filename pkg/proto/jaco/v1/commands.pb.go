@@ -757,6 +757,7 @@ type NodeJoin struct {
 	Address               string                 `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
 	ServerCertFingerprint []byte                 `protobuf:"bytes,3,opt,name=server_cert_fingerprint,json=serverCertFingerprint,proto3" json:"server_cert_fingerprint,omitempty"`
 	WireguardPubkey       []byte                 `protobuf:"bytes,4,opt,name=wireguard_pubkey,json=wireguardPubkey,proto3" json:"wireguard_pubkey,omitempty"`
+	GrpcAddress           string                 `protobuf:"bytes,5,opt,name=grpc_address,json=grpcAddress,proto3" json:"grpc_address,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -817,6 +818,13 @@ func (x *NodeJoin) GetWireguardPubkey() []byte {
 		return x.WireguardPubkey
 	}
 	return nil
+}
+
+func (x *NodeJoin) GetGrpcAddress() string {
+	if x != nil {
+		return x.GrpcAddress
+	}
+	return ""
 }
 
 type NodeRemove struct {
@@ -2201,12 +2209,13 @@ const file_jaco_v1_commands_proto_rawDesc = "" +
 	"\x06ca_key\x18\x03 \x01(\fR\x05caKey\x12?\n" +
 	"\x1coperator_token_hashed_secret\x18\x04 \x01(\fR\x19operatorTokenHashedSecret\x12#\n" +
 	"\rself_hostname\x18\x05 \x01(\tR\fselfHostname\x12!\n" +
-	"\fself_address\x18\x06 \x01(\tR\vselfAddress\"\xa3\x01\n" +
+	"\fself_address\x18\x06 \x01(\tR\vselfAddress\"\xc6\x01\n" +
 	"\bNodeJoin\x12\x1a\n" +
 	"\bhostname\x18\x01 \x01(\tR\bhostname\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x126\n" +
 	"\x17server_cert_fingerprint\x18\x03 \x01(\fR\x15serverCertFingerprint\x12)\n" +
-	"\x10wireguard_pubkey\x18\x04 \x01(\fR\x0fwireguardPubkey\"(\n" +
+	"\x10wireguard_pubkey\x18\x04 \x01(\fR\x0fwireguardPubkey\x12!\n" +
+	"\fgrpc_address\x18\x05 \x01(\tR\vgrpcAddress\"(\n" +
 	"\n" +
 	"NodeRemove\x12\x1a\n" +
 	"\bhostname\x18\x01 \x01(\tR\bhostname\"\xd9\x01\n" +
