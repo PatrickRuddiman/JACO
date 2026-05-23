@@ -36,7 +36,7 @@ func logsCmd() *cobra.Command {
 	c.Flags().BoolVarP(&follow, "follow", "f", false, "stream new lines as they arrive")
 	c.Flags().StringVar(&since, "since", "5m", "only lines newer than this duration (e.g. 1h, 30m)")
 	_ = c.MarkFlagRequired("server")
-	_ = c.MarkFlagRequired("ca-cert")
+	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, args []string) error {
 		if opToken == "" {

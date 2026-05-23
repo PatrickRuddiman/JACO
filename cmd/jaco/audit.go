@@ -36,7 +36,7 @@ func init() {
 	c.Flags().StringVar(&typesFlag, "type", "", "comma list of audit types to include (e.g. apply,token_revoke)")
 	c.Flags().BoolVarP(&follow, "follow", "f", false, "stream new events as they arrive")
 	_ = c.MarkFlagRequired("server")
-	_ = c.MarkFlagRequired("ca-cert")
+	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, _ []string) error {
 		if opToken == "" {

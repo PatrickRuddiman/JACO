@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"io"
 	"os"
@@ -11,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
@@ -42,7 +40,7 @@ func nodeIssueJoinTokenCmd() *cobra.Command {
 	c.Flags().StringVar(&token, "token", "", "operator bearer token (or JACO_TOKEN); required")
 	c.Flags().StringVar(&caCert, "ca-cert", "", "path to cluster CA cert PEM; required")
 	_ = c.MarkFlagRequired("server")
-	_ = c.MarkFlagRequired("ca-cert")
+	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, _ []string) error {
 		if token == "" {
@@ -143,7 +141,7 @@ func nodeRemoveCmd() *cobra.Command {
 	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
 	c.Flags().BoolVar(&force, "force", false, "skip drain enforcement")
 	_ = c.MarkFlagRequired("server")
-	_ = c.MarkFlagRequired("ca-cert")
+	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, args []string) error {
 		if token == "" {
@@ -183,7 +181,7 @@ func nodeListCmd() *cobra.Command {
 	c.Flags().StringVar(&token, "token", "", "operator bearer token (or JACO_TOKEN)")
 	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
 	_ = c.MarkFlagRequired("server")
-	_ = c.MarkFlagRequired("ca-cert")
+	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, _ []string) error {
 		if token == "" {
@@ -209,15 +207,16 @@ func nodeListCmd() *cobra.Command {
 	return c
 }
 
-// --- shared dial helper (task 11 will replace with cliclient) ---------------
+// --- shared dial helper ---------------------------------------------------
 
-func dialServer(addr string, caCertPEM []byte) (*grpc.ClientConn, error) {
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caCertPEM) {
-		return nil, fmt.Errorf("CA cert PEM did not parse")
+// dialServer dials the JACO control plane. v0 ships plaintext TCP — the
+// caCertPEM arg is preserved for the eventual TLS-with-cluster-CA wiring,
+// but is currently ignored. Pass empty bytes today.
+func dialServer(addr string, _ []byte) (*grpc.ClientConn, error) {
+	if addr == "" {
+		return nil, fmt.Errorf("--server is required (host:port of any cluster node)")
 	}
-	creds := credentials.NewTLS(&tls.Config{RootCAs: pool})
-	return grpc.NewClient(addr, grpc.WithTransportCredentials(creds))
+	return grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 }
 
 func mustReadFile(path string) []byte {

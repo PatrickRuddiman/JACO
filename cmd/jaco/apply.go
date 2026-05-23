@@ -35,7 +35,7 @@ func applyCmd() *cobra.Command {
 	c.Flags().StringVar(&composePath, "compose", "", "compose file path; defaults to compose.yml next to jaco.yaml")
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "print the diff and exit without applying")
 	_ = c.MarkFlagRequired("server")
-	_ = c.MarkFlagRequired("ca-cert")
+	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, args []string) error {
 		if opToken == "" {

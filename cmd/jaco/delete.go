@@ -28,7 +28,7 @@ func deleteCmd() *cobra.Command {
 	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN)")
 	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
 	_ = c.MarkFlagRequired("server")
-	_ = c.MarkFlagRequired("ca-cert")
+	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, args []string) error {
 		if opToken == "" {

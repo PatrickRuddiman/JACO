@@ -29,7 +29,7 @@ func backupCmd() *cobra.Command {
 	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
 	c.Flags().StringVar(&outputPath, "output", "", "destination file (e.g. cluster.tar.gz); required")
 	_ = c.MarkFlagRequired("server")
-	_ = c.MarkFlagRequired("ca-cert")
+	// ca-cert no longer required: v0 uses plaintext TCP
 	_ = c.MarkFlagRequired("output")
 
 	c.RunE = func(_ *cobra.Command, _ []string) error {

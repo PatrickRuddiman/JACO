@@ -31,7 +31,7 @@ func tokenIssueCmd() *cobra.Command {
 	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
 	c.Flags().StringVar(&name, "name", "", "identity for the new token; required")
 	_ = c.MarkFlagRequired("server")
-	_ = c.MarkFlagRequired("ca-cert")
+	// ca-cert no longer required: v0 uses plaintext TCP
 	_ = c.MarkFlagRequired("name")
 
 	c.RunE = func(_ *cobra.Command, _ []string) error {
@@ -70,7 +70,7 @@ func tokenRevokeCmd() *cobra.Command {
 	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN)")
 	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
 	_ = c.MarkFlagRequired("server")
-	_ = c.MarkFlagRequired("ca-cert")
+	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, args []string) error {
 		if opToken == "" {
@@ -106,7 +106,7 @@ func tokenListCmd() *cobra.Command {
 	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN)")
 	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
 	_ = c.MarkFlagRequired("server")
-	_ = c.MarkFlagRequired("ca-cert")
+	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, _ []string) error {
 		if opToken == "" {
