@@ -1,6 +1,7 @@
 package challenge_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -51,7 +52,7 @@ func TestIssue_ApplyErrorEmitsCertificateFailedAudit(t *testing.T) {
 		return nil
 	}
 	i := challenge.NewIssuer(apply, nil)
-	err := i.Issue(nil, "example.com", "tok-a", "key-a")
+	err := i.Issue(context.TODO(), "example.com", "tok-a", "key-a")
 	if err == nil {
 		t.Fatalf("Issue returned nil err despite failed apply")
 	}

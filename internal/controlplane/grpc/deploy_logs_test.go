@@ -1,6 +1,7 @@
 package grpcsrv
 
 import (
+	"context"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -30,7 +31,7 @@ func TestDeployLogs_ReturnsUnimplemented(t *testing.T) {
 // before any state lookup.
 func TestDeployDelete_NilRaftReturnsUnavailable(t *testing.T) {
 	d := &deployServer{state: state.New(watch.NewRegistry())}
-	_, err := d.Delete(nil, &pb.DeleteRequest{Deployment: "x"})
+	_, err := d.Delete(context.TODO(), &pb.DeleteRequest{Deployment: "x"})
 	if err == nil {
 		t.Fatalf("Delete with nil raft: nil err")
 	}

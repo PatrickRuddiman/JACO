@@ -1,6 +1,7 @@
 package grpcsrv
 
 import (
+	"context"
 	"testing"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
@@ -57,7 +58,7 @@ func TestDeployStatus_FilteringByDeploymentAndService(t *testing.T) {
 	d := &deployServer{state: st}
 
 	// Filter by deployment.
-	resp, err := d.Status(nil, &pb.DeployStatusRequest{DeploymentFilter: "app1"})
+	resp, err := d.Status(context.TODO(), &pb.DeployStatusRequest{DeploymentFilter: "app1"})
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
@@ -72,7 +73,7 @@ func TestDeployStatus_FilteringByDeploymentAndService(t *testing.T) {
 	}
 
 	// Filter by deployment + service.
-	resp, err = d.Status(nil, &pb.DeployStatusRequest{DeploymentFilter: "app1", ServiceFilter: "web"})
+	resp, err = d.Status(context.TODO(), &pb.DeployStatusRequest{DeploymentFilter: "app1", ServiceFilter: "web"})
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
@@ -84,7 +85,7 @@ func TestDeployStatus_FilteringByDeploymentAndService(t *testing.T) {
 	}
 
 	// No filter returns everything.
-	resp, _ = d.Status(nil, &pb.DeployStatusRequest{})
+	resp, _ = d.Status(context.TODO(), &pb.DeployStatusRequest{})
 	if len(resp.GetDeployments()) != 2 {
 		t.Errorf("no-filter deployments = %d, want 2", len(resp.GetDeployments()))
 	}
@@ -105,7 +106,7 @@ func TestDeployStatus_ObservedWithoutDesiredIsSkippedWhenFiltering(t *testing.T)
 	st.ReplicasObserved.Apply(&pb.ReplicaObserved{Id: "orphan-0", State: pb.ReplicaState_REPLICA_STATE_RUNNING}, 1)
 
 	d := &deployServer{state: st}
-	resp, err := d.Status(nil, &pb.DeployStatusRequest{DeploymentFilter: "app1"})
+	resp, err := d.Status(context.TODO(), &pb.DeployStatusRequest{DeploymentFilter: "app1"})
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
