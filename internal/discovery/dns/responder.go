@@ -1,7 +1,7 @@
 // Package dns is the per-bridge DNS responder used by the discovery slice.
 // One Responder runs per bridge on a node, listens on the bridge's gateway
-// IP (port 53 UDP+TCP), and resolves `<service>` / `<service>.jaco.local`
-// to the healthy ReplicaObserved IPs for the responder's (deployment,
+// IP (port 53 UDP+TCP), and resolves `<service>` / `<service>.<deployment>` /
+// `<service>.jaco.internal` to the healthy ReplicaObserved IPs for the (deployment,
 // network) scope. Foreign services in the scope are NXDOMAIN; external
 // hostnames (anything else) get forwarded to the upstream resolver.
 //
@@ -152,19 +152,26 @@ func (r *Responder) answerA(resp *dns.Msg, name, originalName string) {
 }
 
 // parseInScopeName returns (service, true) when name resolves a service in
-// this responder's scope. Accepts `<service>` (bare) and
-// `<service>.jaco.local` (FQDN suffix).
+// this responder's scope. In-scope forms: `<service>` (bare),
+// `<service>.<deployment>` (when the deployment matches this scope),
+// `<service>.jaco.internal`, and `<service>.<deployment>.jaco.internal`. Any
+// other dotted name is external and left to the forwarder. (`.jaco.internal`
+// is used rather than `.local`, which is reserved for mDNS.)
 func (r *Responder) parseInScopeName(name string) (string, bool) {
-	const suffix = ".jaco.local"
-	if strings.HasSuffix(name, suffix) {
-		return strings.TrimSuffix(name, suffix), true
+	// Strip the FQDN suffix, leaving either `<service>` or
+	// `<service>.<deployment>`.
+	name = strings.TrimSuffix(name, ".jaco.internal")
+
+	if !strings.ContainsRune(name, '.') {
+		// Bare label — in-scope service.
+		return name, true
 	}
-	if strings.ContainsRune(name, '.') {
-		// Has a dot but not our suffix → external. Forwarder handles it.
-		return "", false
+	// `<service>.<deployment>` is in-scope only when the deployment matches.
+	if svc, dep, found := strings.Cut(name, "."); found && dep == r.scope.Deployment {
+		return svc, true
 	}
-	// Bare label — treat as in-scope.
-	return name, true
+	// Any other dotted name → external. Forwarder handles it.
+	return "", false
 }
 
 // lookup returns the IPs for a service in scope, or nil if unknown.

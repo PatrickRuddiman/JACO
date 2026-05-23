@@ -46,18 +46,43 @@ func TestHandle_BareServiceReturnsHealthyReplicaIPs(t *testing.T) {
 	}
 }
 
-func TestHandle_FQDNAliasReturnsSameAnswers(t *testing.T) {
+func TestHandle_InScopeNameFormsReturnSameAnswers(t *testing.T) {
 	r := jdns.New(
 		jdns.Scope{Deployment: "sample", Network: "frontend"},
 		jdns.ServiceMap{"web": {net.IPv4(10, 244, 5, 2)}},
 		nil,
 	)
-	resp := r.Handle(aQuery("web.jaco.local"))
-	if len(resp.Answer) != 1 {
-		t.Fatalf("answers = %d, want 1", len(resp.Answer))
+	// All four in-scope forms must resolve to the same service IP.
+	for _, name := range []string{
+		"web",
+		"web.sample",
+		"web.jaco.internal",
+		"web.sample.jaco.internal",
+	} {
+		resp := r.Handle(aQuery(name))
+		if len(resp.Answer) != 1 {
+			t.Fatalf("%s: answers = %d, want 1", name, len(resp.Answer))
+		}
+		if a, ok := resp.Answer[0].(*mdns.A); !ok || a.A.String() != "10.244.5.2" {
+			t.Errorf("%s: answer = %v, want 10.244.5.2", name, resp.Answer[0])
+		}
 	}
-	if a, ok := resp.Answer[0].(*mdns.A); !ok || a.A.String() != "10.244.5.2" {
-		t.Errorf("FQDN answer = %v", resp.Answer[0])
+}
+
+// A deployment-qualified name for a DIFFERENT deployment is not in-scope and
+// (with no forwarder) returns NXDOMAIN rather than this scope's IPs.
+func TestHandle_WrongDeploymentQualifierNotInScope(t *testing.T) {
+	r := jdns.New(
+		jdns.Scope{Deployment: "sample", Network: "frontend"},
+		jdns.ServiceMap{"web": {net.IPv4(10, 244, 5, 2)}},
+		nil,
+	)
+	resp := r.Handle(aQuery("web.other"))
+	if resp.Rcode != mdns.RcodeNameError {
+		t.Errorf("rcode = %v, want NXDOMAIN for foreign-deployment qualifier", mdns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 0 {
+		t.Errorf("unexpected answers for web.other: %v", resp.Answer)
 	}
 }
 
