@@ -14,12 +14,13 @@ import (
 
 // Defaults match slices/daemon.md §4.
 const (
-	DefaultDataDir    = "/var/lib/jaco"
-	DefaultListenAddr = "0.0.0.0:7000"
-	DefaultUnixSocket = "/var/run/jaco/jaco.sock"
-	DefaultWGPort     = 51820
-	DefaultLogLevel   = "info"
-	DefaultIPAMPool   = "10.244.0.0/16"
+	DefaultDataDir     = "/var/lib/jaco"
+	DefaultListenAddr  = "0.0.0.0:7000"
+	DefaultClusterAddr = "0.0.0.0:7001"
+	DefaultUnixSocket  = "/var/run/jaco/jaco.sock"
+	DefaultWGPort      = 51820
+	DefaultLogLevel    = "info"
+	DefaultIPAMPool    = "10.244.0.0/16"
 )
 
 // Config is the typed view of jacod.yaml.
@@ -28,6 +29,9 @@ type Config struct {
 	DataDir string `yaml:"data_dir"`
 	// ListenAddr is the cluster gRPC TLS endpoint (peers + remote CLI).
 	ListenAddr string `yaml:"listen_addr"`
+	// ClusterAddr is the raft TCP transport listen address (peer-to-peer
+	// replication). Must be a different port from ListenAddr.
+	ClusterAddr string `yaml:"cluster_addr"`
 	// UnixSocket is the local-control socket path (CLI ↔ daemon).
 	UnixSocket string `yaml:"unix_socket"`
 	// WGPort is the WireGuard UDP listen port.
@@ -43,12 +47,13 @@ type Config struct {
 // Defaults returns a Config populated with the documented defaults.
 func Defaults() Config {
 	return Config{
-		DataDir:    DefaultDataDir,
-		ListenAddr: DefaultListenAddr,
-		UnixSocket: DefaultUnixSocket,
-		WGPort:     DefaultWGPort,
-		LogLevel:   DefaultLogLevel,
-		IPAMPool:   DefaultIPAMPool,
+		DataDir:     DefaultDataDir,
+		ListenAddr:  DefaultListenAddr,
+		ClusterAddr: DefaultClusterAddr,
+		UnixSocket:  DefaultUnixSocket,
+		WGPort:      DefaultWGPort,
+		LogLevel:    DefaultLogLevel,
+		IPAMPool:    DefaultIPAMPool,
 	}
 }
 
@@ -94,6 +99,15 @@ func (c Config) Validate() error {
 	}
 	if _, _, err := net.SplitHostPort(c.ListenAddr); err != nil {
 		return fmt.Errorf("listen_addr %q is not host:port: %w", c.ListenAddr, err)
+	}
+	if c.ClusterAddr == "" {
+		return fmt.Errorf("cluster_addr is required")
+	}
+	if _, _, err := net.SplitHostPort(c.ClusterAddr); err != nil {
+		return fmt.Errorf("cluster_addr %q is not host:port: %w", c.ClusterAddr, err)
+	}
+	if c.ClusterAddr == c.ListenAddr {
+		return fmt.Errorf("cluster_addr and listen_addr must differ")
 	}
 	if c.UnixSocket == "" {
 		return fmt.Errorf("unix_socket is required")

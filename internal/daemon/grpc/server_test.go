@@ -77,22 +77,6 @@ func TestServer_GatedMethodsReturnClusterUninitialized(t *testing.T) {
 	}
 }
 
-func TestServer_InitReturnsUnimplemented(t *testing.T) {
-	conn, _ := startServer(t)
-	c := pb.NewClusterClient(conn)
-	_, err := c.Init(context.Background(), &pb.ClusterInitRequest{})
-	if err == nil {
-		t.Fatalf("Init should be Unimplemented in this iter")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Errorf("code = %v, want Unimplemented", st.Code())
-	}
-	if !strings.Contains(st.Message(), "cluster_init_unimplemented") {
-		t.Errorf("message = %q", st.Message())
-	}
-}
-
 func TestServer_JoinReturnsUnimplemented(t *testing.T) {
 	conn, _ := startServer(t)
 	c := pb.NewClusterClient(conn)

@@ -42,6 +42,18 @@ type Options struct {
 	// SocketMode is the permission mask applied to the socket file
 	// (default 0o660 — owner+group rw).
 	SocketMode os.FileMode
+
+	// DataDir is the daemon's $JACO_DATA_DIR. Cluster.Init writes raft
+	// state under $DataDir/raft and certs under $DataDir/node.
+	DataDir string
+
+	// ClusterAddr is the raft TCP transport listen address. Used by
+	// Cluster.Init to bind raft so peers can dial.
+	ClusterAddr string
+
+	// Hostname overrides os.Hostname() at handler time. Tests use this;
+	// production leaves it empty.
+	Hostname string
 }
 
 // New builds a Server. Doesn't start anything yet — call Serve.
@@ -74,7 +86,12 @@ func New(opts Options) (*Server, error) {
 		grpc.StreamInterceptor(gate.StreamInterceptor(nil)),
 	)
 
-	cluster := &clusterServer{gate: gate}
+	cluster := &clusterServer{
+		gate:     gate,
+		dataDir:  opts.DataDir,
+		bindAddr: opts.ClusterAddr,
+		hostname: opts.Hostname,
+	}
 	pb.RegisterClusterServer(gs, cluster)
 
 	return &Server{

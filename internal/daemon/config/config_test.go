@@ -25,6 +25,7 @@ func TestLoad_FullFileOverridesDefaults(t *testing.T) {
 	path := filepath.Join(dir, "jacod.yaml")
 	body := `data_dir: /opt/jaco
 listen_addr: 10.0.0.1:7000
+cluster_addr: 10.0.0.1:7001
 unix_socket: /run/jaco.sock
 wg_port: 41641
 acme_email: ops@example.com
@@ -89,6 +90,9 @@ func TestValidate_RejectsBadValues(t *testing.T) {
 		{"empty data_dir", func(c *config.Config) { c.DataDir = "" }, "data_dir"},
 		{"empty listen_addr", func(c *config.Config) { c.ListenAddr = "" }, "listen_addr"},
 		{"bad listen_addr", func(c *config.Config) { c.ListenAddr = "notavalidaddr" }, "listen_addr"},
+		{"empty cluster_addr", func(c *config.Config) { c.ClusterAddr = "" }, "cluster_addr"},
+		{"bad cluster_addr", func(c *config.Config) { c.ClusterAddr = "notavalidaddr" }, "cluster_addr"},
+		{"matching listen+cluster", func(c *config.Config) { c.ClusterAddr = c.ListenAddr }, "must differ"},
 		{"empty unix_socket", func(c *config.Config) { c.UnixSocket = "" }, "unix_socket"},
 		{"wg_port=0", func(c *config.Config) { c.WGPort = 0 }, "wg_port"},
 		{"wg_port=99999", func(c *config.Config) { c.WGPort = 99999 }, "wg_port"},

@@ -40,6 +40,8 @@ func main() {
 
 	server, err := dgrpc.New(dgrpc.Options{
 		UnixSocketPath: cfg.UnixSocket,
+		DataDir:        cfg.DataDir,
+		ClusterAddr:    cfg.ClusterAddr,
 	})
 	if err != nil {
 		log.Fatalf("jacod: gRPC server: %v", err)
