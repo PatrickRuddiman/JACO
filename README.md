@@ -20,22 +20,80 @@ TCP for cross-host control).
 - **Ingress** — Embedded Caddy v2 reverse-proxy; per-route ACME via raft-
   backed CertMagic storage; HTTP-01 challenge coordination through raft.
 
-## Install
+## Installation
 
-From a release tarball:
+Releases are published at
+<https://github.com/PatrickRuddiman/JACO/releases/latest>. Each release
+ships `.deb`, `.rpm`, `.apk`, and a generic `.tar.gz` for `linux/amd64`
+and `linux/arm64`, plus a `SHA256SUMS` manifest.
+
+Pick the snippet that matches your distro and swap `<arch>` for either
+`amd64` or `arm64`.
+
+### Debian / Ubuntu
 
 ```sh
-tar xf jaco-vX-linux-amd64.tar.gz
-cd jaco-vX-linux-amd64
-sudo ./install.sh
-sudo systemctl enable --now jacod
+curl -fsSL -O https://github.com/PatrickRuddiman/JACO/releases/latest/download/jaco_<arch>.deb
+sudo dpkg -i jaco_<arch>.deb
+sudo systemctl enable --now jaco
 ```
 
-The installer drops `/usr/local/bin/{jaco,jacod}`, a default
-`/etc/jaco/jacod.yaml` (edit `listen_addr` / `cluster_addr` / `data_dir`
-as needed), and the `jacod.service` systemd unit. The daemon comes up in
-the uninitialized state — every RPC except `Cluster.{Init,Join,Status}`
-returns `cluster_uninitialized` until one of those two transitions runs.
+### RHEL / Fedora / CentOS
+
+```sh
+curl -fsSL -O https://github.com/PatrickRuddiman/JACO/releases/latest/download/jaco_<arch>.rpm
+sudo rpm -i jaco_<arch>.rpm        # or `sudo dnf install ./jaco_<arch>.rpm`
+sudo systemctl enable --now jaco
+```
+
+### Alpine
+
+```sh
+curl -fsSL -O https://github.com/PatrickRuddiman/JACO/releases/latest/download/jaco_<arch>.apk
+sudo apk add --allow-untrusted ./jaco_<arch>.apk
+```
+
+> Alpine uses OpenRC, not systemd. The package installs the binaries
+> and config; bring `jacod` up under your service manager of choice.
+
+### Generic tarball
+
+```sh
+curl -fsSL -O https://github.com/PatrickRuddiman/JACO/releases/latest/download/jaco-vX.Y.Z-linux-<arch>.tar.gz
+tar xf jaco-vX.Y.Z-linux-<arch>.tar.gz
+cd jaco-vX.Y.Z-linux-<arch>
+sudo install -m 0755 jaco  /usr/local/bin/jaco
+sudo install -m 0755 jacod /usr/local/bin/jacod
+sudo install -d -m 0755 /etc/jaco
+sudo install -m 0644 jacod.yaml /etc/jaco/jacod.yaml
+sudo install -m 0644 jaco.service /lib/systemd/system/jaco.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now jaco
+```
+
+### Verify the download
+
+`SHA256SUMS` lists every artifact in the release. The exact filename
+pattern is what nfpm / the release workflow emits — for example
+`jaco_0.1.0_amd64.deb`, `jaco-0.1.0-1.x86_64.rpm`,
+`jaco_0.1.0_x86_64.apk`, `jaco-v0.1.0-linux-amd64.tar.gz`.
+
+```sh
+curl -fsSL -O https://github.com/PatrickRuddiman/JACO/releases/latest/download/SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+After install, the layout is:
+
+- `/usr/local/bin/{jaco,jacod}` — the CLI client and daemon.
+- `/etc/jaco/jacod.yaml` — daemon config (edit `listen_addr` /
+  `cluster_addr` / `data_dir` before first start).
+- `/lib/systemd/system/jaco.service` — the systemd unit (daemon-reload
+  runs automatically on package install).
+
+The daemon comes up in the uninitialized state — every RPC except
+`Cluster.{Init,Join,Status}` returns `cluster_uninitialized` until one
+of those two transitions runs.
 
 ## Bring up a cluster
 
