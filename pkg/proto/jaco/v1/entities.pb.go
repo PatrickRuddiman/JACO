@@ -953,17 +953,17 @@ func (x *ReplicaObserved) GetLastHealthAt() *timestamppb.Timestamp {
 }
 
 type Route struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Domain        string                 `protobuf:"bytes,1,opt,name=domain,proto3" json:"domain,omitempty"`
-	Deployment    string                 `protobuf:"bytes,2,opt,name=deployment,proto3" json:"deployment,omitempty"`
-	Service       string                 `protobuf:"bytes,3,opt,name=service,proto3" json:"service,omitempty"`
-	Port          int32                  `protobuf:"varint,4,opt,name=port,proto3" json:"port,omitempty"`
-	TlsAuto       bool                   `protobuf:"varint,5,opt,name=tls_auto,json=tlsAuto,proto3" json:"tls_auto,omitempty"`
-	// Path is an optional URL path prefix (e.g. "/api/"). Default "" means
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Domain     string                 `protobuf:"bytes,1,opt,name=domain,proto3" json:"domain,omitempty"`
+	Deployment string                 `protobuf:"bytes,2,opt,name=deployment,proto3" json:"deployment,omitempty"`
+	Service    string                 `protobuf:"bytes,3,opt,name=service,proto3" json:"service,omitempty"`
+	Port       int32                  `protobuf:"varint,4,opt,name=port,proto3" json:"port,omitempty"`
+	TlsAuto    bool                   `protobuf:"varint,5,opt,name=tls_auto,json=tlsAuto,proto3" json:"tls_auto,omitempty"`
+	// path is an optional URL path prefix (e.g. "/api/"). Default "" means
 	// catch-all. Caddy matches routes in declaration order (first match
 	// wins); JACO is responsible for emitting routes longest-prefix-first
 	// so the more specific path is tried before the catch-all.
-	Path          string                 `protobuf:"bytes,6,opt,name=path,proto3" json:"path,omitempty"`
+	Path          string `protobuf:"bytes,6,opt,name=path,proto3" json:"path,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1846,7 +1846,7 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\x0elast_health_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\flastHealthAt\x1a:\n" +
 	"\fDetailsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x88\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x9c\x01\n" +
 	"\x05Route\x12\x16\n" +
 	"\x06domain\x18\x01 \x01(\tR\x06domain\x12\x1e\n" +
 	"\n" +
@@ -1854,7 +1854,8 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"deployment\x12\x18\n" +
 	"\aservice\x18\x03 \x01(\tR\aservice\x12\x12\n" +
 	"\x04port\x18\x04 \x01(\x05R\x04port\x12\x19\n" +
-	"\btls_auto\x18\x05 \x01(\bR\atlsAuto\"\xa5\x02\n" +
+	"\btls_auto\x18\x05 \x01(\bR\atlsAuto\x12\x12\n" +
+	"\x04path\x18\x06 \x01(\tR\x04path\"\xa5\x02\n" +
 	"\x04Cert\x12\x16\n" +
 	"\x06domain\x18\x01 \x01(\tR\x06domain\x12\x1f\n" +
 	"\vprivate_key\x18\x02 \x01(\fR\n" +
