@@ -407,6 +407,35 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 		s.ipamAllocator = allocator
 	}
 
+	// Boot migration (issue #28): once this node is leader, purge any
+	// pre-#28 host-less subnets exactly once. Reconcilers then re-allocate
+	// per-host /24s. Runs on whichever node first holds leadership.
+	s.subsystemsWG.Add(1)
+	go func() {
+		defer s.subsystemsWG.Done()
+		t := time.NewTicker(500 * time.Millisecond)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if !node.IsLeader() {
+					continue
+				}
+				n, err := purgeHostlessSubnets(st, apply)
+				if err != nil {
+					s.logger.Printf("subnet migration: %v", err)
+					return
+				}
+				if n > 0 {
+					s.logger.Printf("subnet migration: purged %d pre-#28 host-less subnet(s)", n)
+				}
+				return
+			}
+		}
+	}()
+
 	rollouts := rollout.New(st, apply, rollout.SystemClock())
 	sched := scheduler.New(st, brokers, node, apply, rollouts)
 	s.subsystemsWG.Add(1)
