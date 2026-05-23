@@ -8,7 +8,12 @@ import (
 )
 
 func TestDefaultCACertPath_NoEnv(t *testing.T) {
-	t.Setenv("JACO_CA_CERT", "")
+	// Ensure JACO_CA_CERT is truly unset (not just empty) for this test, and
+	// restore any prior value on cleanup. t.Setenv has no "unset" mode.
+	if orig, ok := os.LookupEnv("JACO_CA_CERT"); ok {
+		os.Unsetenv("JACO_CA_CERT")
+		t.Cleanup(func() { os.Setenv("JACO_CA_CERT", orig) })
+	}
 	got := defaultCACertPath()
 	if got != "/var/lib/jaco/node/ca.crt" {
 		t.Errorf("defaultCACertPath() = %q; want /var/lib/jaco/node/ca.crt", got)
