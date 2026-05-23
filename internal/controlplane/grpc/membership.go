@@ -162,9 +162,18 @@ func (c *clusterServer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*p
 }
 
 // NodeRemove evicts hostname from the raft configuration and writes a
-// NodeRemove command. Requires operator auth. Drain enforcement (force=false
-// requires task 23's drain to have completed) is a TODO until that lands;
-// for now NodeRemove always proceeds and audit records the action.
+// NodeRemove command. Requires operator auth.
+//
+// force=true (the explicit "rip it out") path: skips drain entirely and
+// applies raft.RemoveServer + NodeRemove immediately.
+//
+// force=false (the default, graceful): runs drain.Plan to compute the
+// replica migrations off hostname, applies a ReplicaDesiredUpsert for
+// each (which the scheduler will then materialize on remaining nodes),
+// waits up to 60s for the new replicas to reach RUNNING in
+// state.ReplicasObserved, then applies RemoveServer + NodeRemove. If
+// the wait times out, returns FailedPrecondition with drain_timeout so
+// the operator can decide whether to retry or use --force.
 func (c *clusterServer) NodeRemove(ctx context.Context, req *pb.NodeRemoveRequest) (*pb.NodeRemoveResponse, error) {
 	if c.raft == nil {
 		return nil, errorStatus(codes.Unavailable, "raft_unavailable", "raft not wired")
@@ -174,6 +183,12 @@ func (c *clusterServer) NodeRemove(ctx context.Context, req *pb.NodeRemoveReques
 	}
 	if req.GetHostname() == "" {
 		return nil, errorStatus(codes.InvalidArgument, "validation_failed", "hostname required")
+	}
+
+	if !req.GetForce() {
+		if err := c.drainHost(ctx, req.GetHostname()); err != nil {
+			return nil, err
+		}
 	}
 
 	rmF := c.raft.Raft.RemoveServer(hraft.ServerID(req.GetHostname()), 0, 5*time.Second)
