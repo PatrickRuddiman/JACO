@@ -42,6 +42,12 @@ type fakeContainer struct {
 
 func newFakeDocker() *fakeDocker { return &fakeDocker{containers: map[string]*fakeContainer{}} }
 
+// ImagePull stub — bug 006 wired pull.Pull into lifecycle.Start so the
+// fake must answer "image present, you're good" without doing real I/O.
+func (f *fakeDocker) ImagePull(_ context.Context, _ string, _ image.PullOptions) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader(`{"status":"ok"}`)), nil
+}
+
 func (f *fakeDocker) ContainerCreate(_ context.Context, cfg *container.Config, _ *container.HostConfig, _ *network.NetworkingConfig, _ *ocispec.Platform, name string) (container.CreateResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

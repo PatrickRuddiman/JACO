@@ -76,8 +76,24 @@ func run(ctx context.Context, configPath string, logOut io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("gRPC server: %w", err)
 	}
-	logger.Printf("listening on %s (uninitialized — run `jaco cluster init` or `jaco node join`)",
-		server.SocketPath())
+	// Bug 005: if raft state already exists on disk, re-open it now so
+	// the daemon resumes its existing membership instead of sitting at
+	// "uninitialized" until an operator re-runs cluster init/join.
+	// Hostname resolution matches the Cluster.Init handler's path.
+	if _, statErr := os.Stat(cfg.DataDir + "/raft/log.db"); statErr == nil {
+		hostname, hErr := os.Hostname()
+		if hErr != nil {
+			logger.Printf("hostname for raft resume: %v (staying uninitialized)", hErr)
+		} else if err := server.OpenRaft(hostname, cfg.ClusterAddr); err != nil {
+			logger.Printf("auto-resume OpenRaft: %v (staying uninitialized)", err)
+		} else {
+			server.Gate().MarkInitialized()
+			logger.Printf("resumed existing raft state for %s on %s", hostname, cfg.ClusterAddr)
+		}
+	} else {
+		logger.Printf("listening on %s (uninitialized — run `jaco cluster init` or `jaco node join`)",
+			server.SocketPath())
+	}
 
 	// Notify systemd we're up so Type=notify units complete activation.
 	// No-op when not run under systemd (sd_notify returns notSent=false

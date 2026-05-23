@@ -3,6 +3,7 @@ package grpc_test
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"google.golang.org/grpc"
@@ -213,6 +215,10 @@ type fakeContainer struct {
 }
 
 func newFakeDocker() *fakeDocker { return &fakeDocker{containers: map[string]*fakeContainer{}} }
+
+func (f *fakeDocker) ImagePull(_ context.Context, _ string, _ image.PullOptions) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader(`{}`)), nil
+}
 
 func (f *fakeDocker) hasReplica(rid string) bool {
 	f.mu.Lock()

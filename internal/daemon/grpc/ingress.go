@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -70,13 +71,18 @@ func ingressLoader() func(ctx context.Context, cfg []byte) error {
 	return ingressLoaderEmbedded()
 }
 
-// ingressLoaderEmbedded calls caddy.Load on every config — caddy handles
-// the first-config-vs-reload distinction internally. Panics in caddy
-// surface back into the daemon's main goroutine; operators wanting
-// isolation can flip JACO_INGRESS_EXEC=1.
+// ingressLoaderEmbedded calls caddy.Load on configs that carry at least
+// one reverse_proxy route. With zero routes the rendered config is just
+// the fallback 404 + ACME stub — equivalent to "caddy not running" —
+// so we skip Load entirely to avoid the bug-009 once-per-second admin
+// restart loop. Once a Route lands in state.Routes, subsequent loads
+// fire normally.
 func ingressLoaderEmbedded() func(ctx context.Context, cfg []byte) error {
 	var started atomic.Bool
 	return func(_ context.Context, cfg []byte) error {
+		if !bytes.Contains(cfg, []byte("reverse_proxy")) {
+			return nil
+		}
 		if err := caddy.Load(cfg, false); err != nil {
 			return fmt.Errorf("caddy.Load: %w", err)
 		}

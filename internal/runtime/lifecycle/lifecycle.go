@@ -21,6 +21,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/compose"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
+	"github.com/PatrickRuddiman/jaco/internal/runtime/pull"
 )
 
 const (
@@ -80,6 +81,14 @@ func Start(ctx context.Context, d dockerx.Docker, spec compose.ContainerSpec, ga
 		if err := stopAndRemove(ctx, d, existing.ID); err != nil {
 			return "", fmt.Errorf("stop+remove stale %s: %w", existing.ID, err)
 		}
+	}
+
+	// Bug 006: pull the image before ContainerCreate. Fresh hosts that
+	// haven't cached the image error with "No such image" on Create
+	// otherwise. pull.Pull retries with exponential backoff so transient
+	// registry failures don't abort the reconcile.
+	if err := pull.Pull(ctx, d, spec.Image, nil, nil); err != nil {
+		return "", fmt.Errorf("ImagePull %s: %w", spec.Image, err)
 	}
 
 	cfg, hostCfg, netCfg := buildConfig(spec)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	hraft "github.com/hashicorp/raft"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -43,6 +44,10 @@ type fakeContainer struct {
 }
 
 func newFakeDocker() *fakeDocker { return &fakeDocker{containers: map[string]*fakeContainer{}} }
+
+func (f *fakeDocker) ImagePull(_ context.Context, _ string, _ image.PullOptions) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader(`{}`)), nil
+}
 
 func (f *fakeDocker) ContainerCreate(_ context.Context, cfg *container.Config, _ *container.HostConfig, _ *network.NetworkingConfig, _ *ocispec.Platform, name string) (container.CreateResponse, error) {
 	f.mu.Lock()

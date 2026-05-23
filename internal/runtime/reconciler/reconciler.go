@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
@@ -99,6 +100,12 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	}
 	r.resync(ctx)
 
+	// Bug 008: 30s safety tick that re-walks state.ReplicasDesired
+	// host=self so the runtime recovers from out-of-band container
+	// removal + missed watch events.
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -109,6 +116,8 @@ func (r *Reconciler) Run(ctx context.Context) error {
 				return nil
 			}
 			r.handle(ctx, ev)
+		case <-ticker.C:
+			r.resync(ctx)
 		}
 	}
 }
@@ -220,6 +229,23 @@ func (r *Reconciler) startReplica(ctx context.Context, rep *pb.ReplicaDesired) e
 		ReplicaIndex: int(rep.GetIndex()),
 		RaftIndex:    rep.GetRaftIndex(),
 	})
+	// Bug 007: ensure each declared docker network exists on the local
+	// engine before lifecycle.Start tries to NetworkConnect.
+	// Idempotent; safe to call on every reconcile.
+	for _, netname := range spec.Networks {
+		netSuffix := bridge.NetworkNameFromDockerName(netname)
+		if netSuffix == "" {
+			continue
+		}
+		sn, ok := r.state.Subnets.Get(state.SubnetKey(rep.GetDeployment(), netSuffix))
+		if !ok {
+			continue
+		}
+		if _, err := bridge.Ensure(ctx, r.docker, rep.GetDeployment(), netSuffix, sn.GetCidr(), clusterID); err != nil {
+			r.logger.Printf("bridge.Ensure %s/%s: %v", rep.GetDeployment(), netSuffix, err)
+		}
+	}
+
 	// Per-bridge DNS resolvers (task 27 deferral). For each declared
 	// network, look up the subnet CIDR in state.Subnets and compute the
 	// gateway IP; that's where the daemon's discovery/dns Manager binds.
