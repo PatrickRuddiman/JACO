@@ -68,6 +68,46 @@ func TestBuildConfig_EmitsPeerForEachRegisteredNode(t *testing.T) {
 	}
 }
 
+// TestBuildConfig_PeerAllowedIPsIncludeContainerSubnets — a peer's AllowedIPs
+// must carry its container /24s (issue #28) in addition to its /32 mesh
+// address, so WireGuard crypto-routing accepts cross-host container packets.
+func TestBuildConfig_PeerAllowedIPsIncludeContainerSubnets(t *testing.T) {
+	st := newState()
+	priv, _ := wgtypes.GeneratePrivateKey()
+	st.Nodes.Apply(&pb.Node{Hostname: "node-a", Address: "10.0.0.1:7000"}, 1) // self
+	st.Nodes.Apply(&pb.Node{
+		Hostname: "node-b", Address: "10.0.0.2:7000",
+		WireguardPubkey: keyBytes(priv.PublicKey()),
+	}, 2)
+	// node-b owns two container /24s; node-a (self) owns one that must NOT
+	// leak into node-b's AllowedIPs.
+	st.Subnets.Apply(&pb.Subnet{Deployment: "app", Network: "_default", Cidr: "10.244.5.0/24", Host: "node-b"}, 3)
+	st.Subnets.Apply(&pb.Subnet{Deployment: "app", Network: "backend", Cidr: "10.244.6.0/24", Host: "node-b"}, 4)
+	st.Subnets.Apply(&pb.Subnet{Deployment: "app", Network: "_default", Cidr: "10.244.7.0/24", Host: "node-a"}, 5)
+
+	selfPriv, _ := wgtypes.GeneratePrivateKey()
+	cfg, err := wgmesh.BuildConfig(st, "node-a", selfPriv)
+	if err != nil {
+		t.Fatalf("BuildConfig: %v", err)
+	}
+	if len(cfg.Peers) != 1 {
+		t.Fatalf("Peers = %d, want 1", len(cfg.Peers))
+	}
+	got := map[string]bool{}
+	for _, n := range cfg.Peers[0].AllowedIPs {
+		got[n.String()] = true
+	}
+	if len(cfg.Peers[0].AllowedIPs) != 3 {
+		t.Fatalf("AllowedIPs = %d, want 3 (/32 + two /24s)", len(cfg.Peers[0].AllowedIPs))
+	}
+	if !got["10.244.5.0/24"] || !got["10.244.6.0/24"] {
+		t.Errorf("peer AllowedIPs missing container subnets: %v", got)
+	}
+	if got["10.244.7.0/24"] {
+		t.Errorf("self's subnet 10.244.7.0/24 must not be in node-b's AllowedIPs")
+	}
+}
+
 // TestBuildConfig_RejectsEmptySelf — same defensive guard as
 // RenderConfig.
 func TestBuildConfig_RejectsEmptySelf(t *testing.T) {
