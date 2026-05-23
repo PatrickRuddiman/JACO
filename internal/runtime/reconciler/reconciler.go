@@ -17,12 +17,38 @@ import (
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
+	"github.com/PatrickRuddiman/jaco/internal/discovery/bridge"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/compose"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/health"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/lifecycle"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
+
+// resolveDNSServers returns one gateway IP per declared network, looked
+// up via state.Subnets + bridge.GatewayIP. Networks the daemon doesn't
+// yet know a CIDR for are silently skipped.
+func resolveDNSServers(st *state.State, deployment string, networks []string) []string {
+	var out []string
+	for _, netname := range networks {
+		// Network names in spec are docker-network names (jaco_<dep>_<net>);
+		// state.Subnets keys by (deployment, network) — pull just the network
+		// suffix from the docker name.
+		net := bridge.NetworkNameFromDockerName(netname)
+		if net == "" {
+			continue
+		}
+		sn, ok := st.Subnets.Get(state.SubnetKey(deployment, net))
+		if !ok {
+			continue
+		}
+		gw, err := bridge.GatewayIP(sn.GetCidr())
+		if err == nil {
+			out = append(out, gw)
+		}
+	}
+	return out
+}
 
 // Reconciler is the per-host runtime driver.
 type Reconciler struct {
@@ -194,6 +220,10 @@ func (r *Reconciler) startReplica(ctx context.Context, rep *pb.ReplicaDesired) e
 		ReplicaIndex: int(rep.GetIndex()),
 		RaftIndex:    rep.GetRaftIndex(),
 	})
+	// Per-bridge DNS resolvers (task 27 deferral). For each declared
+	// network, look up the subnet CIDR in state.Subnets and compute the
+	// gateway IP; that's where the daemon's discovery/dns Manager binds.
+	spec.DNSServers = resolveDNSServers(r.state, rep.GetDeployment(), spec.Networks)
 	containerID, err := lifecycle.Start(ctx, r.docker, spec, lifecycle.IsolationGate{
 		State:        r.state,
 		SelfHostname: r.hostname,

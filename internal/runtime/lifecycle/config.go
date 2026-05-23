@@ -41,6 +41,7 @@ func buildConfig(spec compose.ContainerSpec) (*container.Config, *container.Host
 		Sysctls:        spec.Sysctls,
 		Mounts:         toDockerMounts(spec.Mounts),
 		Tmpfs:          toTmpfsMap(spec.Tmpfs),
+		DNS:            spec.DNSServers,
 		Resources: container.Resources{
 			Ulimits: toUlimitsList(spec.Ulimits),
 		},

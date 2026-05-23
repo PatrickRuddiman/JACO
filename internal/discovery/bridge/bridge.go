@@ -31,6 +31,22 @@ func DockerNetworkName(deployment, network string) string {
 	return "jaco_" + deployment + "_" + network
 }
 
+// NetworkNameFromDockerName is the inverse of DockerNetworkName — pulls
+// the network suffix out of `jaco_<deployment>_<network>`. Returns ""
+// when the input doesn't match the JACO pattern.
+func NetworkNameFromDockerName(s string) string {
+	const prefix = "jaco_"
+	if !strings.HasPrefix(s, prefix) {
+		return ""
+	}
+	tail := s[len(prefix):]
+	idx := strings.IndexByte(tail, '_')
+	if idx < 0 {
+		return ""
+	}
+	return tail[idx+1:]
+}
+
 // LinuxBridgeName returns the Linux bridge interface name for the
 // (deployment, network) pair. Fits the 15-char limit via short sha1 hashes.
 func LinuxBridgeName(deployment, network string) string {
