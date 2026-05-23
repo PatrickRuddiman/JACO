@@ -71,3 +71,19 @@ apk:
   # systemctl presence so the package installs cleanly on musl systems
   # too, but the systemd unit will sit unused.
   scripts: {}
+
+# Per-format runtime dependencies. nfpm wants these under `overrides.*`,
+# not under the per-format blocks above. The daemon dials
+# /var/run/docker.sock; any package providing docker satisfies this.
+overrides:
+  deb:
+    depends:
+      # Accept Debian's docker.io OR Docker Inc's docker-ce / docker-engine.
+      - docker.io | docker-ce | docker-engine
+  rpm:
+    depends:
+      # File-path dep: rpm resolves from whichever provides /usr/bin/docker.
+      - /usr/bin/docker
+  apk:
+    depends:
+      - docker
