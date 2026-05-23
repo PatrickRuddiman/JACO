@@ -359,6 +359,36 @@ func TestBuildCaddyConfig_ACMEPolicyShape(t *testing.T) {
 	}
 }
 
+// TestBuildCaddyConfig_TLSSubjectsDeduped — when a domain has multiple
+// routes (one per path) all with tls=auto, the ACME subjects list must
+// contain that domain exactly once. Otherwise the ACME issuer is asked
+// to provision the same cert N times.
+func TestBuildCaddyConfig_TLSSubjectsDeduped(t *testing.T) {
+	routes := []config.Route{
+		{Domain: "jaco.sh", Deployment: "app", Service: "api", Port: 8080, TLSAuto: true, Path: "/api/"},
+		{Domain: "jaco.sh", Deployment: "app", Service: "web", Port: 80, TLSAuto: true, Path: ""},
+	}
+	got, err := config.BuildCaddyConfig(routes, nil, nil, opts())
+	if err != nil {
+		t.Fatalf("BuildCaddyConfig: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	policies := parsed["apps"].(map[string]any)["tls"].(map[string]any)["automation"].(map[string]any)["policies"].([]any)
+	if len(policies) != 1 {
+		t.Fatalf("policies = %d, want 1", len(policies))
+	}
+	subjects := policies[0].(map[string]any)["subjects"].([]any)
+	if len(subjects) != 1 {
+		t.Fatalf("subjects = %v, want 1 entry (deduped)", subjects)
+	}
+	if subjects[0] != "jaco.sh" {
+		t.Errorf("subjects[0] = %v, want jaco.sh", subjects[0])
+	}
+}
+
 // TestBuildCaddyConfig_PathMatchesExactPrefix — a route with path "/api"
 // must produce a match block that covers both the bare "/api" request and
 // any "/api/..." sub-path, and must NOT match unrelated paths like

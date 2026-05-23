@@ -315,12 +315,22 @@ func fallbackRoute() any {
 // buildTLSPolicies emits the apps.tls.automation.policies array.
 // One policy per `tls: auto` route; `tls: off` routes are omitted (the
 // HTTP-only listener serves them).
+//
+// A single domain may appear on multiple routes (path-based routing), so
+// the subjects list is deduped — ACME would otherwise be asked to issue
+// the same cert several times.
 func buildTLSPolicies(routes []Route, opts BuildOpts) []any {
+	seen := map[string]bool{}
 	var domains []string
 	for _, r := range routes {
-		if r.TLSAuto {
-			domains = append(domains, r.Domain)
+		if !r.TLSAuto {
+			continue
 		}
+		if seen[r.Domain] {
+			continue
+		}
+		seen[r.Domain] = true
+		domains = append(domains, r.Domain)
 	}
 	if len(domains) == 0 {
 		return nil
