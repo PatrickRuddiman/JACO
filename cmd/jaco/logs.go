@@ -32,11 +32,10 @@ func logsCmd() *cobra.Command {
 	)
 	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
 	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN)")
-	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
+	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
 	c.Flags().BoolVarP(&follow, "follow", "f", false, "stream new lines as they arrive")
 	c.Flags().StringVar(&since, "since", "5m", "only lines newer than this duration (e.g. 1h, 30m)")
 	_ = c.MarkFlagRequired("server")
-	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, args []string) error {
 		if opToken == "" {
@@ -54,7 +53,11 @@ func logsCmd() *cobra.Command {
 			return err
 		}
 
-		conn, err := dialServer(server, mustReadFile(caCertPath))
+		caCertPEM, err := readCACert(caCertPath)
+		if err != nil {
+			return err
+		}
+		conn, err := dialServer(server, caCertPEM)
 		if err != nil {
 			return err
 		}

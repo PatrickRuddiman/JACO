@@ -26,10 +26,9 @@ func backupCmd() *cobra.Command {
 	var server, opToken, caCertPath, outputPath string
 	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
 	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN)")
-	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
+	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
 	c.Flags().StringVar(&outputPath, "output", "", "destination file (e.g. cluster.tar.gz); required")
 	_ = c.MarkFlagRequired("server")
-	// ca-cert no longer required: v0 uses plaintext TCP
 	_ = c.MarkFlagRequired("output")
 
 	c.RunE = func(_ *cobra.Command, _ []string) error {
@@ -40,7 +39,11 @@ func backupCmd() *cobra.Command {
 			return fmt.Errorf("--token or JACO_TOKEN env is required")
 		}
 
-		conn, err := dialServer(server, mustReadFile(caCertPath))
+		caCertPEM, err := readCACert(caCertPath)
+		if err != nil {
+			return err
+		}
+		conn, err := dialServer(server, caCertPEM)
 		if err != nil {
 			return err
 		}
