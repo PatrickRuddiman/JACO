@@ -11,8 +11,10 @@ import (
 )
 
 // buildConfig projects a compose.ContainerSpec into docker's three config
-// structs. NetworkMode is forced to "none" — the runtime caller attaches the
-// container to JACO bridges via NetworkConnect after create (task 27).
+// structs. The first declared network attaches at create-time via
+// NetworkingConfig.EndpointsConfig; additional networks attach via
+// NetworkConnect after create. NetworkMode=none (the previous default)
+// was rejected by Docker when followed by a NetworkConnect — see bug 010.
 func buildConfig(spec compose.ContainerSpec) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
 	cfg := &container.Config{
 		Image:      spec.Image,
@@ -35,7 +37,6 @@ func buildConfig(spec compose.ContainerSpec) (*container.Config, *container.Host
 
 	hostCfg := &container.HostConfig{
 		ReadonlyRootfs: spec.ReadOnly,
-		NetworkMode:    container.NetworkMode("none"),
 		CapAdd:         spec.CapAdd,
 		CapDrop:        spec.CapDrop,
 		Sysctls:        spec.Sysctls,
@@ -48,6 +49,16 @@ func buildConfig(spec compose.ContainerSpec) (*container.Config, *container.Host
 	}
 
 	netCfg := &network.NetworkingConfig{}
+	if len(spec.Networks) > 0 {
+		// Bug 010: attach the first network at create-time. Subsequent
+		// networks attach via NetworkConnect in lifecycle.Start.
+		// HostConfig.NetworkMode is implicitly the first network's name
+		// when EndpointsConfig has exactly one entry.
+		hostCfg.NetworkMode = container.NetworkMode(spec.Networks[0])
+		netCfg.EndpointsConfig = map[string]*network.EndpointSettings{
+			spec.Networks[0]: {},
+		}
+	}
 	return cfg, hostCfg, netCfg
 }
 

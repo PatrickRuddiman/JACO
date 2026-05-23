@@ -381,10 +381,15 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 				s.logger.Printf("wgmesh.EnsureInterface: %v (mesh sync best-effort)", err)
 			}
 			// Publish our wireguard pubkey + gRPC address through raft so
-			// peers see them after a restart / initial Init. Uses the same
-			// SubmitFn path the runtime reconciler uses — direct apply on
-			// the leader, Internal.Submit forward on followers.
-			s.publishSelf(ctx, node, st, hostname, pubKey)
+			// peers see them after a restart / initial Init. Bug 011:
+			// followers must retry until the leader's grpc_address has
+			// propagated; first try usually fails on follower because
+			// state.Nodes doesn't yet have the leader's grpc addr.
+			s.subsystemsWG.Add(1)
+			go func() {
+				defer s.subsystemsWG.Done()
+				s.publishSelfRetry(ctx, node, st, hostname, pubKey)
+			}()
 
 			syncer := &wgmesh.Syncer{
 				State:        st,
@@ -670,8 +675,9 @@ func (s *Server) TCPAddr() string { return s.tcpAddr }
 
 // publishSelf raft-Applies a NodeUpdateSelf so peers see our current
 // wireguard pubkey + grpc address. Direct apply on the leader; follower
-// forwarding via Internal.Submit at the leader's gRPC address.
-func (s *Server) publishSelf(ctx context.Context, node *raftnode.Node, st *state.State, hostname string, pubKey wgtypesKey) {
+// forwarding via Internal.Submit at the leader's gRPC address. Returns
+// nil on success, the underlying error otherwise (caller retries).
+func (s *Server) publishSelf(ctx context.Context, node *raftnode.Node, st *state.State, hostname string, pubKey wgtypesKey) error {
 	cmd := &pb.Command{
 		Identity: "node-update-self",
 		Payload: &pb.Command_NodeUpdateSelf{NodeUpdateSelf: &pb.NodeUpdateSelf{
@@ -682,28 +688,52 @@ func (s *Server) publishSelf(ctx context.Context, node *raftnode.Node, st *state
 	}
 	data, err := proto.Marshal(cmd)
 	if err != nil {
-		s.logger.Printf("publishSelf marshal: %v", err)
-		return
+		return fmt.Errorf("marshal: %w", err)
 	}
 	if _, err := node.Apply(data, 0); err == nil {
-		return
+		return nil
 	} else if !errors.Is(err, hraft.ErrNotLeader) {
-		s.logger.Printf("publishSelf apply: %v", err)
-		return
+		return fmt.Errorf("apply: %w", err)
 	}
 	leaderAddr := leaderGRPCAddr(st, node)
 	if leaderAddr == "" {
-		s.logger.Printf("publishSelf: no leader gRPC address known")
-		return
+		return fmt.Errorf("no leader gRPC address known")
 	}
 	conn, err := grpc.NewClient(leaderAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		s.logger.Printf("publishSelf dial leader: %v", err)
-		return
+		return fmt.Errorf("dial leader: %w", err)
 	}
 	defer conn.Close()
 	if _, err := pb.NewInternalClient(conn).Submit(ctx, &pb.SubmitRequest{CommandBytes: data}); err != nil {
-		s.logger.Printf("publishSelf forward: %v", err)
+		return fmt.Errorf("forward: %w", err)
+	}
+	return nil
+}
+
+// publishSelfRetry calls publishSelf with exponential backoff until it
+// succeeds or ctx is cancelled. Bug 011: first attempt usually fails on
+// followers because state.Nodes hasn't seen the leader's
+// grpc_address yet; retry until it has.
+func (s *Server) publishSelfRetry(ctx context.Context, node *raftnode.Node, st *state.State, hostname string, pubKey wgtypesKey) {
+	backoff := 200 * time.Millisecond
+	const maxBackoff = 5 * time.Second
+	for {
+		err := s.publishSelf(ctx, node, st, hostname, pubKey)
+		if err == nil {
+			s.logger.Printf("publishSelf succeeded for %s", hostname)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
 	}
 }
 

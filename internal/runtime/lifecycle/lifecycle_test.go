@@ -48,7 +48,7 @@ func (f *fakeDocker) ImagePull(_ context.Context, _ string, _ image.PullOptions)
 	return io.NopCloser(strings.NewReader(`{"status":"ok"}`)), nil
 }
 
-func (f *fakeDocker) ContainerCreate(_ context.Context, cfg *container.Config, _ *container.HostConfig, _ *network.NetworkingConfig, _ *ocispec.Platform, name string) (container.CreateResponse, error) {
+func (f *fakeDocker) ContainerCreate(_ context.Context, cfg *container.Config, _ *container.HostConfig, netCfg *network.NetworkingConfig, _ *ocispec.Platform, name string) (container.CreateResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.createErr != nil {
@@ -66,6 +66,16 @@ func (f *fakeDocker) ContainerCreate(_ context.Context, cfg *container.Config, _
 		Image:  cfg.Image,
 		Labels: labels,
 		State:  "created",
+	}
+	// Bug 010: record the create-time network attachment so the
+	// attached-networks assertion still sees both networks.
+	if netCfg != nil {
+		if f.attached == nil {
+			f.attached = map[string][]string{}
+		}
+		for netName := range netCfg.EndpointsConfig {
+			f.attached[id] = append(f.attached[id], netName)
+		}
 	}
 	return container.CreateResponse{ID: id}, nil
 }
