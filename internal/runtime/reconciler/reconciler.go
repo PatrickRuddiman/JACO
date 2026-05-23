@@ -194,7 +194,10 @@ func (r *Reconciler) startReplica(ctx context.Context, rep *pb.ReplicaDesired) e
 		ReplicaIndex: int(rep.GetIndex()),
 		RaftIndex:    rep.GetRaftIndex(),
 	})
-	containerID, err := lifecycle.Start(ctx, r.docker, spec)
+	containerID, err := lifecycle.Start(ctx, r.docker, spec, lifecycle.IsolationGate{
+		State:        r.state,
+		SelfHostname: r.hostname,
+	})
 	if err != nil {
 		return fmt.Errorf("lifecycle.Start: %w", err)
 	}

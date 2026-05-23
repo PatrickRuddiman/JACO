@@ -18,6 +18,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/compose"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 )
@@ -31,17 +32,39 @@ const (
 	labelRaftIndex    = "jaco.raft_index"
 )
 
+// IsolationGate is the optional state + self-hostname pair the daemon
+// passes to Start so containers aren't created on a node whose nftables
+// ruleset has drifted (status=isolation_unavailable). Zero value disables
+// the gate — every call from tests with an in-memory fake state works
+// untouched.
+type IsolationGate struct {
+	State        *state.State
+	SelfHostname string
+}
+
 // Start brings spec's container up. Idempotent on the (replica_id, raft_index)
 // pair: if a container with the same replica_id already exists and its
 // jaco.raft_index label matches spec.RaftIndex, Start is a no-op and returns
 // the existing container id. Otherwise an existing container is stopped +
 // removed before a fresh one is created.
-func Start(ctx context.Context, d dockerx.Docker, spec compose.ContainerSpec) (containerID string, err error) {
+//
+// Isolation gate: when gate.State + gate.SelfHostname are populated, Start
+// calls CheckIsolationAvailable up-front and refuses with
+// ErrIsolationUnavailable when the local node is in
+// NODE_STATUS_ISOLATION_UNAVAILABLE. The daemon's runtime reconciler is
+// the production caller; existing test paths pass the zero-value gate and
+// bypass the check.
+func Start(ctx context.Context, d dockerx.Docker, spec compose.ContainerSpec, gate ...IsolationGate) (containerID string, err error) {
 	if spec.ReplicaID == "" {
 		return "", errors.New("Start: ContainerSpec.ReplicaID is required")
 	}
 	if spec.Image == "" {
 		return "", errors.New("Start: ContainerSpec.Image is required")
+	}
+	if len(gate) > 0 && gate[0].State != nil {
+		if err := CheckIsolationAvailable(gate[0].State, gate[0].SelfHostname); err != nil {
+			return "", err
+		}
 	}
 
 	existing, err := findContainerByReplicaID(ctx, d, spec.ReplicaID)

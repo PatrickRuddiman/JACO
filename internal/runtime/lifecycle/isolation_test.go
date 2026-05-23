@@ -1,11 +1,13 @@
 package lifecycle_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
+	"github.com/PatrickRuddiman/jaco/internal/runtime/compose"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/lifecycle"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
@@ -44,6 +46,25 @@ func TestCheckIsolationAvailable_MissingNodeAndNilStateNoop(t *testing.T) {
 	}
 	if err := lifecycle.CheckIsolationAvailable(newStateWithNode("node-a", pb.NodeStatus_NODE_STATUS_READY), ""); err != nil {
 		t.Errorf("empty hostname should be a no-op; got %v", err)
+	}
+}
+
+// TestStart_RefusesWhenIsolationUnavailable proves the gate baked into
+// lifecycle.Start fires when the local Node is in
+// NODE_STATUS_ISOLATION_UNAVAILABLE — Start returns
+// ErrIsolationUnavailable without touching docker.
+func TestStart_RefusesWhenIsolationUnavailable(t *testing.T) {
+	st := newStateWithNode("node-a", pb.NodeStatus_NODE_STATUS_ISOLATION_UNAVAILABLE)
+	d := newFakeDocker()
+	_, err := lifecycle.Start(context.Background(), d, compose.ContainerSpec{
+		ReplicaID: "smoke-web-0",
+		Image:     "nginx:alpine",
+	}, lifecycle.IsolationGate{State: st, SelfHostname: "node-a"})
+	if !errors.Is(err, lifecycle.ErrIsolationUnavailable) {
+		t.Errorf("err = %v; want ErrIsolationUnavailable", err)
+	}
+	if len(d.containers) != 0 {
+		t.Errorf("containers created despite isolation gate: %d", len(d.containers))
 	}
 }
 
