@@ -109,3 +109,37 @@ func TestFormatError_GrpcStatusWithPbErrorDetail_RendersHumanReadable(t *testing
 		t.Errorf("FormatError output contains raw rpc error prefix: %q", got.Error())
 	}
 }
+
+func TestFormatError_GrpcStatusWithPbErrorDetail_PreservesUnderlyingStatus(t *testing.T) {
+	st, err := status.New(codes.InvalidArgument, "validation_failed").
+		WithDetails(&pb.Error{
+			Code:    "VALIDATION_FAILED",
+			Message: "bad",
+		})
+	if err != nil {
+		t.Fatalf("WithDetails: %v", err)
+	}
+	orig := st.Err()
+
+	got := cliclient.FormatError(orig)
+	if got == nil {
+		t.Fatal("FormatError returned nil for non-nil error")
+	}
+
+	// errors.Unwrap should return the original gRPC status error so callers
+	// can still inspect codes, details, etc.
+	if unwrapped := errors.Unwrap(got); unwrapped != orig {
+		t.Errorf("errors.Unwrap(FormatError(...)) = %v, want original gRPC error", unwrapped)
+	}
+
+	// status.FromError walks Unwrap chains via the GRPCStatus interface, so
+	// the wrapped error should still be recognized as a gRPC status with
+	// the same code as the original.
+	rec, ok := status.FromError(got)
+	if !ok {
+		t.Fatal("status.FromError(FormatError(...)): ok=false, want true")
+	}
+	if rec.Code() != codes.InvalidArgument {
+		t.Errorf("recovered code = %v, want %v", rec.Code(), codes.InvalidArgument)
+	}
+}

@@ -93,16 +93,37 @@ func UnpackStatus(err error) (code, message string, ok bool) {
 	return "", "", false
 }
 
-// FormatError returns a human-readable error string from a gRPC error. When
-// the error carries a pb.Error detail the format is "Error: <code>: <message>".
-// When no pb.Error detail is present it falls back to err.Error(). Returns nil
-// when err is nil.
+// formattedError carries a CLI-facing message while preserving the original
+// underlying error so callers can still use errors.As / errors.Is /
+// errors.Unwrap to recover the gRPC status (or any other typed cause).
+type formattedError struct {
+	msg   string
+	cause error
+}
+
+// Error returns only the operator-facing message; the underlying cause's
+// text is intentionally omitted to keep stderr output clean.
+func (e *formattedError) Error() string { return e.msg }
+
+// Unwrap exposes the original error so errors.As(*status.Status) and
+// similar checks keep working after FormatError has run.
+func (e *formattedError) Unwrap() error { return e.cause }
+
+// FormatError returns a human-readable error wrapper for a gRPC error. When
+// the error carries a pb.Error detail the displayed message is
+// "Error: <code>: <message>". When no pb.Error detail is present, the
+// returned error's message matches err.Error(). In both cases the original
+// error remains reachable via errors.Unwrap / errors.As, so callers can
+// still recover the gRPC *status.Status. Returns nil when err is nil.
 func FormatError(err error) error {
 	if err == nil {
 		return nil
 	}
 	if code, message, ok := UnpackStatus(err); ok {
-		return fmt.Errorf("Error: %s: %s", code, message)
+		return &formattedError{
+			msg:   fmt.Sprintf("Error: %s: %s", code, message),
+			cause: err,
+		}
 	}
 	return err
 }
