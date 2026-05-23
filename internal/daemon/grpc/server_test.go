@@ -116,6 +116,43 @@ func TestServer_NewRejectsMissingSocketPath(t *testing.T) {
 	}
 }
 
+func TestServer_TCPListenerServesClusterStatus(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "jacod.sock")
+	listenAddr := freePort(t)
+	s, err := dgrpc.New(dgrpc.Options{
+		UnixSocketPath: sock,
+		ListenAddr:     listenAddr,
+	})
+	if err != nil {
+		t.Fatalf("dgrpc.New: %v", err)
+	}
+	go func() { _ = s.Serve() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		s.Stop(ctx)
+	})
+
+	if got := s.TCPAddr(); got == "" {
+		t.Fatalf("TCPAddr empty after configured listener")
+	}
+
+	// Dial the TCP listener — pure plain-text, no TLS at this point.
+	conn, err := grpc.NewClient(s.TCPAddr(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial tcp: %v", err)
+	}
+	defer conn.Close()
+
+	resp, err := pb.NewClusterClient(conn).Status(context.Background(), &pb.ClusterStatusRequest{})
+	if err != nil {
+		t.Fatalf("Status over TCP: %v", err)
+	}
+	if resp.GetInitialized() {
+		t.Errorf("Initialized = true on fresh server")
+	}
+}
+
 func TestServer_StopRemovesSocketFile(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "jacod.sock")
 	s, err := dgrpc.New(dgrpc.Options{UnixSocketPath: sock})

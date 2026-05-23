@@ -67,6 +67,7 @@ func run(ctx context.Context, configPath string, logOut io.Writer) error {
 	server, err := dgrpc.New(dgrpc.Options{
 		UnixSocketPath: cfg.UnixSocket,
 		DataDir:        cfg.DataDir,
+		ListenAddr:     cfg.ListenAddr,
 		ClusterAddr:    cfg.ClusterAddr,
 		Docker:         docker,
 	})

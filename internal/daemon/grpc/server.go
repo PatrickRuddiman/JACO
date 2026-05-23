@@ -34,10 +34,12 @@ import (
 // Server bundles the daemon-side gRPC server with its unix socket listener
 // + the InitGate that governs which RPCs accept while uninitialized.
 type Server struct {
-	gs         *grpc.Server
-	listener   net.Listener
-	gate       *admission.InitGate
-	socketPath string
+	gs           *grpc.Server
+	listener     net.Listener // unix socket — local control
+	tcpListener  net.Listener // cross-host control; nil when ListenAddr unset
+	gate         *admission.InitGate
+	socketPath   string
+	tcpAddr      string // resolved listener address (the port may be 0 → ephemeral)
 
 	cluster *clusterServer
 
@@ -81,6 +83,15 @@ type Options struct {
 	// DataDir is the daemon's $JACO_DATA_DIR. Cluster.Init writes raft
 	// state under $DataDir/raft and certs under $DataDir/node.
 	DataDir string
+
+	// ListenAddr is the cross-host control-plane listener (TCP). Peers
+	// dial this for Cluster.{Status,Join} during cluster formation and
+	// for ongoing operator RPCs. Empty → no cross-host listener (single
+	// node only).
+	//
+	// v0 ships plaintext TCP — Tailscale / WireGuard is expected to wrap
+	// the connection. TLS-with-cluster-CA is a follow-up iter.
+	ListenAddr string
 
 	// ClusterAddr is the raft TCP transport listen address. Used by
 	// Cluster.Init to bind raft so peers can dial.
@@ -135,13 +146,31 @@ func New(opts Options) (*Server, error) {
 	if logger == nil {
 		logger = log.Default()
 	}
+
+	// Optional cross-host TCP listener. Empty ListenAddr → single-node
+	// daemon (unix socket only). We open this NOW so a failure surfaces
+	// before Init/Join rather than mid-flight.
+	var tcpLis net.Listener
+	var tcpAddr string
+	if opts.ListenAddr != "" {
+		tl, err := net.Listen("tcp", opts.ListenAddr)
+		if err != nil {
+			_ = lis.Close()
+			return nil, fmt.Errorf("listen tcp %s: %w", opts.ListenAddr, err)
+		}
+		tcpLis = tl
+		tcpAddr = tl.Addr().String()
+	}
+
 	server := &Server{
-		gs:         gs,
-		listener:   lis,
-		gate:       gate,
-		socketPath: opts.UnixSocketPath,
-		logger:     logger,
-		docker:     opts.Docker,
+		gs:          gs,
+		listener:    lis,
+		tcpListener: tcpLis,
+		gate:        gate,
+		socketPath:  opts.UnixSocketPath,
+		tcpAddr:     tcpAddr,
+		logger:      logger,
+		docker:      opts.Docker,
 	}
 	cluster := &clusterServer{
 		gate:     gate,
@@ -281,7 +310,10 @@ func (s *Server) State() *state.State {
 	return s.state
 }
 
-// Serve blocks until Stop is called or the listener errors.
+// Serve blocks until Stop is called or one of the listeners errors. When a
+// cross-host TCP listener is configured, it runs alongside the unix socket
+// on the same grpc.Server (so Cluster RPCs are visible identically on both
+// transports).
 func (s *Server) Serve() error {
 	s.mu.Lock()
 	if s.started {
@@ -291,11 +323,33 @@ func (s *Server) Serve() error {
 	s.started = true
 	s.mu.Unlock()
 
-	err := s.gs.Serve(s.listener)
-	if errors.Is(err, grpc.ErrServerStopped) {
-		return nil
+	errs := make(chan error, 2)
+	go func() {
+		err := s.gs.Serve(s.listener)
+		if errors.Is(err, grpc.ErrServerStopped) {
+			err = nil
+		}
+		errs <- err
+	}()
+	if s.tcpListener != nil {
+		go func() {
+			err := s.gs.Serve(s.tcpListener)
+			if errors.Is(err, grpc.ErrServerStopped) {
+				err = nil
+			}
+			errs <- err
+		}()
 	}
-	return err
+	// Return the first non-nil error (or nil if both shut down cleanly).
+	first := <-errs
+	if s.tcpListener != nil {
+		// Drain the other one so its goroutine doesn't leak.
+		select {
+		case <-errs:
+		default:
+		}
+	}
+	return first
 }
 
 // Stop performs a graceful shutdown.
@@ -346,3 +400,7 @@ func (s *Server) Gate() *admission.InitGate { return s.gate }
 
 // SocketPath returns the path the daemon is listening on.
 func (s *Server) SocketPath() string { return s.socketPath }
+
+// TCPAddr returns the resolved cross-host listener address (after net.Listen
+// substituted any :0 port). Empty when ListenAddr was unset.
+func (s *Server) TCPAddr() string { return s.tcpAddr }
