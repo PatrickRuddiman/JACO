@@ -42,6 +42,12 @@ func IdentityFromContext(ctx context.Context) string {
 var UnauthMethods = map[string]bool{
 	"/jaco.v1.Cluster/NodeJoin": true,
 	"/jaco.v1.Cluster/Status":   true,
+	// Internal.* is the peer-to-peer surface follower nodes use to
+	// forward raft.Apply work to the leader. Today it relies on the
+	// overlay network for auth; peer mTLS lands in a follow-up iter.
+	"/jaco.v1.Internal/Submit":       true,
+	"/jaco.v1.Internal/SignNodeCert": true,
+	"/jaco.v1.Internal/Logs":         true,
 }
 
 // UnaryInterceptor returns a grpc.UnaryServerInterceptor that runs

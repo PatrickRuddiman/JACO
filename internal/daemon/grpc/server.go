@@ -222,6 +222,7 @@ func New(opts Options) (*Server, error) {
 	}
 	server.cluster = cluster
 	pb.RegisterClusterServer(gs, cluster)
+	pb.RegisterInternalServer(gs, &internalServer{server: server})
 
 	return server, nil
 }
