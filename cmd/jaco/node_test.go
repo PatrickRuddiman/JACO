@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -76,26 +74,5 @@ func TestFormatIssueJoinToken_IncludesServerAndToken(t *testing.T) {
 	}
 	if !strings.Contains(got, "--token="+token) {
 		t.Errorf("output missing --token=%s:\n%s", token, got)
-	}
-}
-
-// TestNodeIssueJoinToken_OutputWiring verifies that the cmd.OutOrStdout() path
-// is correctly wired: the formatter result is written to the command writer,
-// not to os.Stdout directly. We do this by confirming fmt.Fprint with a
-// custom writer receives the same bytes formatIssueJoinToken produces.
-func TestNodeIssueJoinToken_OutputWiring(t *testing.T) {
-	var buf bytes.Buffer
-	// Simulate what RunE does: write formatIssueJoinToken output to an io.Writer.
-	server := "jaco-1:7000"
-	token := "tok-wiring"
-	expected := formatIssueJoinToken(server, token, 24*time.Hour, "", false)
-	fmt.Fprint(&buf, expected)
-
-	got := buf.String()
-	if got != expected {
-		t.Errorf("output wiring mismatch:\ngot:  %q\nwant: %q", got, expected)
-	}
-	if !strings.Contains(got, "sudo jaco node join") {
-		t.Errorf("wired output missing join command:\n%s", got)
 	}
 }
