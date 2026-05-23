@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
@@ -209,15 +212,28 @@ func nodeListCmd() *cobra.Command {
 
 // --- shared dial helper ---------------------------------------------------
 
-// dialServer dials the JACO control plane. v0 ships plaintext TCP — the
-// caCertPEM arg is preserved for the eventual TLS-with-cluster-CA wiring,
-// but is currently ignored. Pass empty bytes today.
-func dialServer(addr string, _ []byte) (*grpc.ClientConn, error) {
+// dialServer dials the JACO control plane. The cross-host listener is
+// always TLS (bootstrap self-signed pre-Init, cluster-CA-signed post-
+// Init — task 41). When caCertPEM is non-empty the dial pins the
+// cluster CA; otherwise it falls back to InsecureSkipVerify with a
+// single one-line warning so v0 muscle-memory keeps working.
+func dialServer(addr string, caCertPEM []byte) (*grpc.ClientConn, error) {
 	if addr == "" {
 		return nil, fmt.Errorf("--server is required (host:port of any cluster node)")
 	}
-	return grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if len(caCertPEM) > 0 {
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caCertPEM) {
+			return nil, fmt.Errorf("--ca-cert did not parse as PEM")
+		}
+		return grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{RootCAs: pool})))
+	}
+	fmt.Fprintln(os.Stderr, "warning: dialing without --ca-cert; server identity is not verified")
+	return grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})))
 }
+
+// silence unused if --ca-cert is the only path callers exercise.
+var _ = insecure.NewCredentials
 
 func mustReadFile(path string) []byte {
 	b, err := os.ReadFile(path)

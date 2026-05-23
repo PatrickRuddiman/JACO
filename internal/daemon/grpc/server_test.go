@@ -2,6 +2,7 @@ package grpc_test
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
@@ -141,8 +143,11 @@ func TestServer_TCPListenerServesClusterStatus(t *testing.T) {
 		t.Fatalf("TCPAddr empty after configured listener")
 	}
 
-	// Dial the TCP listener — pure plain-text, no TLS at this point.
-	conn, err := grpc.NewClient(s.TCPAddr(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// Dial the TCP listener with TLS skip-verify — the daemon's
+	// bootstrap cert is self-signed, but pre-Init operators / joiners
+	// can still reach Status (and Cluster.Join would do the same).
+	creds := credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})
+	conn, err := grpc.NewClient(s.TCPAddr(), grpc.WithTransportCredentials(creds))
 	if err != nil {
 		t.Fatalf("dial tcp: %v", err)
 	}

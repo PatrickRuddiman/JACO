@@ -6,6 +6,7 @@ package grpc
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
@@ -79,6 +80,11 @@ type Server struct {
 	// docker is the optional runtime engine handle. nil → no runtime
 	// reconciler is spawned in startSubsystems.
 	docker dockerx.Docker
+
+	// tlsDyn holds the live server cert for the cross-host TCP listener.
+	// Nil when no TCP listener was opened. RebindTLS swaps the cert in
+	// after OpenRaft persists the cluster-CA-signed node cert.
+	tlsDyn *dynamicTLS
 
 	mu      sync.Mutex
 	started bool
@@ -201,17 +207,29 @@ func New(opts Options) (*Server, error) {
 
 	// Optional cross-host TCP listener. Empty ListenAddr → single-node
 	// daemon (unix socket only). We open this NOW so a failure surfaces
-	// before Init/Join rather than mid-flight.
+	// before Init/Join rather than mid-flight. The TCP listener is
+	// always TLS-wrapped — pre-Init with a self-signed bootstrap cert
+	// (joiners dial with InsecureSkipVerify; the join_token is the
+	// trust anchor); rebindTLS swaps in the cluster-CA-signed cert
+	// after OpenRaft persists certs.
 	var tcpLis net.Listener
 	var tcpAddr string
+	var dynTLS *dynamicTLS
 	if opts.ListenAddr != "" {
-		tl, err := net.Listen("tcp", opts.ListenAddr)
+		raw, err := net.Listen("tcp", opts.ListenAddr)
 		if err != nil {
 			_ = lis.Close()
 			return nil, fmt.Errorf("listen tcp %s: %w", opts.ListenAddr, err)
 		}
-		tcpLis = tl
-		tcpAddr = tl.Addr().String()
+		btls, dyn, err := bootstrapTLSConfig(opts.Hostname)
+		if err != nil {
+			_ = lis.Close()
+			_ = raw.Close()
+			return nil, fmt.Errorf("bootstrap TLS: %w", err)
+		}
+		tcpLis = tls.NewListener(raw, btls)
+		tcpAddr = raw.Addr().String()
+		dynTLS = dyn
 	}
 
 	*server = Server{
@@ -223,6 +241,7 @@ func New(opts Options) (*Server, error) {
 		tcpAddr:     tcpAddr,
 		logger:      logger,
 		docker:      opts.Docker,
+		tlsDyn:      dynTLS,
 	}
 	cluster := &clusterServer{
 		gate:     gate,
@@ -289,6 +308,19 @@ func (s *Server) OpenRaft(hostname, bindAddr string) error {
 	s.state = st
 	s.brokers = brokers
 	s.fsm = f
+
+	// Swap the bootstrap cert for the cluster-CA-signed node cert on the
+	// cross-host TCP listener. Best-effort — if the node cert isn't on
+	// disk (e.g. test paths that skip Init's persistJoin), the listener
+	// keeps the bootstrap cert and operators must keep using
+	// InsecureSkipVerify.
+	if s.tlsDyn != nil && s.cluster != nil && s.cluster.dataDir != "" {
+		if cert, err := clusterNodeCert(s.cluster.dataDir, hostname); err == nil {
+			s.tlsDyn.swap(cert)
+		} else {
+			s.logger.Printf("rebindTLS: %v (keeping bootstrap cert)", err)
+		}
+	}
 
 	s.startSubsystems(node, st, brokers, hostname)
 	return nil
