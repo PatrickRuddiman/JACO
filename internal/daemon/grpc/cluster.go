@@ -2,7 +2,6 @@ package grpc
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,7 +13,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/bootstrap"
@@ -143,11 +142,11 @@ func (c *clusterServer) Join(ctx context.Context, req *pb.ClusterJoinRequest) (*
 		return nil, status.Errorf(codes.Internal, "generate keypair: %v", err)
 	}
 
-	// Dial peer with TLS skip-verify — the join_token is the trust anchor.
-	// Once we have the CA in hand from the response, future RPCs validate
-	// against it.
-	peerCreds := credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})
-	conn, err := grpc.NewClient(req.GetPeerAddr(), grpc.WithTransportCredentials(peerCreds))
+	// Dial peer plaintext — the daemon's cross-host listener is currently
+	// plaintext TCP (v0 model: Tailscale / WireGuard wraps the wire). The
+	// join_token in the request body is the auth gate. TLS-with-cluster-CA
+	// + cert pinning lands in a follow-up iter.
+	conn, err := grpc.NewClient(req.GetPeerAddr(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "dial peer: %v", err)
 	}

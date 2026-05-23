@@ -21,7 +21,6 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
@@ -89,7 +88,8 @@ func startFakePeer(t *testing.T, peer *fakePeer) string {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	gs := grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{Certificates: []tls.Certificate{tlsCert}})))
+	_ = tlsCert // legacy TLS cert kept for reference; v0 daemon dials plaintext
+	gs := grpc.NewServer()
 	pb.RegisterClusterServer(gs, peer)
 	go func() { _ = gs.Serve(lis) }()
 	t.Cleanup(gs.Stop)
