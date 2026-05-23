@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -76,7 +77,15 @@ func Run(opts Options) (*Result, error) {
 		return nil, fmt.Errorf("generate cluster CA: %w", err)
 	}
 
-	nodeKeyPEM, csrPEM, err := ca.GenerateNodeKeypair(opts.Name)
+	// Parse the advertise IP (if any) so it ends up as an IP SAN on the node cert.
+	// AdvertiseAddr is "host:port"; strip the port and try to parse as IP.
+	var advertiseIP net.IP
+	if opts.AdvertiseAddr != "" {
+		if host, _, err := net.SplitHostPort(opts.AdvertiseAddr); err == nil {
+			advertiseIP = net.ParseIP(host) // nil when host is a DNS name — that's fine
+		}
+	}
+	nodeKeyPEM, csrPEM, err := ca.GenerateNodeKeypair(opts.Name, advertiseIP)
 	if err != nil {
 		return nil, fmt.Errorf("generate node keypair: %w", err)
 	}

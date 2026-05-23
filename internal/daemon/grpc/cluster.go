@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,7 +158,15 @@ func (c *clusterServer) Join(ctx context.Context, req *pb.ClusterJoinRequest) (*
 		return nil, status.Errorf(codes.Internal, "hostname: %v", err)
 	}
 
-	keyPEM, csrPEM, err := ca.GenerateNodeKeypair(hostname)
+	// Parse the joining node's advertise IP (if any) so it ends up as an IP SAN.
+	advertise := c.effectiveAdvertiseAddr()
+	var advertiseIP net.IP
+	if advertise != "" {
+		if host, _, splitErr := net.SplitHostPort(advertise); splitErr == nil {
+			advertiseIP = net.ParseIP(host) // nil when host is a DNS name
+		}
+	}
+	keyPEM, csrPEM, err := ca.GenerateNodeKeypair(hostname, advertiseIP)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "generate keypair: %v", err)
 	}
@@ -176,7 +185,6 @@ func (c *clusterServer) Join(ctx context.Context, req *pb.ClusterJoinRequest) (*
 	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	advertise := c.effectiveAdvertiseAddr()
 	// grpcAddr is the joiner's own cross-host gRPC listener address, used
 	// by the leader (or any other node) to dial back via Internal.Submit.
 	// Resolved at startup by cmd/jacod via netdetect when listen_addr is

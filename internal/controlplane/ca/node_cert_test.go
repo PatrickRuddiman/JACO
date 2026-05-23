@@ -3,6 +3,7 @@ package ca_test
 import (
 	"crypto/x509"
 	"encoding/pem"
+	"net"
 	"testing"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/ca"
@@ -101,5 +102,101 @@ func TestGenerateNodeKeypair_IPHostname(t *testing.T) {
 	}
 	if len(cert.IPAddresses) == 0 {
 		t.Errorf("expected IPAddresses populated for IP hostname; got %v", cert.IPAddresses)
+	}
+}
+
+func TestGenerateNodeKeypair_BothDNSAndIPSANs(t *testing.T) {
+	caCertPEM, caKeyPEM, err := ca.GenerateClusterCA()
+	if err != nil {
+		t.Fatalf("GenerateClusterCA: %v", err)
+	}
+
+	targetIP := net.ParseIP("100.96.111.6")
+	_, csrPEM, err := ca.GenerateNodeKeypair("jaco-1", targetIP)
+	if err != nil {
+		t.Fatalf("GenerateNodeKeypair: %v", err)
+	}
+
+	nodeCertPEM, err := ca.SignNodeCSR(csrPEM, caCertPEM, caKeyPEM)
+	if err != nil {
+		t.Fatalf("SignNodeCSR: %v", err)
+	}
+
+	block, _ := pem.Decode(nodeCertPEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		t.Fatalf("node cert PEM: bad block")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse node cert: %v", err)
+	}
+
+	// DNS SAN must carry the hostname.
+	foundDNS := false
+	for _, d := range cert.DNSNames {
+		if d == "jaco-1" {
+			foundDNS = true
+			break
+		}
+	}
+	if !foundDNS {
+		t.Errorf("DNS SAN missing jaco-1: got %v", cert.DNSNames)
+	}
+
+	// IP SAN must carry the advertise IP.
+	foundIP := false
+	for _, ip := range cert.IPAddresses {
+		if ip.Equal(targetIP) {
+			foundIP = true
+			break
+		}
+	}
+	if !foundIP {
+		t.Errorf("IP SAN missing 100.96.111.6: got %v", cert.IPAddresses)
+	}
+
+	// Cert must chain to the CA when verified by DNS name.
+	caCertBlock, _ := pem.Decode(caCertPEM)
+	caCert, err := x509.ParseCertificate(caCertBlock.Bytes)
+	if err != nil {
+		t.Fatalf("parse CA: %v", err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(caCert)
+	opts := x509.VerifyOptions{
+		Roots:     pool,
+		DNSName:   "jaco-1",
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	if _, err := cert.Verify(opts); err != nil {
+		t.Errorf("cert verify (DNS) failed: %v", err)
+	}
+}
+
+func TestGenerateNodeKeypair_IPDeduplication(t *testing.T) {
+	// Passing the same IP twice must not produce duplicate IP SANs.
+	ip := net.ParseIP("10.0.0.1")
+	_, csrPEM, err := ca.GenerateNodeKeypair("node-x", ip, ip)
+	if err != nil {
+		t.Fatalf("GenerateNodeKeypair: %v", err)
+	}
+
+	block, _ := pem.Decode(csrPEM)
+	if block == nil || block.Type != "CERTIFICATE REQUEST" {
+		t.Fatalf("expected CSR block, got %v", block)
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse CSR: %v", err)
+	}
+
+	count := 0
+	for _, csrIP := range csr.IPAddresses {
+		if csrIP.Equal(ip) {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly one IP SAN for 10.0.0.1, got %d (IPs: %v)", count, csr.IPAddresses)
 	}
 }
