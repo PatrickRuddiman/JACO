@@ -243,7 +243,7 @@ func buildProxyHandle(route Route, healthyByService map[string][]ReplicaObserved
 func buildSingleRoute(domain string, route Route, healthyByService map[string][]ReplicaObservedView, services map[string]ServiceMeta) any {
 	match := map[string]any{"host": []any{domain}}
 	if route.Path != "" {
-		match["path"] = []any{pathGlob(route.Path)}
+		match["path"] = pathMatchers(route.Path)
 	}
 	return map[string]any{
 		"match": []any{match},
@@ -265,7 +265,7 @@ func buildSingleRoute(domain string, route Route, healthyByService map[string][]
 // buildPathRoute emits a subroute entry for a path-prefixed route.
 func buildPathRoute(route Route, healthyByService map[string][]ReplicaObservedView, services map[string]ServiceMeta) any {
 	return map[string]any{
-		"match": []any{map[string]any{"path": []any{pathGlob(route.Path)}}},
+		"match": []any{map[string]any{"path": pathMatchers(route.Path)}},
 		"handle": []any{map[string]any{
 			"handler":   "reverse_proxy",
 			"upstreams": buildUpstreams(route, healthyByService, services),
@@ -281,17 +281,21 @@ func buildPathRoute(route Route, healthyByService map[string][]ReplicaObservedVi
 	}
 }
 
-// pathGlob converts a path prefix like "/api/" into the Caddy path glob
-// "/api/*". A path that already ends in "*" or "/" is handled correctly:
-// if it ends in "/" we append "*"; otherwise we use it as-is.
-func pathGlob(path string) string {
+// pathMatchers returns the Caddy path-matcher patterns covering both the
+// exact prefix and everything below it. Caddy's `path` matcher accepts an
+// array of patterns and matches if any one matches. The intent of
+// `path: /api` is "match /api itself plus /api/anything"; a single glob
+// like `/api/*` would silently miss the bare `/api` request.
+//
+// Trailing "*" → use as-is (operator already wrote a glob).
+// Trailing "/" (e.g. "/api/") → ["/api", "/api/*"].
+// Otherwise (e.g. "/api")    → ["/api", "/api/*"].
+func pathMatchers(path string) []any {
 	if strings.HasSuffix(path, "*") {
-		return path
+		return []any{path}
 	}
-	if strings.HasSuffix(path, "/") {
-		return path + "*"
-	}
-	return path + "/*"
+	exact := strings.TrimSuffix(path, "/")
+	return []any{exact, exact + "/*"}
 }
 
 // fallbackRoute matches anything not matched above and returns 404 with the

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -265,12 +266,13 @@ func TestBuildCaddyConfig_PathMatcherWithCatchAll(t *testing.T) {
 		t.Fatalf("subroutes len = %d, want 2 (/api/ + catch-all)", len(subRoutes))
 	}
 
-	// First subroute: path=/api/* → api service upstream 10.0.0.1:8080
+	// First subroute: path=[/api, /api/*] → api service upstream 10.0.0.1:8080.
+	// Both patterns are emitted so a bare /api request also matches.
 	firstSub := subRoutes[0].(map[string]any)
 	firstMatch := firstSub["match"].([]any)[0].(map[string]any)
 	pathMatcher := firstMatch["path"].([]any)
-	if pathMatcher[0] != "/api/*" {
-		t.Errorf("first sub-route path = %v, want /api/*", pathMatcher[0])
+	if len(pathMatcher) != 2 || pathMatcher[0] != "/api" || pathMatcher[1] != "/api/*" {
+		t.Errorf("first sub-route path = %v, want [/api /api/*]", pathMatcher)
 	}
 	firstUpstreams := firstSub["handle"].([]any)[0].(map[string]any)["upstreams"].([]any)
 	if firstUpstreams[0].(map[string]any)["dial"] != "10.0.0.1:8080" {
@@ -310,15 +312,15 @@ func TestBuildCaddyConfig_LongestPrefixFirst(t *testing.T) {
 	if len(subRoutes) != 3 {
 		t.Fatalf("subroutes = %d, want 3", len(subRoutes))
 	}
-	// First should be /api/v2/*
-	firstPath := subRoutes[0].(map[string]any)["match"].([]any)[0].(map[string]any)["path"].([]any)[0]
-	if firstPath != "/api/v2/*" {
-		t.Errorf("first subroute path = %v, want /api/v2/*", firstPath)
+	// First should match [/api/v2, /api/v2/*] (longest prefix first).
+	firstPath := subRoutes[0].(map[string]any)["match"].([]any)[0].(map[string]any)["path"].([]any)
+	if len(firstPath) != 2 || firstPath[0] != "/api/v2" || firstPath[1] != "/api/v2/*" {
+		t.Errorf("first subroute path = %v, want [/api/v2 /api/v2/*]", firstPath)
 	}
-	// Second should be /api/*
-	secondPath := subRoutes[1].(map[string]any)["match"].([]any)[0].(map[string]any)["path"].([]any)[0]
-	if secondPath != "/api/*" {
-		t.Errorf("second subroute path = %v, want /api/*", secondPath)
+	// Second should match [/api, /api/*].
+	secondPath := subRoutes[1].(map[string]any)["match"].([]any)[0].(map[string]any)["path"].([]any)
+	if len(secondPath) != 2 || secondPath[0] != "/api" || secondPath[1] != "/api/*" {
+		t.Errorf("second subroute path = %v, want [/api /api/*]", secondPath)
 	}
 	// Third should be catch-all (no match)
 	if _, hasMatch := subRoutes[2].(map[string]any)["match"]; hasMatch {
@@ -354,5 +356,68 @@ func TestBuildCaddyConfig_ACMEPolicyShape(t *testing.T) {
 	}
 	if got := issuer["ca"]; got != "https://acme-v02.api.letsencrypt.org/directory" {
 		t.Errorf("issuer ca = %v", got)
+	}
+}
+
+// TestBuildCaddyConfig_PathMatchesExactPrefix — a route with path "/api"
+// must produce a match block that covers both the bare "/api" request and
+// any "/api/..." sub-path, and must NOT match unrelated paths like
+// "/other". This is the regression guard for the original pathGlob bug
+// where "/api" → "/api/*" silently dropped the bare-prefix request.
+func TestBuildCaddyConfig_PathMatchesExactPrefix(t *testing.T) {
+	routes := []config.Route{
+		{Domain: "jaco.sh", Deployment: "app", Service: "api", Port: 8080, TLSAuto: true, Path: "/api"},
+	}
+	got, err := config.BuildCaddyConfig(routes, nil, nil, opts())
+	if err != nil {
+		t.Fatalf("BuildCaddyConfig: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	rts := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["jaco"].(map[string]any)["routes"].([]any)
+
+	// One path route (no catch-all) lands in a subroute block under the
+	// host-matched outer route. Walk in to the inner path matcher.
+	outer := rts[0].(map[string]any)
+	hostMatch := outer["match"].([]any)[0].(map[string]any)
+	if hostMatch["host"].([]any)[0] != "jaco.sh" {
+		t.Fatalf("outer host = %v, want jaco.sh", hostMatch["host"])
+	}
+	sub := outer["handle"].([]any)[0].(map[string]any)["routes"].([]any)[0].(map[string]any)
+	patterns := sub["match"].([]any)[0].(map[string]any)["path"].([]any)
+	if len(patterns) != 2 {
+		t.Fatalf("path patterns = %d, want 2 (exact + sub-path)", len(patterns))
+	}
+
+	// Build a tiny matcher harness that mirrors how Caddy treats the array:
+	// match if any pattern is the exact request path, or a glob ending in
+	// "/*" whose prefix matches the request path.
+	matchesAny := func(reqPath string) bool {
+		for _, p := range patterns {
+			s := p.(string)
+			if strings.HasSuffix(s, "/*") {
+				prefix := strings.TrimSuffix(s, "/*")
+				if strings.HasPrefix(reqPath, prefix+"/") {
+					return true
+				}
+				continue
+			}
+			if s == reqPath {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !matchesAny("/api") {
+		t.Errorf("expected /api to match, patterns = %v", patterns)
+	}
+	if !matchesAny("/api/foo") {
+		t.Errorf("expected /api/foo to match, patterns = %v", patterns)
+	}
+	if matchesAny("/other") {
+		t.Errorf("expected /other NOT to match, patterns = %v", patterns)
 	}
 }
