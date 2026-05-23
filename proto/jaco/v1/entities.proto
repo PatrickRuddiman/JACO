@@ -205,6 +205,7 @@ message Subnet {
   string network = 2;
   string cidr = 3;
   google.protobuf.Timestamp allocated_at = 4;
+  string host = 5;
 }
 
 // ----- Scheduler entities -----

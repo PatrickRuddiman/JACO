@@ -1469,6 +1469,7 @@ type Subnet struct {
 	Network       string                 `protobuf:"bytes,2,opt,name=network,proto3" json:"network,omitempty"`
 	Cidr          string                 `protobuf:"bytes,3,opt,name=cidr,proto3" json:"cidr,omitempty"`
 	AllocatedAt   *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=allocated_at,json=allocatedAt,proto3" json:"allocated_at,omitempty"`
+	Host          string                 `protobuf:"bytes,5,opt,name=host,proto3" json:"host,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1529,6 +1530,13 @@ func (x *Subnet) GetAllocatedAt() *timestamppb.Timestamp {
 		return x.AllocatedAt
 	}
 	return nil
+}
+
+func (x *Subnet) GetHost() string {
+	if x != nil {
+		return x.Host
+	}
+	return ""
 }
 
 type RolloutPlan struct {
@@ -1889,14 +1897,15 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\apayload\x18\x05 \x03(\v2 .jaco.v1.AuditEvent.PayloadEntryR\apayload\x1a:\n" +
 	"\fPayloadEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x95\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xa9\x01\n" +
 	"\x06Subnet\x12\x1e\n" +
 	"\n" +
 	"deployment\x18\x01 \x01(\tR\n" +
 	"deployment\x12\x18\n" +
 	"\anetwork\x18\x02 \x01(\tR\anetwork\x12\x12\n" +
 	"\x04cidr\x18\x03 \x01(\tR\x04cidr\x12=\n" +
-	"\fallocated_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\vallocatedAt\"\x81\x03\n" +
+	"\fallocated_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\vallocatedAt\x12\x12\n" +
+	"\x04host\x18\x05 \x01(\tR\x04host\"\x81\x03\n" +
 	"\vRolloutPlan\x12\x1e\n" +
 	"\n" +
 	"deployment\x18\x01 \x01(\tR\n" +

@@ -28,18 +28,19 @@ import (
 
 // resolveDNSServers returns one gateway IP per declared network, looked
 // up via state.Subnets + bridge.GatewayIP. Networks the daemon doesn't
-// yet know a CIDR for are silently skipped.
-func resolveDNSServers(st *state.State, deployment string, networks []string) []string {
+// yet know a CIDR for are silently skipped. host is the local node — the
+// per-host subnet whose gateway the local container resolves against.
+func resolveDNSServers(st *state.State, deployment, host string, networks []string) []string {
 	var out []string
 	for _, netname := range networks {
 		// Network names in spec are docker-network names (jaco_<dep>_<net>);
-		// state.Subnets keys by (deployment, network) — pull just the network
-		// suffix from the docker name.
+		// state.Subnets keys by (deployment, network, host) — pull just the
+		// network suffix from the docker name.
 		net := bridge.NetworkNameFromDockerName(netname)
 		if net == "" {
 			continue
 		}
-		sn, ok := st.Subnets.Get(state.SubnetKey(deployment, net))
+		sn, ok := st.Subnets.Get(state.SubnetKey(deployment, net, host))
 		if !ok {
 			continue
 		}
@@ -250,7 +251,7 @@ func (r *Reconciler) startReplica(ctx context.Context, rep *pb.ReplicaDesired) e
 		if netSuffix == "" {
 			continue
 		}
-		sn, ok := r.state.Subnets.Get(state.SubnetKey(rep.GetDeployment(), netSuffix))
+		sn, ok := r.state.Subnets.Get(state.SubnetKey(rep.GetDeployment(), netSuffix, r.hostname))
 		if !ok {
 			continue
 		}
@@ -262,7 +263,7 @@ func (r *Reconciler) startReplica(ctx context.Context, rep *pb.ReplicaDesired) e
 	// Per-bridge DNS resolvers (task 27 deferral). For each declared
 	// network, look up the subnet CIDR in state.Subnets and compute the
 	// gateway IP; that's where the daemon's discovery/dns Manager binds.
-	spec.DNSServers = resolveDNSServers(r.state, rep.GetDeployment(), spec.Networks)
+	spec.DNSServers = resolveDNSServers(r.state, rep.GetDeployment(), r.hostname, spec.Networks)
 	containerID, err := lifecycle.Start(ctx, r.docker, spec, lifecycle.IsolationGate{
 		State:        r.state,
 		SelfHostname: r.hostname,

@@ -339,12 +339,13 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 			Network:     sa.GetNetwork(),
 			Cidr:        sa.GetCidr(),
 			AllocatedAt: cmd.GetTs(),
+			Host:        sa.GetHost(),
 		}, idx)
 		return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
 
 	case *pb.Command_SubnetFree:
 		sf := p.SubnetFree
-		f.State.Subnets.Remove(state.SubnetKey(sf.GetDeployment(), sf.GetNetwork()), idx)
+		f.State.Subnets.Remove(state.SubnetKey(sf.GetDeployment(), sf.GetNetwork(), sf.GetHost()), idx)
 		return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
 
 	case *pb.Command_TokenIssue:

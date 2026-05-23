@@ -250,7 +250,7 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 	})
 	applyCmd(t, f1, 4, &pb.Command{
 		Payload: &pb.Command_SubnetAllocate{SubnetAllocate: &pb.SubnetAllocate{
-			Deployment: "sample", Network: "_default", Cidr: "10.42.0.0/24",
+			Deployment: "sample", Network: "_default", Cidr: "10.42.0.0/24", Host: "node-a",
 		}},
 	})
 
@@ -282,7 +282,7 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 	if _, ok := s2.Routes.Get("a.example"); !ok {
 		t.Errorf("restored route missing")
 	}
-	if _, ok := s2.Subnets.Get(state.SubnetKey("sample", "_default")); !ok {
+	if _, ok := s2.Subnets.Get(state.SubnetKey("sample", "_default", "node-a")); !ok {
 		t.Errorf("restored subnet missing")
 	}
 	_ = s1 // silence unused (kept for clarity in the test setup)
@@ -293,7 +293,7 @@ type recordingSink struct {
 	data *bytes.Buffer
 }
 
-func newRecordingSink() *recordingSink     { return &recordingSink{data: &bytes.Buffer{}} }
+func newRecordingSink() *recordingSink               { return &recordingSink{data: &bytes.Buffer{}} }
 func (s *recordingSink) Write(p []byte) (int, error) { return s.data.Write(p) }
 func (s *recordingSink) Close() error                { return nil }
 func (s *recordingSink) ID() string                  { return "test" }
