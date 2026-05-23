@@ -43,7 +43,7 @@ func TestIntegration_AcmeIssuanceAgainstPebble(t *testing.T) {
 		return nil
 	}
 
-	issuer := challenge.NewIssuer(applier, nil)
+	issuer := challenge.NewIssuer(applier)
 	if err := issuer.Issue(context.Background(), "test.jaco.local", "tok-1", "key-auth-1"); err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
