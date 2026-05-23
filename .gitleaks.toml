@@ -1,0 +1,20 @@
+# gitleaks config — uses the upstream defaults and adds a small path-scoped
+# allowlist for test fixtures. Inline `// gitleaks:allow` comments take
+# precedence for one-off cases.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allow obvious test fixtures + generated proto code"
+paths = [
+  '''.*\.pb\.go$''',
+  '''.*\.pb\.gw\.go$''',
+  '''testdata/.*''',
+]
+# Specific fixture tokens used in tests. Regex-allowlist them so history
+# scans don't flag pre-allowlist commits — inline `// gitleaks:allow`
+# comments only apply to working-tree scans.
+regexes = [
+  '''abcdefabcdef0123456789abcdefabcdef0123456789abcdef0123456789ffff''',
+]

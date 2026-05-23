@@ -42,7 +42,7 @@ func TestNodeJoin_SignsCSRAndAddsVoter(t *testing.T) {
 	}
 
 	// Mint a join token via raft.Apply.
-	const tokenStr = "abcdefabcdef0123456789abcdefabcdef0123456789abcdef0123456789ffff"
+	const tokenStr = "abcdefabcdef0123456789abcdefabcdef0123456789abcdef0123456789ffff" // gitleaks:allow — test fixture
 	hash := sha256.Sum256([]byte(tokenStr))
 	issueCmd := &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_JoinTokenIssue{
 		JoinTokenIssue: &pb.JoinTokenIssue{
