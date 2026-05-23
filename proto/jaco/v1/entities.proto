@@ -143,7 +143,9 @@ message Route {
   int32 port = 4;
   bool tls_auto = 5;
   // path is an optional URL path prefix (e.g. "/api/"). Default "" means
-  // catch-all. Caddy uses longest-prefix-first ordering for matching.
+  // catch-all. Caddy matches routes in declaration order (first match
+  // wins); JACO is responsible for emitting routes longest-prefix-first
+  // so the more specific path is tried before the catch-all.
   string path = 6;
 }
 

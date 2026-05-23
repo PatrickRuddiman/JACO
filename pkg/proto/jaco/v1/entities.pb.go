@@ -960,7 +960,9 @@ type Route struct {
 	Port          int32                  `protobuf:"varint,4,opt,name=port,proto3" json:"port,omitempty"`
 	TlsAuto       bool                   `protobuf:"varint,5,opt,name=tls_auto,json=tlsAuto,proto3" json:"tls_auto,omitempty"`
 	// Path is an optional URL path prefix (e.g. "/api/"). Default "" means
-	// catch-all. Caddy uses longest-prefix-first ordering for matching.
+	// catch-all. Caddy matches routes in declaration order (first match
+	// wins); JACO is responsible for emitting routes longest-prefix-first
+	// so the more specific path is tried before the catch-all.
 	Path          string                 `protobuf:"bytes,6,opt,name=path,proto3" json:"path,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
