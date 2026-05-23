@@ -51,6 +51,28 @@ jobs:
         run: |
           sudo -E bash scripts/test/integration.sh
 
+      - name: Install.sh smoke (privileged install + uninstall + idempotency)
+        env:
+          JACO_INSTALL_TEST_FORCE: "1"
+        run: |
+          sudo -E bash scripts/test/install.sh
+
+      - name: Isolation rig (3-node nft + docker + wg)
+        env:
+          JACO_RIG_FORCE: "1"
+        run: |
+          sudo -E bash scripts/test/isolation-rig.sh
+
+      - name: E2E shell scripts
+        env:
+          JACO_APPLY_DEPLOY_FORCE: "1"
+          JACO_STATUS_WATCH_FORCE: "1"
+          JACO_CLUSTER_JOIN_FORCE: "1"
+        run: |
+          bash scripts/test/apply-deploy.sh
+          bash scripts/test/status-watch.sh
+          bash scripts/test/cluster-join.sh
+
       - name: Tear down Pebble
         if: always()
         run: docker rm -f pebble || true
