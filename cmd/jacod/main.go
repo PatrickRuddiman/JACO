@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/coreos/go-systemd/v22/daemon"
+
 	"github.com/PatrickRuddiman/jaco/internal/daemon/config"
 	dgrpc "github.com/PatrickRuddiman/jaco/internal/daemon/grpc"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
@@ -76,6 +78,15 @@ func run(ctx context.Context, configPath string, logOut io.Writer) error {
 	}
 	logger.Printf("listening on %s (uninitialized — run `jaco cluster init` or `jaco node join`)",
 		server.SocketPath())
+
+	// Notify systemd we're up so Type=notify units complete activation.
+	// No-op when not run under systemd (sd_notify returns notSent=false
+	// with no err); logged for visibility.
+	if sent, err := daemon.SdNotify(false, daemon.SdNotifyReady); err != nil {
+		logger.Printf("sd_notify(READY=1): %v", err)
+	} else if sent {
+		logger.Printf("sd_notify(READY=1) sent")
+	}
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.Serve() }()

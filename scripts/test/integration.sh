@@ -21,6 +21,8 @@ cd "$(dirname "$0")/../.."
 
 declare -a tags=(
   "docker:./internal/runtime/lifecycle/..."
+  "docker:./internal/runtime/logs/..."
+  "docker:./internal/runtime/health/..."
   "nftables:./internal/discovery/firewall/..."
   "wireguard:./internal/discovery/wgmesh/..."
   "acme:./internal/ingress/..."
