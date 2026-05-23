@@ -26,6 +26,8 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	"github.com/PatrickRuddiman/jaco/internal/daemon/admission"
+	"github.com/PatrickRuddiman/jaco/internal/discovery/firewall"
+	"github.com/PatrickRuddiman/jaco/internal/discovery/wgmesh"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/health"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/reconciler"
@@ -306,6 +308,99 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 		}
 	}()
 
+	// Discovery: WireGuard mesh sync. Skipped when the kernel WG module
+	// isn't reachable via wgctrl (typical on unprivileged dev hosts and
+	// containers without CAP_NET_ADMIN).
+	if err := wgmesh.IsKernelAvailable(); err == nil {
+		privKey, _, err := wgmesh.LoadOrGenerateKeypair(s.cluster.dataDir)
+		if err != nil {
+			s.logger.Printf("wgmesh keypair: %v (mesh sync skipped)", err)
+		} else {
+			syncer := &wgmesh.Syncer{
+				State:        st,
+				SelfHostname: hostname,
+				PrivateKey:   privKey,
+				Logger:       s.logger,
+			}
+			s.subsystemsWG.Add(1)
+			go func() {
+				defer s.subsystemsWG.Done()
+				if err := syncer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+					s.logger.Printf("wgmesh.Syncer.Run exited: %v", err)
+				}
+			}()
+		}
+	} else {
+		s.logger.Printf("wgmesh kernel unavailable (%v), mesh sync skipped", err)
+	}
+
+	// Discovery: nftables firewall reconciler. Skipped when `nft` isn't
+	// available on PATH or the kernel netfilter API is unreachable.
+	if err := firewall.IsAvailable(); err == nil {
+		fw := &firewall.Reconciler{
+			Lister:  firewall.DefaultLister(),
+			Applier: firewall.DefaultApplier(),
+			Audit: func(ctx context.Context, code string, details map[string]string) error {
+				cmd := &pb.Command{
+					Identity: "firewall",
+					Payload: &pb.Command_AuditAppend{AuditAppend: &pb.AuditAppend{
+						Event: &pb.AuditEvent{
+							Type:    auditTypeFromString(code),
+							Payload: details,
+						},
+					}},
+				}
+				data, err := proto.Marshal(cmd)
+				if err != nil {
+					return err
+				}
+				_, err = node.Apply(data, 0)
+				return err
+			},
+			UpdateStatus: func(ctx context.Context, statusStr, reason string) error {
+				cmd := &pb.Command{
+					Identity: "firewall",
+					Payload: &pb.Command_NodeStatusUpdate{NodeStatusUpdate: &pb.NodeStatusUpdate{
+						Hostname: hostname,
+						Status:   nodeStatusFromString(statusStr),
+						Details:  map[string]string{"reason": reason},
+					}},
+				}
+				data, err := proto.Marshal(cmd)
+				if err != nil {
+					return err
+				}
+				_, err = node.Apply(data, 0)
+				return err
+			},
+			Render: func() firewall.RuleInput {
+				var subs []firewall.Subnet
+				for _, sn := range st.Subnets.List() {
+					subs = append(subs, firewall.Subnet{
+						Deployment: sn.GetDeployment(),
+						Network:    sn.GetNetwork(),
+						CIDR:       sn.GetCidr(),
+					})
+				}
+				return firewall.RuleInput{
+					Subnets:      subs,
+					WGPort:       wgmesh.DefaultListenPort,
+					GrpcPort:     7000,
+					IngressPorts: []int{80, 443},
+				}
+			},
+		}
+		s.subsystemsWG.Add(1)
+		go func() {
+			defer s.subsystemsWG.Done()
+			if err := fw.Loop(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				s.logger.Printf("firewall.Reconciler.Loop exited: %v", err)
+			}
+		}()
+	} else {
+		s.logger.Printf("firewall unavailable (%v), drift detector skipped", err)
+	}
+
 	// Runtime reconciler: skipped when no Docker handle was injected (the
 	// daemon still serves the control plane + scheduler in that mode). On
 	// hosts where docker is unreachable, opts.Docker should already be
@@ -446,6 +541,31 @@ func (s *Server) SocketPath() string { return s.socketPath }
 // TCPAddr returns the resolved cross-host listener address (after net.Listen
 // substituted any :0 port). Empty when ListenAddr was unset.
 func (s *Server) TCPAddr() string { return s.tcpAddr }
+
+// auditTypeFromString maps the firewall reconciler's event-code strings
+// onto the pb.AuditEventType enum. Unknown codes fall through to the
+// generic ISOLATION_RULESET_RECONCILED bucket.
+func auditTypeFromString(code string) pb.AuditEventType {
+	switch code {
+	case "ISOLATION_RULESET_RECONCILED":
+		return pb.AuditEventType_AUDIT_EVENT_TYPE_ISOLATION_RULESET_RECONCILED
+	case "ISOLATION_UNAVAILABLE":
+		return pb.AuditEventType_AUDIT_EVENT_TYPE_ISOLATION_UNAVAILABLE
+	}
+	return pb.AuditEventType_AUDIT_EVENT_TYPE_ISOLATION_RULESET_RECONCILED
+}
+
+// nodeStatusFromString maps the firewall reconciler's status strings onto
+// the pb.NodeStatus enum.
+func nodeStatusFromString(s string) pb.NodeStatus {
+	switch s {
+	case "ready":
+		return pb.NodeStatus_NODE_STATUS_READY
+	case "isolation_unavailable":
+		return pb.NodeStatus_NODE_STATUS_ISOLATION_UNAVAILABLE
+	}
+	return pb.NodeStatus_NODE_STATUS_READY
+}
 
 // errStateUnavailable is returned by the lazy admission interceptor when it
 // fires before OpenRaft has populated state. Should be unreachable in
