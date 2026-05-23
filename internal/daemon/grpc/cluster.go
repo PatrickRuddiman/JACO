@@ -2,17 +2,23 @@ package grpc
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/bootstrap"
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/ca"
 	"github.com/PatrickRuddiman/jaco/internal/daemon/admission"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
@@ -88,10 +94,104 @@ func (c *clusterServer) Init(_ context.Context, req *pb.ClusterInitRequest) (*pb
 	}, nil
 }
 
-// Join is a placeholder — iter 5 wires the real raft join.
-func (c *clusterServer) Join(_ context.Context, _ *pb.ClusterJoinRequest) (*pb.ClusterJoinResponse, error) {
-	return nil, status.Error(codes.Unimplemented,
-		"cluster_join_unimplemented: this jacod build doesn't yet implement Cluster.Join (task 38 iter 5)")
+// Join asks the daemon to add this node to an existing cluster. Generates
+// a local keypair + CSR, dials the peer over TLS (skip-verify; the
+// join_token is the trust anchor), exchanges via Cluster.NodeJoin for the
+// signed cert + CA + raft peer list, persists everything under
+// $DataDir/node/, and flips the InitGate. The local raft node + steady-
+// state goroutines come up in iter 6 once a real daemon entry exists.
+func (c *clusterServer) Join(ctx context.Context, req *pb.ClusterJoinRequest) (*pb.ClusterJoinResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.gate.IsInitialized() {
+		return nil, status.Error(codes.FailedPrecondition,
+			"cluster_already_initialized: this daemon already has raft state")
+	}
+	if raftExists(c.dataDir) {
+		return nil, status.Error(codes.FailedPrecondition,
+			"cluster_already_initialized: raft state on disk; restart jacod to pick it up")
+	}
+	if req.GetPeerAddr() == "" {
+		return nil, status.Error(codes.InvalidArgument, "peer_addr is required")
+	}
+	if req.GetJoinToken() == "" {
+		return nil, status.Error(codes.InvalidArgument, "join_token is required")
+	}
+
+	hostname := c.hostname
+	if hostname == "" {
+		var err error
+		hostname, err = os.Hostname()
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "hostname: %v", err)
+		}
+	}
+
+	keyPEM, csrPEM, err := ca.GenerateNodeKeypair(hostname)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "generate keypair: %v", err)
+	}
+
+	// Dial peer with TLS skip-verify — the join_token is the trust anchor.
+	// Once we have the CA in hand from the response, future RPCs validate
+	// against it.
+	peerCreds := credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})
+	conn, err := grpc.NewClient(req.GetPeerAddr(), grpc.WithTransportCredentials(peerCreds))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "dial peer: %v", err)
+	}
+	defer conn.Close()
+
+	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	advertise := c.bindAddr
+	resp, err := pb.NewClusterClient(conn).NodeJoin(dialCtx, &pb.NodeJoinRequest{
+		Name:          hostname,
+		JoinToken:     req.GetJoinToken(),
+		CsrPem:        csrPEM,
+		AdvertiseAddr: advertise,
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "node join rpc: %v", err)
+	}
+
+	if err := persistJoin(c.dataDir, hostname, advertise, keyPEM, resp); err != nil {
+		return nil, status.Errorf(codes.Internal, "persist: %v", err)
+	}
+
+	c.gate.MarkInitialized()
+	return &pb.ClusterJoinResponse{}, nil
+}
+
+// persistJoin writes the joining node's certs + cluster CA + join metadata
+// under $dataDir/node/.
+func persistJoin(dataDir, hostname, advertise string, keyPEM []byte, resp *pb.NodeJoinResponse) error {
+	nodeDir := filepath.Join(dataDir, "node")
+	if err := os.MkdirAll(nodeDir, 0o700); err != nil {
+		return fmt.Errorf("create node dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(nodeDir, hostname+".key"), keyPEM, 0o600); err != nil {
+		return fmt.Errorf("write key: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(nodeDir, hostname+".crt"), resp.GetSignedCert(), 0o644); err != nil {
+		return fmt.Errorf("write cert: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(nodeDir, "ca.crt"), resp.GetCaCert(), 0o644); err != nil {
+		return fmt.Errorf("write ca: %w", err)
+	}
+	meta := map[string]any{
+		"cluster_id": resp.GetClusterId(),
+		"peer_addrs": resp.GetPeerAddrs(),
+		"hostname":   hostname,
+		"advertise":  advertise,
+	}
+	metaBytes, _ := json.MarshalIndent(meta, "", "  ")
+	if err := os.WriteFile(filepath.Join(nodeDir, "join.json"), metaBytes, 0o644); err != nil {
+		return fmt.Errorf("write join meta: %w", err)
+	}
+	return nil
 }
 
 // Status reports the daemon's initialized flag. Always callable, even pre-
