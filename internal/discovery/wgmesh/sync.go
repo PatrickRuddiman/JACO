@@ -45,6 +45,12 @@ type Syncer struct {
 	SelfHostname string
 	PrivateKey   wgtypes.Key
 	Logger       *log.Logger
+
+	// loggedConfigError suppresses repeat ConfigureDevice warnings — the
+	// most common reason it fails (no such device / permission denied) is
+	// the same every tick, so the operator only needs to hear about it
+	// once per daemon lifetime.
+	loggedConfigError bool
 }
 
 // Run blocks until ctx is cancelled. Each tick computes the desired
@@ -96,7 +102,13 @@ func (s *Syncer) tick(client *wgctrl.Client) {
 		return
 	}
 	if err := client.ConfigureDevice(s.Iface, cfg); err != nil {
-		s.Logger.Printf("wgmesh ConfigureDevice %s: %v", s.Iface, err)
+		// Most common failure is "operation not permitted" (daemon
+		// lacks CAP_NET_ADMIN) or "no such device" (operator hasn't
+		// created jaco0 yet) — both repeat every tick. Log once.
+		if !s.loggedConfigError {
+			s.Logger.Printf("wgmesh ConfigureDevice %s: %v (mesh disabled; only logged once)", s.Iface, err)
+			s.loggedConfigError = true
+		}
 	}
 }
 

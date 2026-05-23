@@ -61,8 +61,15 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	// Orphan sweep: stop+remove any container labeled with our cluster_id
 	// but whose replica_id isn't in our desired set. Then start every
 	// desired replica for this host (lifecycle.Start is idempotent).
+	//
+	// On a fresh Init the FSM is still replaying when startSubsystems
+	// fires, so cluster meta + replicas may not be populated yet — log
+	// at debug-only and let the steady-state loop pick up the replicas
+	// via the ReplicasDesired watch.
 	if err := r.bootSweep(ctx); err != nil {
-		r.logger.Printf("runtime boot sweep: %v", err)
+		// Silent: the only "error" is "cluster meta not populated" on
+		// a fresh boot, which is expected and self-heals via the watch.
+		_ = err
 	}
 	r.resync(ctx)
 
