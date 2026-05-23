@@ -99,12 +99,14 @@ func TestNodeJoin_SignsCSRAndAddsVoter(t *testing.T) {
 		t.Errorf("peer_addrs empty (should include the leader)")
 	}
 
-	// State should show the joined node.
+	// State should show the joined node as READY (auto-promote in
+	// NodeJoin batch — iter 15). Without READY status the scheduler
+	// would skip the node and never place workloads on it.
 	deadline = time.Now().Add(2 * time.Second)
 	var seen bool
 	for time.Now().Before(deadline) {
 		for _, n := range s.State().Nodes.List() {
-			if n.GetHostname() == "test-host-2" {
+			if n.GetHostname() == "test-host-2" && n.GetStatus() == pb.NodeStatus_NODE_STATUS_READY {
 				seen = true
 				break
 			}
@@ -115,7 +117,7 @@ func TestNodeJoin_SignsCSRAndAddsVoter(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if !seen {
-		t.Errorf("state.Nodes missing test-host-2 after NodeJoin")
+		t.Errorf("state.Nodes missing test-host-2 in READY status after NodeJoin")
 	}
 
 	// Token must be single-use: second call rejected.

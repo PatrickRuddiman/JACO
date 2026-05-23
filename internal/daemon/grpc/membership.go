@@ -67,8 +67,15 @@ func (c *clusterServer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*p
 		return nil, status.Errorf(codes.Internal, "raft_add_voter_failed: %v", err)
 	}
 
-	// Mark the token consumed + write the NodeJoin entity in a single
-	// batched raft.Apply so the two records land atomically.
+	// Mark the token consumed, write the NodeJoin entity, and immediately
+	// promote the new node from JOINING → READY so the scheduler will
+	// place workloads on it. All three records land atomically in one
+	// raft.Apply.
+	//
+	// The JOINING → READY auto-transition is the v0 behavior — once the
+	// join token is consumed and AddVoter succeeded, the leader trusts
+	// the joiner enough to schedule on. Drain-based gating (where the
+	// new node has to prove health first) is a follow-up iter.
 	now := timestamppb.Now()
 	batch := &pb.Command{
 		Identity: "join_token:" + key[:8],
@@ -88,6 +95,14 @@ func (c *clusterServer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*p
 					Hostname:        req.GetName(),
 					Address:         req.GetAdvertiseAddr(),
 					WireguardPubkey: req.GetWireguardPubkey(),
+				}},
+			},
+			{
+				Identity: "join_token:" + key[:8],
+				Ts:       now,
+				Payload: &pb.Command_NodeStatusUpdate{NodeStatusUpdate: &pb.NodeStatusUpdate{
+					Hostname: req.GetName(),
+					Status:   pb.NodeStatus_NODE_STATUS_READY,
 				}},
 			},
 		}}},
