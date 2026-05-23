@@ -144,10 +144,10 @@ func contains(s, sub string) bool {
 	return false
 }
 
-// TestValidationFault_Error — formatter for the validationFault type
+// TestValidationError_Error — formatter for the ValidationError type
 // surfaces its Message verbatim.
-func TestValidationFault_Error(t *testing.T) {
-	if got := (&validationFault{Code: "c", Message: "m"}).Error(); got != "m" {
+func TestValidationError_Error(t *testing.T) {
+	if got := (&ValidationError{Code: "c", Message: "m"}).Error(); got != "m" {
 		t.Errorf("Error = %q, want m", got)
 	}
 }

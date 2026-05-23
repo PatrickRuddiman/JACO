@@ -61,7 +61,7 @@ func (d *deployServer) Apply(ctx context.Context, req *pb.ApplyRequest) (*pb.App
 
 	jacoSpec, composeProject, err := parseAndValidate(req.GetJacoYaml(), req.GetComposeYaml())
 	if err != nil {
-		var ve *validationFault
+		var ve *ValidationError
 		if errors.As(err, &ve) {
 			return nil, errorStatus(codes.InvalidArgument, ve.Code, ve.Message)
 		}
@@ -217,28 +217,32 @@ func (d *deployServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.D
 // validators. Returns the JacoYAML + compose project on success.
 func parseAndValidate(jacoYAML, composeYAML []byte) (*JacoYAML, *composetypes.Project, error) {
 	if len(jacoYAML) == 0 {
-		return nil, nil, &validationFault{Code: "validation_failed", Message: "jaco_yaml is required"}
+		return nil, nil, &ValidationError{Code: "validation_failed", Message: "jaco_yaml is required"}
 	}
 	if len(composeYAML) == 0 {
-		return nil, nil, &validationFault{Code: "validation_failed", Message: "compose_yaml is required"}
+		return nil, nil, &ValidationError{Code: "validation_failed", Message: "compose_yaml is required"}
 	}
 	jaco, err := ParseJacoYAML(jacoYAML)
 	if err != nil {
-		return nil, nil, &validationFault{Code: "validation_failed", Message: err.Error()}
+		var ve *ValidationError
+		if errors.As(err, &ve) {
+			return nil, nil, ve
+		}
+		return nil, nil, &ValidationError{Code: "validation_failed", Message: err.Error()}
 	}
 	if code, msg, ok := validateJacoYAML(jaco); !ok {
-		return nil, nil, &validationFault{Code: code, Message: msg}
+		return nil, nil, &ValidationError{Code: code, Message: msg}
 	}
 	if err := compose.Validate(composeYAML); err != nil {
 		var ve *compose.ValidationError
 		if errors.As(err, &ve) {
-			return nil, nil, &validationFault{Code: ve.Code, Message: ve.Message}
+			return nil, nil, &ValidationError{Code: ve.Code, Message: ve.Message}
 		}
-		return nil, nil, &validationFault{Code: "validation_failed", Message: err.Error()}
+		return nil, nil, &ValidationError{Code: "validation_failed", Message: err.Error()}
 	}
 	project, err := compose.LoadBytes(composeYAML, "deploy-compose.yml")
 	if err != nil {
-		return nil, nil, &validationFault{Code: "validation_failed", Message: err.Error()}
+		return nil, nil, &ValidationError{Code: "validation_failed", Message: err.Error()}
 	}
 	return jaco, project, nil
 }
@@ -252,12 +256,14 @@ func computeDiff(_ *state.State, _ *JacoYAML) *pb.Diff {
 	return &pb.Diff{}
 }
 
-// validationFault is the package-local error type carrying the typed code +
-// message back to the gRPC layer.
-type validationFault struct {
+// ValidationError is the typed error carrying a stable Code + human Message
+// from jaco-manifest validation. Exported so external callers (e.g. the
+// `jaco validate` CLI) can errors.As and surface the underlying Code instead
+// of always printing a hard-coded "validation_failed".
+type ValidationError struct {
 	Code    string
 	Message string
 }
 
-func (e *validationFault) Error() string { return e.Message }
+func (e *ValidationError) Error() string { return e.Message }
 

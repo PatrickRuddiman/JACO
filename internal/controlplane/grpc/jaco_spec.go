@@ -41,11 +41,16 @@ type JacoRouteDecl struct {
 
 // ParseJacoYAML unmarshals the manifest and applies defaults (Placement spread,
 // TLS auto). Returns a typed JacoYAML; validation against the compose file
-// happens in validateJacoYAML.
+// happens in validateJacoYAML. Yaml unmarshal failures are returned as
+// *ValidationError with Code="parse_failed" so callers can errors.As and
+// surface a stable code without re-parsing the message.
 func ParseJacoYAML(body []byte) (*JacoYAML, error) {
 	var j JacoYAML
 	if err := yaml.Unmarshal(body, &j); err != nil {
-		return nil, fmt.Errorf("parse jaco yaml: %w", err)
+		return nil, &ValidationError{
+			Code:    "parse_failed",
+			Message: fmt.Sprintf("parse jaco yaml: %s", err.Error()),
+		}
 	}
 	for i := range j.Services {
 		if j.Services[i].Placement == "" {
@@ -73,7 +78,7 @@ func ValidateJacoYAMLBytes(data []byte) error {
 		return err
 	}
 	if code, msg, ok := validateJacoYAML(j); !ok {
-		return &validationFault{Code: code, Message: msg}
+		return &ValidationError{Code: code, Message: msg}
 	}
 	return nil
 }
