@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -62,7 +63,8 @@ func runValidate(cmd *cobra.Command, jacoPath, composePath string) error {
 	// Validate the jaco manifest if provided.
 	if jacoPath != "" {
 		if err := grpcsrv.ValidateJacoYAMLBytes(jacoBytes); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Error: validation_failed: %s\n", err.Error())
+			code, msg := validationCodeAndMessage(err)
+			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s: %s\n", code, msg)
 			return err
 		}
 	}
@@ -70,7 +72,8 @@ func runValidate(cmd *cobra.Command, jacoPath, composePath string) error {
 	// Validate the compose file if provided.
 	if composePath != "" {
 		if err := compose.Validate(composeBytes); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Error: validation_failed: %s\n", err.Error())
+			code, msg := validationCodeAndMessage(err)
+			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s: %s\n", code, msg)
 			return err
 		}
 	}
@@ -78,12 +81,29 @@ func runValidate(cmd *cobra.Command, jacoPath, composePath string) error {
 	// Cross-check: every jaco service must reference a real compose service.
 	if jacoPath != "" && composePath != "" {
 		if err := crossValidate(jacoBytes, composeBytes); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Error: validation_failed: %s\n", err.Error())
+			code, msg := validationCodeAndMessage(err)
+			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s: %s\n", code, msg)
 			return err
 		}
 	}
 
 	return nil
+}
+
+// validationCodeAndMessage pulls the typed Code and human Message out of
+// err when it's a known validation error (grpcsrv.ValidationError or
+// compose.ValidationError). Falls back to "validation_failed" and the raw
+// error string when the error is untyped.
+func validationCodeAndMessage(err error) (code string, message string) {
+	var ge *grpcsrv.ValidationError
+	if errors.As(err, &ge) {
+		return ge.Code, ge.Message
+	}
+	var ce *compose.ValidationError
+	if errors.As(err, &ce) {
+		return ce.Code, ce.Message
+	}
+	return "validation_failed", err.Error()
 }
 
 // crossValidate asserts that every service declared in the jaco manifest has a
