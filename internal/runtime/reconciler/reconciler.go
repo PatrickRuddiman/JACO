@@ -93,7 +93,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	// fires, so cluster meta + replicas may not be populated yet — log
 	// at debug-only and let the steady-state loop pick up the replicas
 	// via the ReplicasDesired watch.
-	if err := r.bootSweep(ctx); err != nil {
+	if err := r.orphanSweep(ctx); err != nil {
 		// Silent: the only "error" is "cluster meta not populated" on
 		// a fresh boot, which is expected and self-heals via the watch.
 		_ = err
@@ -102,7 +102,10 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 	// Bug 008: 30s safety tick that re-walks state.ReplicasDesired
 	// host=self so the runtime recovers from out-of-band container
-	// removal + missed watch events.
+	// removal + missed watch events. Bug 016: also run orphanSweep so
+	// containers whose desired record now points to another host (e.g.
+	// after a drain migration) get stop+removed even if the watch event
+	// was missed.
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -117,12 +120,19 @@ func (r *Reconciler) Run(ctx context.Context) error {
 			}
 			r.handle(ctx, ev)
 		case <-ticker.C:
+			if err := r.orphanSweep(ctx); err != nil {
+				_ = err
+			}
 			r.resync(ctx)
 		}
 	}
 }
 
-func (r *Reconciler) bootSweep(ctx context.Context) error {
+// orphanSweep stops+removes any local container labeled with our cluster_id
+// whose replica_id isn't present in state.ReplicasDesired filtered to
+// host=self. Run at boot and on every safety tick so the local docker
+// state converges on the desired set even when watch events are missed.
+func (r *Reconciler) orphanSweep(ctx context.Context) error {
 	meta := r.state.Cluster.Get()
 	if meta == nil || meta.GetClusterId() == "" {
 		// Pre-Init shouldn't happen because the daemon only spawns this
@@ -145,6 +155,9 @@ func (r *Reconciler) bootSweep(ctx context.Context) error {
 	}
 	return nil
 }
+
+// OrphanSweep is the test-visible alias for orphanSweep.
+func (r *Reconciler) OrphanSweep(ctx context.Context) error { return r.orphanSweep(ctx) }
 
 // resync applies every desired replica host=self via lifecycle.Start. Used
 // on boot and after a watch broker overflow (KindResync).

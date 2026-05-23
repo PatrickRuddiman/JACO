@@ -289,6 +289,48 @@ func TestReconciler_RemovesContainerOnReplicaDesiredDelete(t *testing.T) {
 	t.Fatalf("container still present after Remove")
 }
 
+// TestReconciler_OrphanSweepStopsContainerWhenDesiredMovedHosts covers bug
+// 016: after a drain migrates a replica off this host, the local container
+// must be stop+removed even if the watch event was missed. The safety tick
+// runs orphanSweep which compares running containers (by cluster_id label)
+// against state.ReplicasDesired filtered to host=self; anything not in the
+// expected set gets reaped.
+func TestReconciler_OrphanSweepStopsContainerWhenDesiredMovedHosts(t *testing.T) {
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	f := fsm.New(st, brokers)
+	d := newFakeDocker()
+	var raftIdx uint64
+	seedAll(t, f, &raftIdx)
+
+	// Pre-seed a container labeled with this cluster_id + a replica_id
+	// that doesn't appear in ReplicasDesired host=self. Simulates the
+	// post-drain state where the watch event was missed: a container is
+	// still running locally for a replica that's now desired elsewhere.
+	d.mu.Lock()
+	d.idSeq++
+	id := fmt.Sprintf("c-%d", d.idSeq)
+	d.containers[id] = &fakeContainer{
+		ID:    id,
+		Name:  "jaco_smoke-web-0",
+		Image: "nginx:1.27",
+		Labels: map[string]string{
+			"jaco.cluster_id": "cluster-x",
+			"jaco.replica_id": "smoke-web-0",
+		},
+		State: "running",
+	}
+	d.mu.Unlock()
+
+	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, silentLogger())
+	if err := rec.OrphanSweep(context.Background()); err != nil {
+		t.Fatalf("OrphanSweep: %v", err)
+	}
+	if _, ok := d.snapshotByReplicaID()["smoke-web-0"]; ok {
+		t.Fatalf("orphan container for smoke-web-0 still present; sweep failed")
+	}
+}
+
 // noopSubmit is the SubmitFn used in tests — drops observations on the floor
 // since the reconciler tests assert on docker state, not raft state.
 func noopSubmit(_ context.Context, _ *pb.ReplicaObserved) error { return nil }
