@@ -1,0 +1,199 @@
+# JACO release pipeline. Triggers on tags matching `v*`. Builds static
+# binaries + .deb/.rpm/.apk packages + a generic .tar.gz per linux
+# architecture, then aggregates everything into a draft GitHub release
+# with SHA256SUMS.
+#
+# Architectures (user-confirmed): linux/amd64, linux/arm64.
+#
+# Signing: artifacts are UNSIGNED in this iteration. A GPG-signing job
+# is included below, commented out, with a TODO marker. Uncomment once
+# the project GPG key is hosted at the publisher's website AND stored
+# in the `GPG_SIGNING_KEY` GitHub secret.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # gh release create / upload
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version
+        id: ver
+        run: |
+          # GITHUB_REF_NAME is the tag (e.g. v0.1.0). Strip the leading
+          # `v` for nfpm — deb/rpm/apk version fields can't start with
+          # a non-digit.
+          tag="${GITHUB_REF_NAME}"
+          ver="${tag#v}"
+          echo "tag=${tag}"        >> "$GITHUB_OUTPUT"
+          echo "version=${ver}"    >> "$GITHUB_OUTPUT"
+
+      # Static binaries (CGO disabled) — same flags as build/release.sh
+      # so behavior matches what tarballs already deliver today.
+      - name: Build binaries
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+          VERSION: ${{ steps.ver.outputs.tag }}
+        run: |
+          mkdir -p dist/staging
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION}" \
+            -o dist/staging/jaco \
+            ./cmd/jaco
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION}" \
+            -o dist/staging/jacod \
+            ./cmd/jacod
+
+      # nfpm is pinned (no @latest in CI). Installed via `go install`
+      # so we don't rely on a third-party action.
+      - name: Install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.46.3
+
+      - name: Build packages (deb / rpm / apk)
+        env:
+          NFPM_VERSION: ${{ steps.ver.outputs.version }}
+          NFPM_ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist/release
+          for fmt in deb rpm apk; do
+            echo "[release] building $fmt for ${NFPM_ARCH} v${NFPM_VERSION}"
+            nfpm --config nfpm.yaml package \
+                 --packager "$fmt" \
+                 --target dist/release/
+          done
+
+      # Generic linux tarball: binaries + systemd unit + install snippet.
+      # Mirrors the layout the existing build/release.sh produces but
+      # narrowed to linux (darwin tarballs come from a separate path).
+      - name: Build tarball
+        env:
+          VERSION: ${{ steps.ver.outputs.tag }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          stage="jaco-${VERSION}-linux-${ARCH}"
+          mkdir -p "dist/${stage}"
+          cp dist/staging/jaco  "dist/${stage}/jaco"
+          cp dist/staging/jacod "dist/${stage}/jacod"
+          cp build/jaco.service "dist/${stage}/jaco.service"
+          cp build/jacod.yaml   "dist/${stage}/jacod.yaml"
+          cp LICENSE            "dist/${stage}/LICENSE"
+          cp README.md          "dist/${stage}/README.md"
+          cat > "dist/${stage}/INSTALL.md" <<'EOF'
+          # Installing JACO from the generic tarball
+
+              sudo install -m 0755 jaco  /usr/local/bin/jaco
+              sudo install -m 0755 jacod /usr/local/bin/jacod
+              sudo install -d -m 0755 /etc/jaco
+              sudo install -m 0644 jacod.yaml /etc/jaco/jacod.yaml
+              sudo install -m 0644 jaco.service /lib/systemd/system/jaco.service
+              sudo systemctl daemon-reload
+              # Edit /etc/jaco/jacod.yaml, then:
+              sudo systemctl enable --now jaco
+          EOF
+          tar -C dist \
+              --sort=name \
+              --owner=0 --group=0 --numeric-owner \
+              -czf "dist/release/${stage}.tar.gz" \
+              "${stage}"
+
+      - name: List artifacts
+        run: ls -la dist/release/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.arch }}
+          path: dist/release/
+          if-no-files-found: error
+          retention-days: 7
+
+  # # --- BEGIN signing job (commented out — see header) ---
+  # # TODO(release-signing): uncomment when the project GPG public key
+  # # is hosted at https://pinnacleridgesolutions.com/jaco/release.asc
+  # # (or wherever the keyserver page lands) AND the matching private
+  # # key is stored in the `GPG_SIGNING_KEY` GitHub secret. The job
+  # # detaches signatures (.asc) next to each artifact and ships them
+  # # in the release alongside SHA256SUMS.
+  # sign:
+  #   name: sign
+  #   needs: build
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         path: dist
+  #         pattern: release-*
+  #         merge-multiple: true
+  #     - name: Import signing key
+  #       env:
+  #         GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+  #       run: |
+  #         echo "$GPG_SIGNING_KEY" | gpg --batch --import
+  #     - name: Sign artifacts
+  #       run: |
+  #         for f in dist/*; do
+  #           gpg --batch --yes --armor --detach-sign --output "${f}.asc" "$f"
+  #         done
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: signatures
+  #         path: dist/*.asc
+  # # --- END signing job ---
+
+  release:
+    name: release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+
+      - name: List collected artifacts
+        run: ls -la dist/
+
+      - name: Compute SHA256SUMS
+        working-directory: dist
+        run: |
+          # Stable ordering so the file is byte-identical across re-runs.
+          sha256sum $(ls | sort) > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # `gh release create --draft` so a human reviews + publishes.
+          # Files passed positionally are uploaded as release assets.
+          gh release create "$TAG" \
+            --draft \
+            --title "JACO $TAG" \
+            --notes "Draft release for $TAG. Edit before publishing." \
+            dist/*
