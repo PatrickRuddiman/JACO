@@ -29,15 +29,21 @@ Ship `cmd/jacod/main.go` — the long-running daemon that owns raft, the gRPC se
 - [x] **iter 21** — CLI's `dialServer` switched to plaintext (matches jacod's wire). `--ca-cert` made optional across every operator command.
 - [x] **iter 22** — `build/jacod.yaml` + README accurate on ports + the v0 plaintext story.
 - [x] **iter 23** — Daemon's clusterServer delegates NodeList / NodeRemove / IssueJoinToken / Backup / Restore to the controlplane impl so the full Cluster service is reachable through jacod.
-- [ ] **Deferred (out-of-scope for task 38)** — the following are functional gaps that don't block a v0 cluster bring-up + workload-running demo, but each warrants its own follow-up task:
-  - `discovery/dns` per-bridge UDP+TCP listener (depends on real docker bridges being live).
-  - `ingress/rebuild.Reloader.Run(ctx)` (needs caddy/v2 dep).
-  - Rollout state-machine integration with `scheduler.Reconcile` (image-change path).
-  - Drain step machine wired into `Cluster.NodeRemove(force=false)`.
-  - `Internal.Submit` client-side forwarding (needs `grpc_address` proto field on Node).
-  - CertBlob entity for raft-backed cert blob storage + CertMagic OnEvent audit hooks.
-  - `Deploy.Logs` cross-node fanout via `Internal.Logs`.
-  - TLS-with-cluster-CA on the cross-host listener (replaces v0 plaintext).
+- [x] **iter 24** — `Internal.Submit` client-side forwarding. Added `grpc_address` field to Node, NodeJoinRequest, and NodeJoin command. The runtime SubmitFn tries `raft.Apply` first; on `ErrNotLeader` it looks up the leader's gRPC address via `state.Nodes` and dials `Internal.Submit` there.
+- [x] **iter 25** — Drain step machine wired into `Cluster.NodeRemove(force=false)`. Calls `drain.Plan`, applies migrations, polls `state.ReplicasObserved` for RUNNING (60s budget), then `raft.RemoveServer`. `force=true` preserves the previous rip-it-out behavior.
+- [x] **iter 26** — Quiet two noisy daemon-boot warnings the smoke test surfaced (`runtime boot sweep: cluster meta not populated` is now silent; wgmesh ConfigureDevice errors log once per daemon lifetime).
+- [x] **iter 27** — `Deploy.Logs` local-only fanout on jacod. `streamLocalLogs` walks `state.ReplicasDesired host=self`, resolves container ids via `lifecycle.Inspect`, fans `runtime/logs.Stream` channels into the operator stream.
+- [x] **iter 28** — Cross-host `Deploy.Logs` fanout via `Internal.Logs`. The leader groups target replicas by host, runs `streamLocalLogs` for its own + dials each peer's `Internal.Logs` for the rest, multiplexes everything onto the operator stream with a shared `sendMu`.
+- [x] **iter 29** — Scheduler rolls image changes one-at-a-time. `isRollingImageChange` detection in `reconcileService`; only one `ReplicaDesiredUpsert` emitted per pass when an image change is in progress. Preserves the replicas-1 invariant without the full rollout state machine.
+- [x] **iter 30** — Ingress `Reloader` wired into jacod. Concrete `Builder` reads `state.Routes` + `state.ReplicasObserved` + `state.ReplicasDesired` → `config.BuildCaddyConfig`. Concrete `Loader` writes `/etc/caddy/jaco.json` + `exec caddy reload --config`. Gated on `caddyAvailable()`; skip-gracefully on hosts without caddy.
+- [x] **iter 31** — `discovery/dns` per-bridge UDP+TCP listener manager. Subscribes to `state.Subnets` + `state.ReplicasObserved`; spawns/tears-down listeners per scope on the bridge gateway IP; refreshes `ServiceMap` on observed changes. Binding failures (no CAP_NET_BIND_SERVICE / no bridge yet) log once and disable that scope.
+- [x] **iter 32** — Full operator smoke test (`init → apply → status → node list`) passes end-to-end against a locally-running jacod binary, confirming the deployment path is real.
+- [ ] **Deferred (out-of-scope for task 38)** — these are still genuinely future work, but none block a v0 cluster bring-up + workload-running demo:
+  - Full rollout state machine integration (`scheduler/rollout.Rollout.Start/Advance/Complete` driven by scheduler) — iter 29 ships the minimal one-at-a-time safety property but skips the formal plan persistence, audit, and rollback-on-failure paths.
+  - `CertBlob` entity for raft-backed CertMagic storage (only meaningful with embedded caddy; the iter-30 path execs an externally-managed caddy that owns its own cert store).
+  - `CertMagic OnEvent` audit hooks (paired with CertBlob).
+  - TLS-with-cluster-CA on the cross-host listener (v0 plaintext + Tailscale/WireGuard overlay).
+  - Real-engine integration tests behind build tags `docker`/`nftables`/`wireguard` — need a privileged CI runner.
 - [x] **iter 3 + 6** — Graceful shutdown via signalContext (SIGTERM/SIGINT cancels root ctx, server.Stop is graceful with a 10s timeout, raft.Shutdown closes the bolt store last so the file lock releases).
 - [x] **iter 7** — `cmd/jaco/cluster.go` ships `jaco cluster init` + `jaco cluster status`; both dial the local unix socket via `dialDaemon`. `cmd/jaco/node.go::join` rewritten as a thin RPC wrapper. `cmd/jaco/bootstrap.go` deleted (superseded by `jaco cluster init`).
 - [x] **iter 7** — Unix-socket dial helper lives in `cmd/jaco/cluster.go::dialDaemon` (small enough not to need a separate cliclient package). CLI gains `--socket` flag (default `/var/run/jaco/jaco.sock`, `JACO_SOCKET` env override).
