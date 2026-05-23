@@ -46,6 +46,62 @@ func TestRender_GoldenTwoDepsTwoNets(t *testing.T) {
 
 func regenGolden() bool { return os.Getenv("REGEN_GOLDEN") == "1" }
 
+// TestRender_GroupsPerHostCIDRsIntoOneSet — per-host /24s (issue #28) for the
+// same (deployment, network) collapse into a single nftables set with all
+// elements and exactly one forward accept rule, so cross-host intra-deployment
+// traffic is accepted (saddr in one host's /24, daddr in another's).
+func TestRender_GroupsPerHostCIDRsIntoOneSet(t *testing.T) {
+	out := firewall.Render(firewall.RuleInput{
+		Subnets: []firewall.Subnet{
+			{Deployment: "app", Network: "frontend", CIDR: "10.244.6.0/24"},
+			{Deployment: "app", Network: "frontend", CIDR: "10.244.5.0/24"},
+		},
+	})
+	setName := firewall.SetName("app", "frontend")
+	if c := strings.Count(out, "set "+setName+" {"); c != 1 {
+		t.Errorf("set %s defined %d times, want 1", setName, c)
+	}
+	// Elements are sorted, so 5 precedes 6 regardless of input order.
+	if !strings.Contains(out, "elements = { 10.244.5.0/24, 10.244.6.0/24 }") {
+		t.Errorf("per-host CIDRs not grouped into one set:\n%s", out)
+	}
+	rule := fmt.Sprintf("ip saddr @%s ip daddr @%s accept", setName, setName)
+	if c := strings.Count(out, rule); c != 1 {
+		t.Errorf("forward rule for %s appears %d times, want 1", setName, c)
+	}
+}
+
+// TestRender_GoldenPerHostSubnets pins the multi-element-set output.
+func TestRender_GoldenPerHostSubnets(t *testing.T) {
+	in := firewall.RuleInput{
+		Subnets: []firewall.Subnet{
+			{Deployment: "app", Network: "frontend", CIDR: "10.244.5.0/24"},
+			{Deployment: "app", Network: "frontend", CIDR: "10.244.6.0/24"},
+			{Deployment: "app", Network: "backend", CIDR: "10.244.7.0/24"},
+		},
+		WGPort:       51820,
+		GrpcPort:     7000,
+		IngressPorts: []int{80, 443},
+	}
+	got := firewall.Render(in)
+	goldenPath := filepath.Join("testdata", "perhost.nft")
+	if regenGolden() {
+		if err := os.WriteFile(goldenPath, []byte(got), 0o644); err != nil {
+			t.Fatalf("write golden: %v", err)
+		}
+		t.Logf("regenerated %s", goldenPath)
+		return
+	}
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	if got != string(want) {
+		t.Errorf("Render output diverges from golden (run with REGEN_GOLDEN=1 to refresh)")
+		t.Logf("=== got:\n%s\n=== want:\n%s", got, string(want))
+	}
+}
+
 func TestRender_SortsSubnetsDeterministically(t *testing.T) {
 	a := firewall.Render(firewall.RuleInput{
 		Subnets: []firewall.Subnet{

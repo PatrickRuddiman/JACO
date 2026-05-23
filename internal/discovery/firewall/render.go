@@ -51,16 +51,32 @@ func Render(in RuleInput) string {
 		return subnets[i].Network < subnets[j].Network
 	})
 
+	// Group CIDRs by nftables set name: with per-host /24s (issue #28),
+	// several CIDRs share one (deployment, network) set, so cross-host
+	// intra-deployment traffic (saddr in host-A's /24, daddr in host-B's)
+	// matches @set on both sides.
+	var setOrder []string
+	cidrsBySet := map[string][]string{}
+	for _, s := range subnets {
+		name := SetName(s.Deployment, s.Network)
+		if _, ok := cidrsBySet[name]; !ok {
+			setOrder = append(setOrder, name)
+		}
+		cidrsBySet[name] = append(cidrsBySet[name], s.CIDR)
+	}
+	for name := range cidrsBySet {
+		sort.Strings(cidrsBySet[name])
+	}
+
 	var b strings.Builder
 	fmt.Fprintln(&b, "table inet jaco {")
 
-	// Named sets — one per Subnet.
-	for _, s := range subnets {
-		setName := SetName(s.Deployment, s.Network)
-		fmt.Fprintf(&b, "    set %s {\n", setName)
+	// Named sets — one per (deployment, network), holding every host's /24.
+	for _, name := range setOrder {
+		fmt.Fprintf(&b, "    set %s {\n", name)
 		fmt.Fprintf(&b, "        type ipv4_addr\n")
 		fmt.Fprintf(&b, "        flags interval\n")
-		fmt.Fprintf(&b, "        elements = { %s }\n", s.CIDR)
+		fmt.Fprintf(&b, "        elements = { %s }\n", strings.Join(cidrsBySet[name], ", "))
 		fmt.Fprintf(&b, "    }\n\n")
 	}
 
@@ -68,9 +84,8 @@ func Render(in RuleInput) string {
 	fmt.Fprintln(&b, "    chain forward {")
 	fmt.Fprintln(&b, "        type filter hook forward priority 0; policy drop;")
 	fmt.Fprintln(&b, "        ct state established,related accept")
-	for _, s := range subnets {
-		setName := SetName(s.Deployment, s.Network)
-		fmt.Fprintf(&b, "        ip saddr @%s ip daddr @%s accept\n", setName, setName)
+	for _, name := range setOrder {
+		fmt.Fprintf(&b, "        ip saddr @%s ip daddr @%s accept\n", name, name)
 	}
 	fmt.Fprintln(&b, "        drop")
 	fmt.Fprintln(&b, "    }")

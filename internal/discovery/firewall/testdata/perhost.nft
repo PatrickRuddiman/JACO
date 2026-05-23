@@ -1,0 +1,37 @@
+table inet jaco {
+    set dep_net_app_backend {
+        type ipv4_addr
+        flags interval
+        elements = { 10.244.7.0/24 }
+    }
+
+    set dep_net_app_frontend {
+        type ipv4_addr
+        flags interval
+        elements = { 10.244.5.0/24, 10.244.6.0/24 }
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+        ct state established,related accept
+        ip saddr @dep_net_app_backend ip daddr @dep_net_app_backend accept
+        ip saddr @dep_net_app_frontend ip daddr @dep_net_app_frontend accept
+        drop
+    }
+
+    chain input {
+        type filter hook input priority 0; policy drop;
+        iif lo accept
+        ct state established,related accept
+        udp dport 51820 accept
+        iifname "wg-jaco" accept
+        iifname "jaco-*" udp dport 53 accept
+        tcp dport 7000 accept
+        tcp dport { 80, 443 } accept
+        drop
+    }
+
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}
