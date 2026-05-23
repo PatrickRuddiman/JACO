@@ -162,6 +162,81 @@ func TestReconcile_IsIdempotentWhenStateAlreadyMatches(t *testing.T) {
 	}
 }
 
+// TestReconcile_ImageChangeRollsOneAtATime checks that when every existing
+// replica needs an image update, each reconcile pass upgrades exactly one
+// replica (so at most one replica is down at any time — the replicas-1
+// invariant). Implemented in iter 29.
+func TestReconcile_ImageChangeRollsOneAtATime(t *testing.T) {
+	s, st, f, _ := newScheduler(t, true)
+	var raftIdx uint64
+	seedNode(t, f, "node-a", &raftIdx)
+	seedNode(t, f, "node-b", &raftIdx)
+	seedNode(t, f, "node-c", &raftIdx)
+	seedDeployment(t, f, "sample", 3, sampleCompose, &raftIdx)
+
+	// Initial reconcile lands 3 replicas on nginx:1.27.
+	s.Reconcile(context.Background())
+	if got := st.ReplicasDesired.Len(); got != 3 {
+		t.Fatalf("preconditions: ReplicasDesired = %d, want 3", got)
+	}
+
+	// Apply a new revision with an image change. Same compose service,
+	// new image tag.
+	newCompose := `services:
+  web:
+    image: nginx:1.28
+  api:
+    image: api:1.0
+`
+	raftIdx++
+	cmd := &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_DeploymentApply{
+		DeploymentApply: &pb.DeploymentApply{
+			Deployment: "sample", Revision: 2, ComposeYaml: []byte(newCompose),
+			Services: []*pb.ServiceSpec{{
+				Name: "web", Replicas: 3, ComposeService: "web",
+				Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD,
+			}},
+		},
+	}}
+	data, _ := proto.Marshal(cmd)
+	f.Apply(&hraft.Log{Index: raftIdx, Data: data})
+
+	// First reconcile after image change: exactly one replica should
+	// flip to the new image.
+	s.Reconcile(context.Background())
+	if got := countWithImage(st, "nginx:1.28"); got != 1 {
+		t.Errorf("after first reconcile, nginx:1.28 count = %d, want 1 (one-at-a-time)", got)
+	}
+	if got := countWithImage(st, "nginx:1.27"); got != 2 {
+		t.Errorf("after first reconcile, nginx:1.27 count = %d, want 2", got)
+	}
+
+	// Second pass: another replica flips.
+	s.Reconcile(context.Background())
+	if got := countWithImage(st, "nginx:1.28"); got != 2 {
+		t.Errorf("after second reconcile, nginx:1.28 count = %d, want 2", got)
+	}
+
+	// Third pass: last replica flips, rollout complete.
+	s.Reconcile(context.Background())
+	if got := countWithImage(st, "nginx:1.28"); got != 3 {
+		t.Errorf("after third reconcile, nginx:1.28 count = %d, want 3", got)
+	}
+	if got := countWithImage(st, "nginx:1.27"); got != 0 {
+		t.Errorf("after third reconcile, nginx:1.27 count = %d, want 0", got)
+	}
+}
+
+func countWithImage(st *state.State, image string) int {
+	n := 0
+	for _, r := range st.ReplicasDesired.List() {
+		if r.GetImage() == image {
+			n++
+		}
+	}
+	return n
+}
+
 func TestReconcile_RemovesReplicasWhenScalingDown(t *testing.T) {
 	s, st, f, _ := newScheduler(t, true)
 	var raftIdx uint64

@@ -196,6 +196,15 @@ func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, no
 		})
 	}
 
+	// Detect a rolling image change: every current replica of this service
+	// already has the same (non-empty) image and that image differs from
+	// `image`. In that case, only emit one upsert per reconcile pass so we
+	// preserve the replicas-1 invariant (at most one replica down at any
+	// time). Adds / removes / host migrations bypass this gate — they're
+	// not image changes.
+	rolling := isRollingImageChange(currentByID, image)
+	imageChangedThisPass := false
+
 	// 2. Adds + updates.
 	desiredIDs := map[string]bool{}
 	for _, d := range desired {
@@ -211,6 +220,13 @@ func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, no
 		if cur, ok := currentByID[d.id]; ok {
 			if cur.GetHost() == d.host && cur.GetImage() == image {
 				continue // already matches desired
+			}
+			// Image-only change while rolling — only allow one per pass.
+			if rolling && cur.GetHost() == d.host && cur.GetImage() != image {
+				if imageChangedThisPass {
+					continue
+				}
+				imageChangedThisPass = true
 			}
 		}
 		cmds = append(cmds, &pb.Command{
@@ -235,6 +251,31 @@ func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, no
 	}
 
 	return cmds
+}
+
+// isRollingImageChange reports whether all current replicas for the
+// service share a single image that differs from the new desired image.
+// Returns false when there are no current replicas (fresh deployment —
+// no rollout needed) or when any current replica already runs the new
+// image (rollout already in flight, just keep rolling).
+func isRollingImageChange(currentByID map[string]*pb.ReplicaDesired, desiredImage string) bool {
+	if len(currentByID) == 0 {
+		return false
+	}
+	for _, r := range currentByID {
+		if r.GetImage() == desiredImage {
+			// At least one replica already at the new image — let the
+			// remaining ones flip one-per-pass too, so behavior is
+			// stable across reconciles after the rollout starts.
+			return true
+		}
+	}
+	for _, r := range currentByID {
+		if r.GetImage() == "" || r.GetImage() == desiredImage {
+			return false
+		}
+	}
+	return true
 }
 
 // deploymentStatusPending builds a Command that flips a Deployment into
