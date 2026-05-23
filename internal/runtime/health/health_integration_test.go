@@ -59,7 +59,7 @@ func TestIntegration_WatcherSubmitsRunningObservation(t *testing.T) {
 		}
 		return nil
 	}
-	w := health.NewWatcher(d, submit, nil)
+	w := health.NewWatcher(d, submit, nil, nil)
 	t.Cleanup(w.StopAll)
 
 	w.Start(ctx, "health-int-1", resp.ID, false /*no healthcheck*/)

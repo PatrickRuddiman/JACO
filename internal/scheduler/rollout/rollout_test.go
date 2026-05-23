@@ -44,7 +44,7 @@ func newHarness(t *testing.T) (*rollout.Rollout, *state.State, *fsm.FSM, *fakeCl
 		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
 		return nil
 	}
-	return rollout.New(st, applier, clock), st, f, clock
+	return rollout.New(st, applier, clock.Now), st, f, clock
 }
 
 // seedDeployment writes a Deployment{name, revision, previous_revision}

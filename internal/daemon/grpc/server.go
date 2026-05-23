@@ -372,7 +372,7 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 		return err
 	}
 
-	rollouts := rollout.New(st, apply, rollout.SystemClock())
+	rollouts := rollout.New(st, apply, nil)
 	sched := scheduler.New(st, brokers, node, apply, rollouts)
 	s.subsystemsWG.Add(1)
 	go func() {
