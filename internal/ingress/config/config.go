@@ -107,10 +107,6 @@ func BuildCaddyConfig(routes []Route, replicas []ReplicaObservedView, services m
 	}
 
 	// Group routes by domain; collect unique domains in sorted order.
-	type domainEntry struct {
-		domain string
-		routes []Route
-	}
 	domainMap := map[string][]Route{}
 	for _, r := range routes {
 		domainMap[r.Domain] = append(domainMap[r.Domain], r)
