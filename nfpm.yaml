@@ -1,0 +1,73 @@
+# nfpm configuration for JACO. One source file, invoked per format
+# (deb / rpm / apk) and per architecture (amd64 / arm64). The release
+# workflow stages `dist/<arch>/{jaco,jacod}` before invoking nfpm.
+#
+# Build/version inputs come from environment variables. nfpm only
+# expands `${VAR}` substitution on a fixed set of fields (top-level
+# scalars like `version` and `arch`), NOT on `contents[].src`. The
+# binaries must therefore be staged at a fixed path before invocation:
+#
+#   dist/staging/jaco           CLI binary for the target arch
+#   dist/staging/jacod          daemon binary for the target arch
+#
+# Env vars consumed below:
+#   NFPM_VERSION  release version without the leading `v` (e.g. 0.1.0)
+#   NFPM_ARCH     nfpm arch identifier (amd64 | arm64)
+#
+# Local preview:  make package        — builds amd64 .deb/.rpm/.apk
+# CI:             .github/workflows/release.yml drives the matrix.
+
+name: jaco
+arch: "${NFPM_ARCH}"
+platform: linux
+version: "${NFPM_VERSION}"
+version_schema: semver
+section: admin
+priority: optional
+maintainer: Patrick Ruddiman <patrick@pinnacleridgesolutions.com>
+description: |
+  JACO is a multi-node container orchestrator built on hashicorp/raft,
+  embedded Caddy, WireGuard, and per-(deployment, network) bridges with
+  nftables-enforced isolation. Ships two binaries: jacod (daemon) and
+  jaco (CLI).
+vendor: Pinnacle Ridge Solutions
+homepage: https://github.com/PatrickRuddiman/JACO
+license: MIT
+
+contents:
+  - src: dist/staging/jaco
+    dst: /usr/local/bin/jaco
+    file_info:
+      mode: 0755
+  - src: dist/staging/jacod
+    dst: /usr/local/bin/jacod
+    file_info:
+      mode: 0755
+  - src: build/jaco.service
+    dst: /lib/systemd/system/jaco.service
+    file_info:
+      mode: 0644
+  - src: build/jacod.yaml
+    dst: /etc/jaco/jacod.yaml
+    type: config|noreplace
+    file_info:
+      mode: 0644
+
+scripts:
+  postinstall: build/packaging/postinstall.sh
+  preremove:   build/packaging/preremove.sh
+  postremove:  build/packaging/postremove.sh
+
+# Per-packager tweaks.
+deb:
+  fields:
+    Bugs: https://github.com/PatrickRuddiman/JACO/issues
+
+rpm:
+  group: System Environment/Daemons
+
+apk:
+  # Alpine uses OpenRC by default. The postinstall reload is gated on
+  # systemctl presence so the package installs cleanly on musl systems
+  # too, but the systemd unit will sit unused.
+  scripts: {}
