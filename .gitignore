@@ -8,6 +8,10 @@ coverage.*
 # Local secrets (Tailscale auth keys, Azure creds, etc).
 test_infra/.env.local
 
+# Local Azure VM provisioning (cloud-init template renders secrets at deploy
+# time; whole dir stays untracked until a sanitized infra layout lands).
+test_infra/
+
 # Editor / agent metadata.
 .agents/
 .claude/
