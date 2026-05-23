@@ -36,9 +36,12 @@ func IdentityFromContext(ctx context.Context) string {
 
 // UnauthMethods lists gRPC methods that bypass the bearer-token check. These
 // RPCs gate themselves via a body-carried credential — e.g. NodeJoin verifies
-// the single-use join_token in the request body.
+// the single-use join_token in the request body — or are explicitly safe to
+// expose unauthenticated (Cluster.Status is read-only and reveals only the
+// liveness summary an operator needs to confirm the daemon is reachable).
 var UnauthMethods = map[string]bool{
 	"/jaco.v1.Cluster/NodeJoin": true,
+	"/jaco.v1.Cluster/Status":   true,
 }
 
 // UnaryInterceptor returns a grpc.UnaryServerInterceptor that runs

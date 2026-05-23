@@ -12,11 +12,34 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	dgrpc "github.com/PatrickRuddiman/jaco/internal/daemon/grpc"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
+
+// withOperatorAuth returns a context carrying the Bearer-token metadata the
+// daemon's admission interceptor expects post-init. Used in tests that
+// drive a full Init → second-call flow.
+func withOperatorAuth(ctx context.Context, token string) context.Context {
+	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
+}
+
+// waitForOperatorToken polls until state.Tokens has at least one entry —
+// raft applies are async after OpenRaft, so the operator token from
+// bootstrap takes a moment to replay into the daemon's state.
+func waitForOperatorToken(t *testing.T, s *dgrpc.Server) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.State() != nil && s.State().Tokens.Len() > 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("operator token never appeared in state.Tokens")
+}
 
 // freePort returns a tcp port nothing's listening on. Closes the listener
 // but the port may be momentarily reused by something else; for tests
@@ -116,14 +139,18 @@ func TestInit_StatusFlipsToInitialized(t *testing.T) {
 
 func TestInit_RefusesWhenAlreadyInitialized(t *testing.T) {
 	dataDir := t.TempDir()
-	conn, _ := startServerWithDataDir(t, dataDir)
+	conn, s := startServerWithDataDir(t, dataDir)
 	c := pb.NewClusterClient(conn)
 
-	if _, err := c.Init(context.Background(), &pb.ClusterInitRequest{}); err != nil {
+	resp, err := c.Init(context.Background(), &pb.ClusterInitRequest{})
+	if err != nil {
 		t.Fatal(err)
 	}
-	// Second call must refuse.
-	_, err := c.Init(context.Background(), &pb.ClusterInitRequest{})
+	waitForOperatorToken(t, s)
+	// Second call must refuse — attach the operator token returned by
+	// the first Init so admission lets the call reach the handler.
+	authCtx := withOperatorAuth(context.Background(), resp.GetOperatorToken())
+	_, err = c.Init(authCtx, &pb.ClusterInitRequest{})
 	if err == nil {
 		t.Fatal("second Init succeeded; want FailedPrecondition")
 	}
@@ -162,9 +189,9 @@ func TestInit_RefusesWhenRaftStateOnDiskButGateOpen(t *testing.T) {
 
 func TestInit_GatedMethodsUnblockedAfterInit(t *testing.T) {
 	// Pre-Init: Bootstrap returns cluster_uninitialized (gate closed).
-	// Post-Init: Bootstrap falls through to the embedded
-	// UnimplementedClusterServer and returns Unimplemented.
-	conn, _ := startServerWithDataDir(t, t.TempDir())
+	// Post-Init with the operator token: Bootstrap falls through to the
+	// embedded UnimplementedClusterServer and returns Unimplemented.
+	conn, s := startServerWithDataDir(t, t.TempDir())
 	c := pb.NewClusterClient(conn)
 
 	_, err := c.Bootstrap(context.Background(), &pb.BootstrapRequest{})
@@ -172,11 +199,16 @@ func TestInit_GatedMethodsUnblockedAfterInit(t *testing.T) {
 		t.Errorf("pre-Init Bootstrap code = %v, want Unavailable", st.Code())
 	}
 
-	if _, err := c.Init(context.Background(), &pb.ClusterInitRequest{}); err != nil {
+	initResp, err := c.Init(context.Background(), &pb.ClusterInitRequest{})
+	if err != nil {
 		t.Fatal(err)
 	}
+	// Wait for the post-OpenRaft FSM replay to land the operator token in
+	// state.Tokens before exercising the admission interceptor.
+	waitForOperatorToken(t, s)
 
-	_, err = c.Bootstrap(context.Background(), &pb.BootstrapRequest{})
+	authCtx := withOperatorAuth(context.Background(), initResp.GetOperatorToken())
+	_, err = c.Bootstrap(authCtx, &pb.BootstrapRequest{})
 	if st, _ := status.FromError(err); st.Code() != codes.Unimplemented {
 		t.Errorf("post-Init Bootstrap code = %v, want Unimplemented", st.Code())
 	}

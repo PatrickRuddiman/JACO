@@ -248,8 +248,9 @@ func TestTokensIssueRevoke_PropagatesAcrossNodesWithin5s(t *testing.T) {
 		return ok
 	})
 
-	// Use alice on B — Cluster.Status should succeed.
-	if _, err := c.B.Cluster.Status(authContext(aliceToken), &pb.ClusterStatusRequest{}); err != nil {
+	// Use alice on B — Cluster.NodeList should succeed (NodeList is
+	// authenticated; Status moved to UnauthMethods in iter 14).
+	if _, err := c.B.Cluster.NodeList(authContext(aliceToken), &pb.NodeListRequest{}); err != nil {
 		t.Fatalf("alice's token rejected on B before revocation: %v", err)
 	}
 
@@ -261,7 +262,7 @@ func TestTokensIssueRevoke_PropagatesAcrossNodesWithin5s(t *testing.T) {
 
 	deadline := revokeStart.Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		_, err := c.B.Cluster.Status(authContext(aliceToken), &pb.ClusterStatusRequest{})
+		_, err := c.B.Cluster.NodeList(authContext(aliceToken), &pb.NodeListRequest{})
 		if err != nil {
 			sErr, _ := status.FromError(err)
 			if strings.Contains(sErr.Message(), "token_revoked") {

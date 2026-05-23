@@ -47,7 +47,9 @@ func resolveOnce(t *testing.T, st *state.State, ctx context.Context) (context.Co
 		seen = ctx
 		return "ok", nil
 	}
-	info := &grpc.UnaryServerInfo{FullMethod: "/jaco.v1.Cluster/Status"}
+	// Status is in UnauthMethods; use a non-unauth method so the admission
+	// interceptor actually exercises the bearer-token resolve path.
+	info := &grpc.UnaryServerInfo{FullMethod: "/jaco.v1.Cluster/NodeList"}
 	_, err := admission.UnaryInterceptor(st)(ctx, nil, info, handler)
 	return seen, err
 }

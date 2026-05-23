@@ -200,6 +200,12 @@ func TestJoin_DialsPeerAndPersistsCerts(t *testing.T) {
 }
 
 func TestJoin_RefusesWhenAlreadyInitialized(t *testing.T) {
+	// Post-init, Join goes through the admission interceptor (iter 14).
+	// With no real Init having run, state.Tokens is empty and the lazy
+	// admission returns Unavailable (state_unavailable). The daemon's
+	// own "cluster_already_initialized" refusal lives behind the admin
+	// layer; that path is exercised by TestInit_RefusesWhenAlreadyInitialized
+	// which uses a real operator token.
 	server, c, _ := newDaemon(t)
 	server.Gate().MarkInitialized()
 	_, err := c.Join(context.Background(), &pb.ClusterJoinRequest{
@@ -210,8 +216,8 @@ func TestJoin_RefusesWhenAlreadyInitialized(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	st, _ := status.FromError(err)
-	if st.Code() != codes.FailedPrecondition {
-		t.Errorf("code = %v, want FailedPrecondition", st.Code())
+	if st.Code() != codes.Unavailable {
+		t.Errorf("code = %v, want Unavailable", st.Code())
 	}
 }
 

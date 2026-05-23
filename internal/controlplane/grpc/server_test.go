@@ -98,9 +98,12 @@ func TestServer_ValidTokenAuthenticatedRPCSucceeds(t *testing.T) {
 }
 
 func TestServer_BadTokenSurfacesTokenInvalid(t *testing.T) {
+	// Status is in UnauthMethods (iter 14) so it bypasses the bearer
+	// check. NodeList is operator-authenticated; use that to exercise
+	// the rejection path.
 	client, _, _ := startTestServer(t)
 	ctx := metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer wrong-token")
-	_, err := client.Status(ctx, &pb.ClusterStatusRequest{})
+	_, err := client.NodeList(ctx, &pb.NodeListRequest{})
 	if err == nil {
 		t.Fatalf("expected Unauthenticated error, got nil")
 	}
@@ -125,7 +128,7 @@ func TestServer_BadTokenSurfacesTokenInvalid(t *testing.T) {
 
 func TestServer_NoTokenSurfacesTokenInvalid(t *testing.T) {
 	client, _, _ := startTestServer(t)
-	_, err := client.Status(context.Background(), &pb.ClusterStatusRequest{})
+	_, err := client.NodeList(context.Background(), &pb.NodeListRequest{})
 	if err == nil {
 		t.Fatalf("expected error, got nil")
 	}

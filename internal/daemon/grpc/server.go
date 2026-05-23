@@ -16,8 +16,11 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
+	cpadmission "github.com/PatrickRuddiman/jaco/internal/controlplane/admission"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/fsm"
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
@@ -137,9 +140,47 @@ func New(opts Options) (*Server, error) {
 	}
 
 	gate := admission.New()
+	// stateAccessor returns the current state.State once OpenRaft has
+	// populated it. Captured by lazyUnary / lazyStream below so the
+	// admission interceptor is constructed (and reads the live token
+	// store) on every post-init request.
+	server := &Server{} // forward-declare so the closures capture it
+	stateAccessor := func() *state.State {
+		server.raftMu.RLock()
+		defer server.raftMu.RUnlock()
+		return server.state
+	}
+	lazyUnary := func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		// UnauthMethods (Status, NodeJoin) bypass the bearer check
+		// regardless of whether state is populated — Status doesn't read
+		// state.Tokens and NodeJoin authenticates via the body's
+		// join_token. This keeps Cluster.Status callable even in tests
+		// that flip the gate manually without driving OpenRaft.
+		if cpadmission.UnauthMethods[info.FullMethod] {
+			return handler(ctx, req)
+		}
+		st := stateAccessor()
+		if st == nil {
+			// Defensive: post-init handler ran before state hookup. Should
+			// not happen because OpenRaft populates state before flipping
+			// the gate, but fail closed rather than skipping admission.
+			return nil, errStateUnavailable
+		}
+		return cpadmission.UnaryInterceptor(st)(ctx, req, info, handler)
+	}
+	lazyStream := func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if cpadmission.UnauthMethods[info.FullMethod] {
+			return handler(srv, ss)
+		}
+		st := stateAccessor()
+		if st == nil {
+			return errStateUnavailable
+		}
+		return cpadmission.StreamInterceptor(st)(srv, ss, info, handler)
+	}
 	gs := grpc.NewServer(
-		grpc.UnaryInterceptor(gate.UnaryInterceptor(nil)),
-		grpc.StreamInterceptor(gate.StreamInterceptor(nil)),
+		grpc.UnaryInterceptor(gate.UnaryInterceptor(lazyUnary)),
+		grpc.StreamInterceptor(gate.StreamInterceptor(lazyStream)),
 	)
 
 	logger := opts.Logger
@@ -162,7 +203,7 @@ func New(opts Options) (*Server, error) {
 		tcpAddr = tl.Addr().String()
 	}
 
-	server := &Server{
+	*server = Server{
 		gs:          gs,
 		listener:    lis,
 		tcpListener: tcpLis,
@@ -404,3 +445,9 @@ func (s *Server) SocketPath() string { return s.socketPath }
 // TCPAddr returns the resolved cross-host listener address (after net.Listen
 // substituted any :0 port). Empty when ListenAddr was unset.
 func (s *Server) TCPAddr() string { return s.tcpAddr }
+
+// errStateUnavailable is returned by the lazy admission interceptor when it
+// fires before OpenRaft has populated state. Should be unreachable in
+// practice because the gate doesn't dispatch post-init handlers until
+// MarkInitialized fires (which OpenRaft does after assigning state).
+var errStateUnavailable = status.Error(codes.Unavailable, "state_unavailable: daemon raft state not populated yet")

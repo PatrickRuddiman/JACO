@@ -90,23 +90,27 @@ func TestServer_StatusReflectsMarkInitialized(t *testing.T) {
 	}
 }
 
-func TestServer_AfterInitializedGatedMethodsStillSurfaceUnimplemented(t *testing.T) {
-	// Once the gate is open, non-allow-listed RPCs no longer return
-	// cluster_uninitialized — they fall through to their actual handlers.
-	// Since this iter ships Cluster.{Init,Join} as Unimplemented stubs,
-	// they should now return Unimplemented INSTEAD of cluster_uninitialized.
-	// (Bootstrap will hit the embedded UnimplementedClusterServer.)
+func TestServer_AfterInitializedGatedMethodsHitAdmission(t *testing.T) {
+	// Once the gate is open, non-allow-listed RPCs go through the
+	// admission interceptor wired in iter 14. Without a Bearer token
+	// they're rejected as Unauthenticated rather than reaching the
+	// handler. Tests that need to reach the handler must capture the
+	// operator token from Init and attach it via metadata (see e.g.
+	// TestInit_GatedMethodsUnblockedAfterInit).
 	conn, s := startServer(t)
 	s.Gate().MarkInitialized()
 	c := pb.NewClusterClient(conn)
 
+	// Bootstrap is not in UnauthMethods, so post-init it requires a
+	// Bearer token. With state nil (manual gate flip in this test), the
+	// lazy admission returns state_unavailable.
 	_, err := c.Bootstrap(context.Background(), &pb.BootstrapRequest{})
 	if err == nil {
-		t.Fatalf("Bootstrap unimplemented in this iter")
+		t.Fatalf("post-Init Bootstrap should be rejected (no auth)")
 	}
 	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Errorf("code = %v, want Unimplemented (not Unavailable)", st.Code())
+	if st.Code() != codes.Unavailable {
+		t.Errorf("code = %v, want Unavailable (state_unavailable)", st.Code())
 	}
 }
 
