@@ -56,10 +56,19 @@ func buildConfig(spec compose.ContainerSpec) (*container.Config, *container.Host
 		// when EndpointsConfig has exactly one entry.
 		hostCfg.NetworkMode = container.NetworkMode(spec.Networks[0])
 		netCfg.EndpointsConfig = map[string]*network.EndpointSettings{
-			spec.Networks[0]: {},
+			spec.Networks[0]: {Aliases: serviceAliases(spec)},
 		}
 	}
 	return cfg, hostCfg, netCfg
+}
+
+// serviceAliases are the names Docker's embedded DNS (127.0.0.11) resolves to
+// this container for same-host service discovery (issue #28) — a
+// belt-and-suspenders alongside the per-bridge JACO responder. Empty
+// deployment/service still yields the bare-service alias.
+func serviceAliases(spec compose.ContainerSpec) []string {
+	fqdn := spec.Service + "." + spec.Deployment
+	return []string{spec.Service, fqdn, fqdn + ".jaco.internal"}
 }
 
 func toDockerMounts(in []compose.Mount) []mount.Mount {

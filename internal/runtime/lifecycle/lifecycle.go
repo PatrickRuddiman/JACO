@@ -17,6 +17,7 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/network"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/compose"
@@ -117,7 +118,7 @@ func Start(ctx context.Context, d dockerx.Docker, spec compose.ContainerSpec, ga
 		if i == 0 {
 			continue
 		}
-		if err := d.NetworkConnect(ctx, net, resp.ID, nil); err != nil {
+		if err := d.NetworkConnect(ctx, net, resp.ID, &network.EndpointSettings{Aliases: serviceAliases(spec)}); err != nil {
 			return "", fmt.Errorf("NetworkConnect %s -> %s: %w", net, resp.ID, err)
 		}
 	}
