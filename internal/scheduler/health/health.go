@@ -11,6 +11,7 @@ package health
 import (
 	"context"
 	"strconv"
+	"sync"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -38,11 +39,39 @@ type Restarter struct {
 	brokers *watch.Registry
 	leader  scheduler.LeaderStatus
 	apply   Applier
+
+	readyOnce sync.Once
+	ready     chan struct{}
+
+	handledMu sync.Mutex
+	handled   chan watch.Event[*pb.ReplicaObserved]
 }
 
 // New constructs a Restarter.
 func New(s *state.State, brokers *watch.Registry, leader scheduler.LeaderStatus, apply Applier) *Restarter {
-	return &Restarter{state: s, brokers: brokers, leader: leader, apply: apply}
+	return &Restarter{
+		state:   s,
+		brokers: brokers,
+		leader:  leader,
+		apply:   apply,
+		ready:   make(chan struct{}),
+	}
+}
+
+// Ready returns a channel closed once Run has registered its broker
+// subscription. Callers that publish events immediately after starting Run
+// (notably tests driving the FSM directly) wait on this to avoid racing the
+// subscribe call and dropping events on the floor.
+func (r *Restarter) Ready() <-chan struct{} { return r.ready }
+
+// NotifyHandled installs a channel that receives every event after Handle
+// returns. Used by tests to sync on event consumption without polling state.
+// Passing nil clears the hook. Sends are non-blocking; size the channel for
+// the expected event volume.
+func (r *Restarter) NotifyHandled(ch chan watch.Event[*pb.ReplicaObserved]) {
+	r.handledMu.Lock()
+	r.handled = ch
+	r.handledMu.Unlock()
 }
 
 // Run subscribes to ReplicasObserved and dispatches each event to the
@@ -50,6 +79,7 @@ func New(s *state.State, brokers *watch.Registry, leader scheduler.LeaderStatus,
 func (r *Restarter) Run(ctx context.Context) error {
 	sub := r.brokers.ReplicasObserved.Subscribe()
 	defer sub.Cancel()
+	r.readyOnce.Do(func() { close(r.ready) })
 	for {
 		select {
 		case <-ctx.Done():
@@ -59,7 +89,21 @@ func (r *Restarter) Run(ctx context.Context) error {
 				return nil
 			}
 			r.Handle(ev)
+			r.notifyHandled(ev)
 		}
+	}
+}
+
+func (r *Restarter) notifyHandled(ev watch.Event[*pb.ReplicaObserved]) {
+	r.handledMu.Lock()
+	ch := r.handled
+	r.handledMu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- ev:
+	default:
 	}
 }
 
