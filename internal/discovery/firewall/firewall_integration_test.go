@@ -37,7 +37,7 @@ func TestIntegration_RenderApplySelfTest(t *testing.T) {
 	})
 
 	ruleset := firewall.Render(in)
-	if err := firewall.DefaultApplier().Apply(context.Background(), ruleset); err != nil {
+	if err := firewall.NftApply(context.Background(), ruleset); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
