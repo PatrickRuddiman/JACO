@@ -39,14 +39,16 @@ func nodeIssueJoinTokenCmd() *cobra.Command {
 		server string
 		token  string
 		caCert string
+		showCA bool
 	)
 	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
 	c.Flags().StringVar(&token, "token", "", "operator bearer token (or JACO_TOKEN); required")
 	c.Flags().StringVar(&caCert, "ca-cert", "", "path to cluster CA cert PEM; required")
+	c.Flags().BoolVar(&showCA, "show-ca", false, "append the cluster CA certificate to the output")
 	_ = c.MarkFlagRequired("server")
 	// ca-cert no longer required: v0 uses plaintext TCP
 
-	c.RunE = func(_ *cobra.Command, _ []string) error {
+	c.RunE = func(cmd *cobra.Command, _ []string) error {
 		if token == "" {
 			token = os.Getenv("JACO_TOKEN")
 		}
@@ -65,12 +67,28 @@ func nodeIssueJoinTokenCmd() *cobra.Command {
 		if err != nil {
 			return cliclient.FormatError(err)
 		}
-		fmt.Printf("Join token: %s\n", resp.GetToken())
-		fmt.Printf("Expires in: 24h\n")
-		fmt.Printf("Cluster CA (write to a file on the joining node):\n%s", resp.GetCaCert())
+		fmt.Fprint(cmd.OutOrStdout(), formatIssueJoinToken(server, resp.GetToken(), 24*time.Hour, string(resp.GetCaCert()), showCA))
 		return nil
 	}
 	return c
+}
+
+// formatIssueJoinToken returns the human-readable output for issue-join-token.
+// It is a pure function so it can be unit-tested without a live gRPC server.
+// When showCA is true the cluster CA PEM is appended after the main output.
+func formatIssueJoinToken(server, token string, expires time.Duration, ca string, showCA bool) string {
+	// Format the expiry as a compact human string: whole hours → "24h",
+	// otherwise fall back to the standard Duration.String() representation.
+	expiryStr := expires.String()
+	if h := expires.Hours(); h == float64(int(h)) && h > 0 {
+		expiryStr = fmt.Sprintf("%dh", int(h))
+	}
+	out := fmt.Sprintf("Join token issued. On the joining node, run:\n\n  sudo jaco node join --peer=%s --token=%s\n\nToken expires in %s (single-use).\n",
+		server, token, expiryStr)
+	if showCA && ca != "" {
+		out += fmt.Sprintf("\nCluster CA (write to a file on the joining node):\n%s", ca)
+	}
+	return out
 }
 
 // --- jaco node join ----------------------------------------------------------
