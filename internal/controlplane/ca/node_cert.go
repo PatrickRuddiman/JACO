@@ -12,9 +12,11 @@ import (
 )
 
 // GenerateNodeKeypair returns an Ed25519 private key + a CSR for the given
-// hostname. The CSR's Subject CN and DNS SAN are set to hostname; if hostname
-// parses as an IP, that goes in IPAddresses instead.
-func GenerateNodeKeypair(hostname string) (keyPEM, csrPEM []byte, err error) {
+// hostname. The CSR always carries hostname in DNSNames. Any non-nil IPs in
+// the variadic ips argument are added to IPAddresses (deduped). If hostname
+// itself parses as an IP literal it is also added to IPAddresses so that both
+// dial forms (DNS name and IP address) pass TLS verification.
+func GenerateNodeKeypair(hostname string, ips ...net.IP) (keyPEM, csrPEM []byte, err error) {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate ed25519 key: %w", err)
@@ -27,12 +29,29 @@ func GenerateNodeKeypair(hostname string) (keyPEM, csrPEM []byte, err error) {
 	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 
 	csrTemplate := &x509.CertificateRequest{
-		Subject: pkix.Name{CommonName: hostname},
+		Subject:  pkix.Name{CommonName: hostname},
+		DNSNames: []string{hostname},
+	}
+
+	// Collect IP SANs: explicit caller-supplied IPs first, then the hostname
+	// itself if it parses as an IP literal.
+	seen := make(map[string]bool)
+	for _, ip := range ips {
+		if ip == nil {
+			continue
+		}
+		key := ip.String()
+		if !seen[key] {
+			seen[key] = true
+			csrTemplate.IPAddresses = append(csrTemplate.IPAddresses, ip)
+		}
 	}
 	if ip := net.ParseIP(hostname); ip != nil {
-		csrTemplate.IPAddresses = []net.IP{ip}
-	} else {
-		csrTemplate.DNSNames = []string{hostname}
+		key := ip.String()
+		if !seen[key] {
+			seen[key] = true
+			csrTemplate.IPAddresses = append(csrTemplate.IPAddresses, ip)
+		}
 	}
 
 	csrDER, err := x509.CreateCertificateRequest(rand.Reader, csrTemplate, priv)
