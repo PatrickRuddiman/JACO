@@ -101,12 +101,6 @@ jobs:
   govulncheck:
     name: govulncheck
     runs-on: ubuntu-latest
-    # NOTE: tolerated as a warning (not a gate) while two docker/docker
-    # advisories (GO-2026-4887, GO-2026-4883) carry "Fixed in: N/A" —
-    # no upstream patch exists yet. Flip continue-on-error off once
-    # docker/docker ships fixes, or when we migrate to the v2 client.
-    # Tracked in the issue tracker.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -119,4 +113,39 @@ jobs:
         # requires newer Go version" errors for every file.
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
       - name: govulncheck
-        run: govulncheck ./...
+        run: |
+          set +e
+          out="$(govulncheck ./... 2>&1)"
+          status=$?
+          set -e
+
+          printf '%s\n' "$out"
+
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+
+          mapfile -t found_ids < <(printf '%s\n' "$out" | grep -oE 'GO-[0-9]{4}-[0-9]+' | sort -u)
+          allowed_ids=(GO-2026-4883 GO-2026-4887)
+
+          if [ "${#found_ids[@]}" -eq 0 ]; then
+            echo "govulncheck failed without vulnerability IDs; failing job."
+            exit "$status"
+          fi
+
+          for id in "${found_ids[@]}"; do
+            is_allowed=0
+            for allowed in "${allowed_ids[@]}"; do
+              if [ "$id" = "$allowed" ]; then
+                is_allowed=1
+                break
+              fi
+            done
+            if [ "$is_allowed" -eq 0 ]; then
+              echo "Unexpected vulnerability ID: $id"
+              exit "$status"
+            fi
+          done
+
+          echo "Only allowlisted vulnerabilities detected (${found_ids[*]})."
+          echo "Temporary pass until upstream docker/docker publishes a fixed version."
