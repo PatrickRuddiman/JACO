@@ -62,15 +62,20 @@ func (r *Reconciler) Tick(ctx context.Context) error {
 	}
 
 	expected := r.Render()
-	listBytes, err := r.Lister.List(ctx)
-	if err != nil {
-		// Can't read live state — surface the error but don't flip status yet
-		// (a transient `nft` exec failure shouldn't mark the node down).
-		return fmt.Errorf("nft list: %w", err)
+	listBytes, listErr := r.Lister.List(ctx)
+	// A list error almost always means `table inet jaco` doesn't exist yet —
+	// `nft -j list table inet jaco` errors on a missing table. Treat that as
+	// drift and apply (which creates the table) rather than bailing; otherwise
+	// the table never bootstraps on a fresh host. A genuinely broken `nft`
+	// surfaces below as an Apply failure (→ isolation_unavailable).
+	needApply := listErr != nil
+	var selfErr error
+	if !needApply {
+		selfErr = SelfTestFromJSON(listBytes, expected)
+		needApply = selfErr != nil
 	}
 
-	selfErr := SelfTestFromJSON(listBytes, expected)
-	if selfErr == nil {
+	if !needApply {
 		// Live state matches expected. If we were degraded, signal recovery.
 		if r.degraded {
 			r.degraded = false
@@ -86,8 +91,8 @@ func (r *Reconciler) Tick(ctx context.Context) error {
 		return nil
 	}
 
-	// Mismatch detected — re-render + apply.
-	ruleset := Render(r.Render())
+	// Missing table (bootstrap) or drift — render + apply.
+	ruleset := Render(expected)
 	if applyErr := r.Applier.Apply(ctx, ruleset); applyErr != nil {
 		r.degraded = true
 		_ = r.UpdateStatus(ctx, "isolation_unavailable", applyErr.Error())
@@ -95,7 +100,10 @@ func (r *Reconciler) Tick(ctx context.Context) error {
 	}
 
 	// Apply succeeded. Audit the reconcile with a compact diff summary.
-	summary := summarizeDrift(selfErr)
+	summary := "bootstrap"
+	if selfErr != nil {
+		summary = summarizeDrift(selfErr)
+	}
 	if err := r.Audit(ctx, "ISOLATION_RULESET_RECONCILED", map[string]string{
 		"action":  "applied",
 		"summary": summary,
