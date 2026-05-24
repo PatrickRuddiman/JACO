@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -32,11 +33,10 @@ func logsCmd() *cobra.Command {
 	)
 	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
 	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN)")
-	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
+	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
 	c.Flags().BoolVarP(&follow, "follow", "f", false, "stream new lines as they arrive")
 	c.Flags().StringVar(&since, "since", "5m", "only lines newer than this duration (e.g. 1h, 30m)")
 	_ = c.MarkFlagRequired("server")
-	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, args []string) error {
 		if opToken == "" {
@@ -54,7 +54,11 @@ func logsCmd() *cobra.Command {
 			return err
 		}
 
-		conn, err := dialServer(server, mustReadFile(caCertPath))
+		caCertPEM, err := readCACert(caCertPath)
+		if err != nil {
+			return err
+		}
+		conn, err := dialServer(server, caCertPEM)
 		if err != nil {
 			return err
 		}
@@ -80,7 +84,7 @@ func runLogs(ctx context.Context, client pb.DeployClient, deployment, service st
 		SinceSeconds: sinceSeconds,
 	})
 	if err != nil {
-		return err
+		return cliclient.FormatError(err)
 	}
 	for {
 		ll, err := stream.Recv()
@@ -88,7 +92,7 @@ func runLogs(ctx context.Context, client pb.DeployClient, deployment, service st
 			return nil
 		}
 		if err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 		fmt.Fprintf(out, "[%s@%s] %s\n", ll.GetReplicaId(), ll.GetHost(), ll.GetLine())
 	}
