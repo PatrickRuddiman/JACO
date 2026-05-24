@@ -11,10 +11,12 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net"
 	"strconv"
 	"strings"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	dnet "github.com/docker/docker/api/types/network"
 
@@ -98,20 +100,57 @@ func Ensure(ctx context.Context, d dockerx.Docker, deployment, network, cidr, cl
 	}
 	name := DockerNetworkName(deployment, network)
 
-	// Idempotency: if a network with our name + cluster_id label already
-	// exists, do nothing.
+	// Look up any existing docker network with our name. Issue #42: filter
+	// by NAME, not cluster_id — when raft state is wiped and the cluster is
+	// re-formed in place, the stale bridge's jaco.cluster_id label points at
+	// the OLD cluster, so a cluster_id-scoped filter would miss it and the
+	// follow-up NetworkCreate would fail with "network already exists".
+	// A name match plus a jaco.* label (i.e. JACO-owned by convention) is
+	// the strongest signal we have.
 	args := filters.NewArgs()
-	args.Add("label", "jaco.cluster_id="+clusterID)
-	args.Add("label", "jaco.deployment="+deployment)
-	args.Add("label", "jaco.network="+network)
+	args.Add("name", name)
 	existing, err := d.NetworkList(ctx, dnet.ListOptions{Filters: args})
 	if err != nil {
 		return "", fmt.Errorf("NetworkList: %w", err)
 	}
 	for _, n := range existing {
-		if n.Name == name {
+		if n.Name != name {
+			continue
+		}
+		if !isJACOBridge(n.Labels) {
+			// Same name, but no jaco.* labels — operator-created. Bail
+			// rather than blow away foreign state.
+			return "", fmt.Errorf("Ensure: docker network %s exists but has no jaco.* labels — refusing to reconcile", name)
+		}
+		// Compare the LIVE IPAM subnet against the desired CIDR. Labels
+		// (jaco.subnet) reflect the creation-time CIDR and can diverge in
+		// edge cases — trust NetworkInspect.
+		insp, err := d.NetworkInspect(ctx, n.ID, dnet.InspectOptions{})
+		if err != nil {
+			return "", fmt.Errorf("NetworkInspect %s: %w", n.ID, err)
+		}
+		if liveSubnet(insp) == cidr && insp.Labels["jaco.cluster_id"] == clusterID {
 			return name, nil
 		}
+		// Stop attached containers before recreating — they're about to be
+		// re-scheduled with the new bridge anyway.
+		log.Printf("bridge: %s drift live_subnet=%q desired_subnet=%q live_cluster_id=%q desired_cluster_id=%q — recreating",
+			name, liveSubnet(insp), cidr, insp.Labels["jaco.cluster_id"], clusterID)
+		for cid, ep := range insp.Containers {
+			log.Printf("bridge: %s stop+remove attached container %s (%s) before recreate", name, ep.Name, cid)
+			timeout := 10
+			if err := d.ContainerStop(ctx, cid, container.StopOptions{Timeout: &timeout}); err != nil {
+				// Best-effort; continue to ContainerRemove which forces.
+				log.Printf("bridge: %s ContainerStop %s: %v (continuing)", name, cid, err)
+			}
+			if err := d.ContainerRemove(ctx, cid, container.RemoveOptions{Force: true}); err != nil {
+				return "", fmt.Errorf("ContainerRemove %s (attached to %s): %w", cid, name, err)
+			}
+		}
+		if err := d.NetworkRemove(ctx, n.ID); err != nil {
+			return "", fmt.Errorf("NetworkRemove %s (stale subnet): %w", n.ID, err)
+		}
+		break
 	}
 
 	gw, err := GatewayIP(cidr)
@@ -141,6 +180,24 @@ func Ensure(ctx context.Context, d dockerx.Docker, deployment, network, cidr, cl
 		return "", fmt.Errorf("NetworkCreate %s: %w", name, err)
 	}
 	return name, nil
+}
+
+// liveSubnet returns the first IPAM subnet on the inspected network, or "" when
+// none is configured. The JACO bridge create path sets exactly one Config
+// entry, so the first slot is the canonical live CIDR.
+func liveSubnet(insp dnet.Inspect) string {
+	if len(insp.IPAM.Config) == 0 {
+		return ""
+	}
+	return insp.IPAM.Config[0].Subnet
+}
+
+// isJACOBridge reports whether labels look like a JACO-owned bridge. We only
+// require jaco.deployment + jaco.network: jaco.cluster_id can validly differ
+// (e.g. after raft wipe + re-init the docker network still carries the OLD
+// cluster_id label until Ensure recreates it).
+func isJACOBridge(labels map[string]string) bool {
+	return labels["jaco.deployment"] != "" && labels["jaco.network"] != ""
 }
 
 // Teardown removes the docker network for (deployment, network). No-op when
