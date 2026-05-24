@@ -8,13 +8,17 @@
 //
 // Priority (lowest class wins; alphabetical interface name breaks ties):
 //
-//	1. Tailscale  — name starts with "tailscale", OR IPv4 in 100.64.0.0/10
-//	2. Tunnel/VPN — name starts with "tun", "tap", "wg", "jaco"
-//	3. RFC1918    — 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
-//	4. Public     — any other non-loopback, non-link-local IPv4
+//  1. Tailscale  — name starts with "tailscale", OR IPv4 in 100.64.0.0/10
+//  2. Tunnel/VPN — name starts with "tun", "tap", "wg", "jaco"
+//  3. RFC1918    — 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+//  4. Public     — any other non-loopback, non-link-local IPv4
 //
 // Skipped: loopback (127/8), link-local (169.254/16), multicast,
 // interfaces marked down. IPv6 is out of scope for v0.
+//
+// LocalIPs returns the full set of usable addresses (same exclusions) rather
+// than a single winner — used to populate node-cert IP SANs so a node is
+// reachable by TLS over any of its interface addresses.
 package netdetect
 
 import (
@@ -41,19 +45,21 @@ func PickAdvertiseIP() (net.IP, string, error) {
 	})
 }
 
-// pickFromInterfaces is the testable core: takes an explicit interface
-// list + an addrs-fetcher so unit tests can inject synthetic data.
-//
-// Returns (ip, ifname, err). ifname is the interface the winning IP
-// came from, useful in logs.
-func pickFromInterfaces(ifaces []net.Interface, addrsOf func(net.Interface) ([]net.Addr, error)) (net.IP, string, error) {
-	type candidate struct {
-		class int
-		name  string
-		ip    net.IP
-	}
-	var cands []candidate
+// candidate is one usable interface address along with its priority class
+// and originating interface name.
+type candidate struct {
+	class int
+	name  string
+	ip    net.IP
+}
 
+// collectCandidates walks the interface list and returns every usable IPv4
+// address (one candidate per address) after applying classify()'s exclusions
+// (loopback / link-local / multicast / unspecified / down interfaces / IPv6).
+// Both pickFromInterfaces and localIPsFromInterfaces build on this so the two
+// share identical inclusion rules.
+func collectCandidates(ifaces []net.Interface, addrsOf func(net.Interface) ([]net.Addr, error)) []candidate {
+	var cands []candidate
 	for _, iface := range ifaces {
 		if iface.Flags&net.FlagUp == 0 {
 			continue
@@ -87,6 +93,53 @@ func pickFromInterfaces(ifaces []net.Interface, addrsOf func(net.Interface) ([]n
 			cands = append(cands, candidate{class: c, name: iface.Name, ip: ip})
 		}
 	}
+	return cands
+}
+
+// LocalIPs returns every up, non-loopback, non-link-local IPv4 interface
+// address on this host, deduped. Used to populate node-cert IP SANs so the
+// node is reachable by TLS over any of its interface addresses, not just the
+// single advertise IP PickAdvertiseIP chose. Production entry point; returns
+// nil (no error) when interfaces can't be listed.
+func LocalIPs() []net.IP {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	return localIPsFromInterfaces(ifaces, func(i net.Interface) ([]net.Addr, error) {
+		return i.Addrs()
+	})
+}
+
+// localIPsFromInterfaces is the testable core behind LocalIPs: takes an
+// explicit interface list + an addrs-fetcher so unit tests can inject
+// synthetic data. Returns the deduped set of usable IPv4 addresses, sorted by
+// IP string for determinism.
+func localIPsFromInterfaces(ifaces []net.Interface, addrsOf func(net.Interface) ([]net.Addr, error)) []net.IP {
+	cands := collectCandidates(ifaces, addrsOf)
+	seen := make(map[string]bool, len(cands))
+	var out []net.IP
+	for _, c := range cands {
+		key := c.ip.String()
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, c.ip)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].String() < out[j].String()
+	})
+	return out
+}
+
+// pickFromInterfaces is the testable core: takes an explicit interface
+// list + an addrs-fetcher so unit tests can inject synthetic data.
+//
+// Returns (ip, ifname, err). ifname is the interface the winning IP
+// came from, useful in logs.
+func pickFromInterfaces(ifaces []net.Interface, addrsOf func(net.Interface) ([]net.Addr, error)) (net.IP, string, error) {
+	cands := collectCandidates(ifaces, addrsOf)
 
 	if len(cands) == 0 {
 		return nil, "", ErrNoCandidate
