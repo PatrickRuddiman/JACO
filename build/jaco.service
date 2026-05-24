@@ -21,6 +21,11 @@ ProtectSystem=strict
 ReadWritePaths=/var/lib/jaco /var/run/jaco /run
 RuntimeDirectory=jaco
 RuntimeDirectoryMode=0755
+# Private /tmp so the firewall reconciler's os.CreateTemp("", ...) for nft
+# ruleset files succeeds under ProtectSystem=strict. Without this, every
+# tick logs "open /tmp/jaco-nft-*.nft: read-only file system" and the
+# table inet jaco never gets committed.
+PrivateTmp=yes
 
 # Restart policy.
 Restart=on-failure
