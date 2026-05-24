@@ -37,6 +37,19 @@ type Reconciler struct {
 	UpdateStatus IsolationStatusFn
 	Render       func() RuleInput
 
+	// Pool is the IPAM /16; EnsureSNAT re-asserts the intra-pool SNAT
+	// exemption in Docker's nat POSTROUTING each tick (issue #28). Both are
+	// optional — when either is unset the SNAT step is skipped (tests, or
+	// hosts without iptables).
+	Pool       string
+	EnsureSNAT func(ctx context.Context, pool string) error
+
+	// EnsureOverlay re-asserts the intra-pool ACCEPT exemptions that let
+	// cross-host container traffic past Docker's container-isolation drops
+	// (raw PREROUTING direct-routing + FORWARD inter-network isolation, issue
+	// #28). Optional and Pool-gated, same as EnsureSNAT.
+	EnsureOverlay func(ctx context.Context, pool string) error
+
 	// degraded tracks whether the last Tick saw an Apply failure.
 	degraded bool
 }
@@ -46,11 +59,38 @@ type Reconciler struct {
 // Apply failed (the daemon should already have been marked
 // isolation_unavailable via UpdateStatus).
 func (r *Reconciler) Tick(ctx context.Context) error {
+	// Re-assert the intra-pool SNAT exemption first — it lives in Docker's
+	// nat POSTROUTING (outside table inet jaco / its SelfTest), so it must be
+	// checked every tick. Best-effort: a failure here is independent of the
+	// inet jaco isolation status.
+	if r.EnsureSNAT != nil && r.Pool != "" {
+		if err := r.EnsureSNAT(ctx, r.Pool); err != nil {
+			_ = r.Audit(ctx, "SNAT_EXEMPT_FAILED", map[string]string{"error": err.Error()})
+		}
+	}
+
+	// Re-assert the overlay-isolation exemptions too — same rationale, also in
+	// Docker-owned chains (raw PREROUTING + DOCKER-USER) outside table inet
+	// jaco. Best-effort and independent of the inet jaco isolation status.
+	if r.EnsureOverlay != nil && r.Pool != "" {
+		if err := r.EnsureOverlay(ctx, r.Pool); err != nil {
+			_ = r.Audit(ctx, "OVERLAY_EXEMPT_FAILED", map[string]string{"error": err.Error()})
+		}
+	}
+
 	expected := r.Render()
 	listBytes, err := r.Lister(ctx)
 	if err != nil {
 		// Can't read live state — surface the error but don't flip status yet
 		// (a transient `nft` exec failure shouldn't mark the node down).
+		//
+		// NOTE: `nft -j list table inet jaco` also errors when the table is
+		// absent, so the isolation table does not auto-bootstrap here. That's
+		// intentional for now: the rendered `input` chain (policy drop) does
+		// not yet permit SSH or the Tailscale interface, so applying it on a
+		// remotely-managed host would lock the operator out. Enabling the
+		// table safely (SSH/Tailscale allow + correct WG iface name) is a
+		// separate change tracked outside issue #28.
 		return fmt.Errorf("nft list: %w", err)
 	}
 

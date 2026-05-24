@@ -158,12 +158,34 @@ func TestManager_ReconcileSubnets_BadCIDRSkipped(t *testing.T) {
 		Logger:    log.New(&logBuf, "", 0),
 		listeners: map[string]*listenerEntry{},
 	}
-	m.reconcileSubnets()
+	m.reconcileSubnets(context.Background())
 	if len(m.listeners) != 0 {
 		t.Errorf("bad-CIDR subnet created listener; len = %d", len(m.listeners))
 	}
 	if !bytes.Contains(logBuf.Bytes(), []byte("bad CIDR")) {
 		t.Errorf("expected bad-CIDR log; got %q", logBuf.String())
+	}
+}
+
+// TestManager_ReconcileSubnets_SkipsNonLocalHostSubnet — with per-host /24s
+// (issue #28) a subnet allocated to a DIFFERENT host must NOT get a local
+// responder (its gateway isn't on this host → bind would fail). Only the
+// local host's bridge gateway is bound.
+func TestManager_ReconcileSubnets_SkipsNonLocalHostSubnet(t *testing.T) {
+	st := state.New(watch.NewRegistry())
+	st.Subnets.Apply(&pb.Subnet{Deployment: "app", Network: "frontend", Cidr: "10.244.9.0/24", Host: "host-b"}, 1)
+	m := &Manager{
+		State:     st,
+		Brokers:   watch.NewRegistry(),
+		Logger:    log.New(&bytes.Buffer{}, "", 0),
+		Hostname:  "host-a",
+		listeners: map[string]*listenerEntry{},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.reconcileSubnets(ctx)
+	if len(m.listeners) != 0 {
+		t.Errorf("non-local-host subnet created a listener; want 0, got %d", len(m.listeners))
 	}
 }
 
@@ -185,8 +207,9 @@ func TestManager_ReconcileSubnets_RemovesStaleListeners(t *testing.T) {
 		responder: New(Scope{Deployment: "dead", Network: "net"}, ServiceMap{}, nil),
 		udp:       &mdns.Server{Addr: "127.0.0.1:0", Net: "udp"},
 		tcp:       &mdns.Server{Addr: "127.0.0.1:0", Net: "tcp"},
+		done:      make(chan struct{}),
 	}
-	m.reconcileSubnets()
+	m.reconcileSubnets(context.Background())
 	if _, still := m.listeners["dead/net"]; still {
 		t.Errorf("stale listener not removed")
 	}
@@ -223,7 +246,7 @@ func TestManager_RefreshServiceMaps_FiltersOnHealthAndState(t *testing.T) {
 		Id:           "r1",
 		State:        pb.ReplicaState_REPLICA_STATE_RUNNING,
 		LastHealthAt: timestamppb.New(now),
-		Details:      map[string]string{"ip": "10.42.0.5"},
+		Details:      map[string]string{"ip.jaco_app_frontend": "10.42.0.5"},
 	}, 5)
 	st.ReplicasObserved.Apply(&pb.ReplicaObserved{
 		Id:           "r2",
@@ -274,7 +297,7 @@ func TestManager_RefreshServiceMaps_SkipsMalformedIPAndMissingReplicaDesired(t *
 	now := time.Now()
 
 	st.Deployments.Apply(&pb.Deployment{
-		Name: "app",
+		Name:     "app",
 		Services: []*pb.ServiceSpec{{Name: "web", Networks: []string{"frontend"}}},
 	}, 1)
 	st.ReplicasDesired.Apply(&pb.ReplicaDesired{
@@ -286,7 +309,7 @@ func TestManager_RefreshServiceMaps_SkipsMalformedIPAndMissingReplicaDesired(t *
 		Id:           "r-known",
 		State:        pb.ReplicaState_REPLICA_STATE_RUNNING,
 		LastHealthAt: timestamppb.New(now),
-		Details:      map[string]string{"ip": "not-an-ip"},
+		Details:      map[string]string{"ip.jaco_app_frontend": "not-an-ip"},
 	}, 3)
 	// r-orphan has no ReplicasDesired entry → skipped.
 	st.ReplicasObserved.Apply(&pb.ReplicaObserved{
@@ -336,6 +359,53 @@ func TestManager_RefreshServiceMaps_ListenerWithoutMatchingScopeClearsServices(t
 	}
 }
 
+// TestManager_RefreshServiceMaps_PrefersLocalReplica — when a healthy replica
+// of a service runs on this host, only its local IP is served (issue #28
+// locality preference); the remote replica's IP is dropped to avoid the
+// cross-host trombone. When no local replica exists, all IPs are served.
+func TestManager_RefreshServiceMaps_PrefersLocalReplica(t *testing.T) {
+	st := state.New(watch.NewRegistry())
+	now := time.Now()
+	st.Deployments.Apply(&pb.Deployment{
+		Name:     "app",
+		Services: []*pb.ServiceSpec{{Name: "web", Networks: []string{"frontend"}}},
+	}, 1)
+	// local replica on host-a, remote on host-b.
+	st.ReplicasDesired.Apply(&pb.ReplicaDesired{Id: "loc", Deployment: "app", Service: "web", Host: "host-a"}, 2)
+	st.ReplicasDesired.Apply(&pb.ReplicaDesired{Id: "rem", Deployment: "app", Service: "web", Host: "host-b"}, 3)
+	st.ReplicasObserved.Apply(&pb.ReplicaObserved{
+		Id: "loc", State: pb.ReplicaState_REPLICA_STATE_RUNNING, Host: "host-a",
+		LastHealthAt: timestamppb.New(now), Details: map[string]string{"ip.jaco_app_frontend": "10.244.5.2"},
+	}, 4)
+	st.ReplicasObserved.Apply(&pb.ReplicaObserved{
+		Id: "rem", State: pb.ReplicaState_REPLICA_STATE_RUNNING, Host: "host-b",
+		LastHealthAt: timestamppb.New(now), Details: map[string]string{"ip.jaco_app_frontend": "10.244.6.2"},
+	}, 5)
+
+	resp := New(Scope{Deployment: "app", Network: "frontend"}, ServiceMap{}, nil)
+	m := &Manager{
+		State:    st,
+		Brokers:  watch.NewRegistry(),
+		Logger:   log.New(&bytes.Buffer{}, "", 0),
+		Hostname: "host-a",
+		listeners: map[string]*listenerEntry{
+			"app/frontend": {responder: resp, udp: &mdns.Server{}, tcp: &mdns.Server{}},
+		},
+	}
+	m.refreshServiceMaps()
+	ips := resp.Services()["web"]
+	if len(ips) != 1 || ips[0].String() != "10.244.5.2" {
+		t.Fatalf("with a local replica, want only [10.244.5.2]; got %v", ips)
+	}
+
+	// Now drop the local replica's host match: rename self so neither is local.
+	m.Hostname = "host-c"
+	m.refreshServiceMaps()
+	if got := len(resp.Services()["web"]); got != 2 {
+		t.Errorf("with no local replica, want both IPs; got %d", got)
+	}
+}
+
 // TestManager_RunReturnsOnCtxCancel — Run blocks until ctx.Done; the
 // subscriptions are registered and then drained. Drives the Run
 // goroutine briefly and confirms it exits cleanly.
@@ -371,11 +441,11 @@ type fakeRespWriter struct {
 	wroteMsg bool
 }
 
-func (f *fakeRespWriter) LocalAddr() net.Addr         { return &net.UDPAddr{} }
-func (f *fakeRespWriter) RemoteAddr() net.Addr        { return &net.UDPAddr{} }
-func (f *fakeRespWriter) WriteMsg(*mdns.Msg) error    { f.wroteMsg = true; return nil }
-func (f *fakeRespWriter) Write([]byte) (int, error)   { return 0, nil }
-func (f *fakeRespWriter) Close() error                { return nil }
-func (f *fakeRespWriter) TsigStatus() error           { return nil }
-func (f *fakeRespWriter) TsigTimersOnly(bool)         {}
-func (f *fakeRespWriter) Hijack()                     {}
+func (f *fakeRespWriter) LocalAddr() net.Addr       { return &net.UDPAddr{} }
+func (f *fakeRespWriter) RemoteAddr() net.Addr      { return &net.UDPAddr{} }
+func (f *fakeRespWriter) WriteMsg(*mdns.Msg) error  { f.wroteMsg = true; return nil }
+func (f *fakeRespWriter) Write([]byte) (int, error) { return 0, nil }
+func (f *fakeRespWriter) Close() error              { return nil }
+func (f *fakeRespWriter) TsigStatus() error         { return nil }
+func (f *fakeRespWriter) TsigTimersOnly(bool)       {}
+func (f *fakeRespWriter) Hijack()                   {}

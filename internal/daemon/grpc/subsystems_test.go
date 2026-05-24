@@ -273,6 +273,14 @@ func (f *fakeDocker) NetworkConnect(_ context.Context, _, _ string, _ *network.E
 	return nil
 }
 
+func (f *fakeDocker) NetworkList(_ context.Context, _ network.ListOptions) ([]network.Summary, error) {
+	return nil, nil
+}
+
+func (f *fakeDocker) NetworkCreate(_ context.Context, _ string, _ network.CreateOptions) (network.CreateResponse, error) {
+	return network.CreateResponse{}, nil
+}
+
 func (f *fakeDocker) ContainerInspect(_ context.Context, id string) (types.ContainerJSON, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

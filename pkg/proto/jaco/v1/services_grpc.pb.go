@@ -1115,6 +1115,7 @@ const (
 	Internal_Submit_FullMethodName       = "/jaco.v1.Internal/Submit"
 	Internal_SignNodeCert_FullMethodName = "/jaco.v1.Internal/SignNodeCert"
 	Internal_Logs_FullMethodName         = "/jaco.v1.Internal/Logs"
+	Internal_EnsureSubnet_FullMethodName = "/jaco.v1.Internal/EnsureSubnet"
 )
 
 // InternalClient is the client API for Internal service.
@@ -1124,6 +1125,7 @@ type InternalClient interface {
 	Submit(ctx context.Context, in *SubmitRequest, opts ...grpc.CallOption) (*SubmitResponse, error)
 	SignNodeCert(ctx context.Context, in *SignNodeCertRequest, opts ...grpc.CallOption) (*SignNodeCertResponse, error)
 	Logs(ctx context.Context, in *LogsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LogLine], error)
+	EnsureSubnet(ctx context.Context, in *EnsureSubnetRequest, opts ...grpc.CallOption) (*EnsureSubnetResponse, error)
 }
 
 type internalClient struct {
@@ -1173,6 +1175,16 @@ func (c *internalClient) Logs(ctx context.Context, in *LogsRequest, opts ...grpc
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Internal_LogsClient = grpc.ServerStreamingClient[LogLine]
 
+func (c *internalClient) EnsureSubnet(ctx context.Context, in *EnsureSubnetRequest, opts ...grpc.CallOption) (*EnsureSubnetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EnsureSubnetResponse)
+	err := c.cc.Invoke(ctx, Internal_EnsureSubnet_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // InternalServer is the server API for Internal service.
 // All implementations must embed UnimplementedInternalServer
 // for forward compatibility.
@@ -1180,6 +1192,7 @@ type InternalServer interface {
 	Submit(context.Context, *SubmitRequest) (*SubmitResponse, error)
 	SignNodeCert(context.Context, *SignNodeCertRequest) (*SignNodeCertResponse, error)
 	Logs(*LogsRequest, grpc.ServerStreamingServer[LogLine]) error
+	EnsureSubnet(context.Context, *EnsureSubnetRequest) (*EnsureSubnetResponse, error)
 	mustEmbedUnimplementedInternalServer()
 }
 
@@ -1198,6 +1211,9 @@ func (UnimplementedInternalServer) SignNodeCert(context.Context, *SignNodeCertRe
 }
 func (UnimplementedInternalServer) Logs(*LogsRequest, grpc.ServerStreamingServer[LogLine]) error {
 	return status.Error(codes.Unimplemented, "method Logs not implemented")
+}
+func (UnimplementedInternalServer) EnsureSubnet(context.Context, *EnsureSubnetRequest) (*EnsureSubnetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EnsureSubnet not implemented")
 }
 func (UnimplementedInternalServer) mustEmbedUnimplementedInternalServer() {}
 func (UnimplementedInternalServer) testEmbeddedByValue()                  {}
@@ -1267,6 +1283,24 @@ func _Internal_Logs_Handler(srv interface{}, stream grpc.ServerStream) error {
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Internal_LogsServer = grpc.ServerStreamingServer[LogLine]
 
+func _Internal_EnsureSubnet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EnsureSubnetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InternalServer).EnsureSubnet(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Internal_EnsureSubnet_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InternalServer).EnsureSubnet(ctx, req.(*EnsureSubnetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Internal_ServiceDesc is the grpc.ServiceDesc for Internal service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1281,6 +1315,10 @@ var Internal_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SignNodeCert",
 			Handler:    _Internal_SignNodeCert_Handler,
+		},
+		{
+			MethodName: "EnsureSubnet",
+			Handler:    _Internal_EnsureSubnet_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

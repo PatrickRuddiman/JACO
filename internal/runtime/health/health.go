@@ -57,9 +57,9 @@ type replicaWatcher struct {
 	cancel         context.CancelFunc
 
 	// loop-owned state
-	lastState         pb.ReplicaState
+	lastState          pb.ReplicaState
 	consecutiveRunning int
-	startedAt         time.Time
+	startedAt          time.Time
 }
 
 // NewWatcher constructs a Watcher. now / after may both be nil to use the
@@ -189,7 +189,24 @@ func (w *Watcher) poll(ctx context.Context, rw *replicaWatcher) *pb.ReplicaObser
 		obs.StartedAt = timestamppb.New(rw.startedAt)
 	}
 	if exitCode != 0 {
-		obs.Details = map[string]string{"exit_code": strconv.Itoa(exitCode)}
+		if obs.Details == nil {
+			obs.Details = map[string]string{}
+		}
+		obs.Details["exit_code"] = strconv.Itoa(exitCode)
+	}
+	// Per-network container IPs (issue #28): the DNS responder reads
+	// Details["ip.<dockerNetwork>"] to answer service names with the right
+	// per-host IP. NetworkSettings.Networks is keyed by docker network name.
+	if info.NetworkSettings != nil {
+		for netName, ep := range info.NetworkSettings.Networks {
+			if ep == nil || ep.IPAddress == "" {
+				continue
+			}
+			if obs.Details == nil {
+				obs.Details = map[string]string{}
+			}
+			obs.Details["ip."+netName] = ep.IPAddress
+		}
 	}
 	return obs
 }

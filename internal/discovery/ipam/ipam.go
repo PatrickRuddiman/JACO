@@ -14,6 +14,7 @@ import (
 	"net"
 	"sort"
 	"strings"
+	"sync"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -52,6 +53,10 @@ type IPAM struct {
 	state *state.State
 	apply Applier
 	pool  *net.IPNet
+
+	// mu serializes the read-nextFree-apply sequence so concurrent
+	// EnsureSubnet calls on the leader can't pick the same /24.
+	mu sync.Mutex
 }
 
 // New constructs an IPAM allocator. poolCIDR must be a /16; pass
@@ -71,14 +76,20 @@ func New(s *state.State, apply Applier, poolCIDR string) (*IPAM, error) {
 	return &IPAM{state: s, apply: apply, pool: pool}, nil
 }
 
-// Allocate idempotently assigns a /24 to (deployment, network). Returns the
-// pre-existing Subnet when one's already on file; otherwise picks the next
-// free /24 inside the pool and raft-Applies SubnetAllocate.
-func (i *IPAM) Allocate(deployment, network string) (*pb.Subnet, error) {
-	if deployment == "" || network == "" {
-		return nil, fmt.Errorf("Allocate: deployment + network are required")
+// Allocate idempotently assigns a /24 to (deployment, network, host).
+// Returns the pre-existing Subnet when one's already on file; otherwise picks
+// the next free /24 inside the pool and raft-Applies SubnetAllocate. The
+// read-nextFree-apply sequence is serialized by i.mu so concurrent callers on
+// the leader never pick the same /24.
+func (i *IPAM) Allocate(deployment, network, host string) (*pb.Subnet, error) {
+	if deployment == "" || network == "" || host == "" {
+		return nil, fmt.Errorf("Allocate: deployment + network + host are required")
 	}
-	if existing, ok := i.state.Subnets.Get(state.SubnetKey(deployment, network)); ok {
+
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	if existing, ok := i.state.Subnets.Get(state.SubnetKey(deployment, network, host)); ok {
 		return existing, nil
 	}
 
@@ -94,6 +105,7 @@ func (i *IPAM) Allocate(deployment, network string) (*pb.Subnet, error) {
 			Deployment: deployment,
 			Network:    network,
 			Cidr:       cidr,
+			Host:       host,
 		}},
 	}
 	data, err := proto.Marshal(cmd)
@@ -104,16 +116,16 @@ func (i *IPAM) Allocate(deployment, network string) (*pb.Subnet, error) {
 		return nil, fmt.Errorf("raft apply: %w", err)
 	}
 
-	allocated, _ := i.state.Subnets.Get(state.SubnetKey(deployment, network))
+	allocated, _ := i.state.Subnets.Get(state.SubnetKey(deployment, network, host))
 	return allocated, nil
 }
 
-// Free releases the /24 owned by (deployment, network). No-op on missing.
-func (i *IPAM) Free(deployment, network string) error {
-	if deployment == "" || network == "" {
-		return fmt.Errorf("Free: deployment + network are required")
+// Free releases the /24 owned by (deployment, network, host). No-op on missing.
+func (i *IPAM) Free(deployment, network, host string) error {
+	if deployment == "" || network == "" || host == "" {
+		return fmt.Errorf("Free: deployment + network + host are required")
 	}
-	if _, ok := i.state.Subnets.Get(state.SubnetKey(deployment, network)); !ok {
+	if _, ok := i.state.Subnets.Get(state.SubnetKey(deployment, network, host)); !ok {
 		return nil
 	}
 	cmd := &pb.Command{
@@ -122,6 +134,7 @@ func (i *IPAM) Free(deployment, network string) error {
 		Payload: &pb.Command_SubnetFree{SubnetFree: &pb.SubnetFree{
 			Deployment: deployment,
 			Network:    network,
+			Host:       host,
 		}},
 	}
 	data, err := proto.Marshal(cmd)
@@ -129,22 +142,6 @@ func (i *IPAM) Free(deployment, network string) error {
 		return err
 	}
 	return i.apply(data)
-}
-
-// EnsureSubnets idempotently allocates one /24 per network for the
-// deployment. Returns the full Subnet list in input order so the caller
-// (Deploy.Apply) can stamp them onto downstream entities before writing the
-// Deployment.
-func (i *IPAM) EnsureSubnets(deployment string, networks []string) ([]*pb.Subnet, error) {
-	out := make([]*pb.Subnet, 0, len(networks))
-	for _, n := range networks {
-		s, err := i.Allocate(deployment, n)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, s)
-	}
-	return out, nil
 }
 
 // nextFree returns the next unused /24 inside the pool. Walks the existing

@@ -46,11 +46,11 @@ func TestNew_RejectsNon16Pool(t *testing.T) {
 
 func TestAllocate_ReturnsExistingForSameKey(t *testing.T) {
 	i, _ := newHarness(t)
-	first, err := i.Allocate("sample", "frontend")
+	first, err := i.Allocate("sample", "frontend", "host-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := i.Allocate("sample", "frontend")
+	second, err := i.Allocate("sample", "frontend", "host-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,12 +59,39 @@ func TestAllocate_ReturnsExistingForSameKey(t *testing.T) {
 	}
 }
 
+// Two hosts of the same (deployment, network) must get distinct /24s — this is
+// the core of the issue #28 fix.
+func TestAllocate_PerHostSubnetsAreDistinct(t *testing.T) {
+	i, st := newHarness(t)
+	a, err := i.Allocate("sample", "frontend", "host-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := i.Allocate("sample", "frontend", "host-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.GetCidr() == b.GetCidr() {
+		t.Fatalf("hosts collided on %s", a.GetCidr())
+	}
+	if a.GetHost() != "host-a" || b.GetHost() != "host-b" {
+		t.Errorf("host not stamped: %q / %q", a.GetHost(), b.GetHost())
+	}
+	// Both keys coexist in state.
+	if _, ok := st.Subnets.Get(state.SubnetKey("sample", "frontend", "host-a")); !ok {
+		t.Error("host-a subnet missing from state")
+	}
+	if _, ok := st.Subnets.Get(state.SubnetKey("sample", "frontend", "host-b")); !ok {
+		t.Error("host-b subnet missing from state")
+	}
+}
+
 func TestAllocate_HundredAllocationsAreUnique(t *testing.T) {
 	i, _ := newHarness(t)
 	seen := make(map[string]string)
 	for n := 0; n < 100; n++ {
 		dep := fmt.Sprintf("dep-%d", n)
-		s, err := i.Allocate(dep, "default")
+		s, err := i.Allocate(dep, "default", "host-a")
 		if err != nil {
 			t.Fatalf("alloc %d: %v", n, err)
 		}
@@ -84,12 +111,12 @@ func TestAllocate_PoolExhaustionReturnsTypedError(t *testing.T) {
 	// Fill all 256 /24 slots.
 	for n := 0; n < 256; n++ {
 		dep := fmt.Sprintf("dep-%d", n)
-		if _, err := i.Allocate(dep, "default"); err != nil {
+		if _, err := i.Allocate(dep, "default", "host-a"); err != nil {
 			t.Fatalf("alloc %d: %v", n, err)
 		}
 	}
 	// The 257th request must fail with ipam_pool_exhausted.
-	_, err := i.Allocate("overflow", "default")
+	_, err := i.Allocate("overflow", "default", "host-a")
 	if err == nil {
 		t.Fatal("expected ipam_pool_exhausted error")
 	}
@@ -102,22 +129,22 @@ func TestFree_ReleasesSlotForReuse(t *testing.T) {
 	i, _ := newHarness(t)
 
 	// Fill the first three slots.
-	a, _ := i.Allocate("a", "default") // expected 10.244.0.0/24
-	b, _ := i.Allocate("b", "default") // expected 10.244.1.0/24
-	c, _ := i.Allocate("c", "default") // expected 10.244.2.0/24
+	a, _ := i.Allocate("a", "default", "host-a") // expected 10.244.0.0/24
+	b, _ := i.Allocate("b", "default", "host-a") // expected 10.244.1.0/24
+	c, _ := i.Allocate("c", "default", "host-a") // expected 10.244.2.0/24
 
 	if a.GetCidr() == "" || b.GetCidr() == "" || c.GetCidr() == "" {
 		t.Fatalf("missing cidrs: %v %v %v", a, b, c)
 	}
 
 	// Free the middle slot.
-	if err := i.Free("b", "default"); err != nil {
+	if err := i.Free("b", "default", "host-a"); err != nil {
 		t.Fatalf("Free: %v", err)
 	}
 
 	// Next allocation lands on the freed slot (the lowest-numbered free
 	// /24 is now b's old CIDR).
-	d, _ := i.Allocate("d", "default")
+	d, _ := i.Allocate("d", "default", "host-a")
 	if d.GetCidr() != b.GetCidr() {
 		t.Errorf("new alloc CIDR = %s, want freed %s", d.GetCidr(), b.GetCidr())
 	}
@@ -125,67 +152,38 @@ func TestFree_ReleasesSlotForReuse(t *testing.T) {
 
 func TestFree_NoOpWhenMissing(t *testing.T) {
 	i, _ := newHarness(t)
-	if err := i.Free("ghost", "default"); err != nil {
+	if err := i.Free("ghost", "default", "host-a"); err != nil {
 		t.Errorf("Free on missing should no-op; got %v", err)
-	}
-}
-
-func TestEnsureSubnets_AllocatesAllNetworks(t *testing.T) {
-	i, _ := newHarness(t)
-	out, err := i.EnsureSubnets("sample", []string{"frontend", "backend", "metrics"})
-	if err != nil {
-		t.Fatalf("EnsureSubnets: %v", err)
-	}
-	if len(out) != 3 {
-		t.Fatalf("got %d subnets, want 3", len(out))
-	}
-	seen := map[string]bool{}
-	for _, s := range out {
-		if seen[s.GetCidr()] {
-			t.Errorf("duplicate cidr in EnsureSubnets output: %s", s.GetCidr())
-		}
-		seen[s.GetCidr()] = true
-	}
-}
-
-func TestEnsureSubnets_IdempotentReturnsSameCIDRs(t *testing.T) {
-	i, _ := newHarness(t)
-	first, _ := i.EnsureSubnets("sample", []string{"frontend", "backend"})
-	second, _ := i.EnsureSubnets("sample", []string{"frontend", "backend"})
-	if len(first) != len(second) {
-		t.Fatalf("len: first=%d second=%d", len(first), len(second))
-	}
-	for idx := range first {
-		if first[idx].GetCidr() != second[idx].GetCidr() {
-			t.Errorf("idx %d cidr drift: %s -> %s", idx, first[idx].GetCidr(), second[idx].GetCidr())
-		}
 	}
 }
 
 func TestAllocate_RejectsEmptyArgs(t *testing.T) {
 	i, _ := newHarness(t)
-	if _, err := i.Allocate("", "default"); err == nil {
+	if _, err := i.Allocate("", "default", "host-a"); err == nil {
 		t.Errorf("empty deployment accepted")
 	}
-	if _, err := i.Allocate("sample", ""); err == nil {
+	if _, err := i.Allocate("sample", "", "host-a"); err == nil {
 		t.Errorf("empty network accepted")
+	}
+	if _, err := i.Allocate("sample", "default", ""); err == nil {
+		t.Errorf("empty host accepted")
 	}
 }
 
 func TestAllocate_WritesPersistedSubnet(t *testing.T) {
 	i, st := newHarness(t)
-	s, err := i.Allocate("sample", "frontend")
+	s, err := i.Allocate("sample", "frontend", "host-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	stored, ok := st.Subnets.Get(state.SubnetKey("sample", "frontend"))
+	stored, ok := st.Subnets.Get(state.SubnetKey("sample", "frontend", "host-a"))
 	if !ok {
 		t.Fatalf("Subnet not persisted to state")
 	}
 	if stored.GetCidr() != s.GetCidr() {
 		t.Errorf("returned %s but state has %s", s.GetCidr(), stored.GetCidr())
 	}
-	if stored.GetDeployment() != "sample" || stored.GetNetwork() != "frontend" {
+	if stored.GetDeployment() != "sample" || stored.GetNetwork() != "frontend" || stored.GetHost() != "host-a" {
 		t.Errorf("scope wrong: %+v", stored)
 	}
 }

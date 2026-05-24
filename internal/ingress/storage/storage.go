@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"sort"
 	"strings"
 	"sync"
@@ -291,8 +292,9 @@ func (s *JacoStorage) Stat(_ context.Context, key string) (KeyInfo, error) {
 	}, nil
 }
 
-// ErrNotExist matches certmagic's expected sentinel for missing keys.
-// certmagic uses errors.Is(err, fs.ErrNotExist); the os/fs package's
-// ErrNotExist is the right wrap target, but we name our sentinel
-// independently so consumers can match either.
-var ErrNotExist = errors.New("key does not exist")
+// ErrNotExist is the sentinel Load/Stat return for missing keys. certmagic
+// decides "no such cert/key yet" via errors.Is(err, fs.ErrNotExist), so it
+// MUST wrap fs.ErrNotExist — otherwise certmagic treats a missing blob as a
+// hard error and ACME issuance/loading breaks. errors.New (no wrap) was the
+// latent bug; %w fixes matching while keeping a JACO-specific message.
+var ErrNotExist = fmt.Errorf("key does not exist: %w", fs.ErrNotExist)

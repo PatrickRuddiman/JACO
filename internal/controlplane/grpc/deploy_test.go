@@ -8,6 +8,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -99,10 +100,10 @@ func TestDeploy_ApplyWritesDeploymentAndRoutes(t *testing.T) {
 	if got := c.A.State.Routes.Len(); got != 2 {
 		t.Errorf("Routes.Len = %d, want 2", got)
 	}
-	if r, ok := c.A.State.Routes.Get("web.example.com"); !ok || r.GetTlsAuto() != true {
+	if r, ok := c.A.State.Routes.Get(state.RouteKey("web.example.com", "")); !ok || r.GetTlsAuto() != true {
 		t.Errorf("web.example.com route missing or tls_auto wrong: %+v", r)
 	}
-	if r, ok := c.A.State.Routes.Get("api.example.com"); !ok || r.GetTlsAuto() {
+	if r, ok := c.A.State.Routes.Get(state.RouteKey("api.example.com", "")); !ok || r.GetTlsAuto() {
 		t.Errorf("api.example.com route missing or tls_auto wrong: %+v", r)
 	}
 }

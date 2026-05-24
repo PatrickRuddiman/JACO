@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"google.golang.org/grpc/codes"
@@ -13,7 +12,6 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/admission"
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
-	"github.com/PatrickRuddiman/jaco/internal/discovery/ipam"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/compose"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
@@ -34,27 +32,6 @@ func ValidateDeploymentName(name string) error {
 		return errorStatus(codes.InvalidArgument, "validation_failed", "deployment is required")
 	}
 	return nil
-}
-
-// enumerateNetworks returns the union of network names declared across
-// services. Empty services (no network field) get a "_default" entry so
-// the daemon's discovery layer still allocates a subnet for them.
-func enumerateNetworks(services []JacoServiceDecl) []string {
-	seen := map[string]bool{}
-	for _, s := range services {
-		if len(s.Networks) == 0 {
-			seen["_default"] = true
-			continue
-		}
-		for _, n := range s.Networks {
-			seen[n] = true
-		}
-	}
-	out := make([]string, 0, len(seen))
-	for n := range seen {
-		out = append(out, n)
-	}
-	return out
 }
 
 // Apply parses + validates the jaco.yaml + compose.yaml, then either returns
@@ -106,22 +83,10 @@ func (d *deployServer) Apply(ctx context.Context, req *pb.ApplyRequest) (*pb.App
 		}, nil
 	}
 
-	// Enumerate the union of networks declared across services and
-	// EnsureSubnets for each so discovery watchers see them before
-	// containers attach (task 25 deferral). Defaults to "_default" when
-	// no service declared a network.
-	networks := enumerateNetworks(jacoSpec.Services)
-	if len(networks) > 0 {
-		ipamer, err := ipam.New(d.state, func(b []byte) error {
-			_, err := d.raft.Apply(b, 5*time.Second)
-			return err
-		}, ipam.DefaultPoolCIDR)
-		if err == nil {
-			if _, err := ipamer.EnsureSubnets(jacoSpec.Deployment, networks); err != nil {
-				return nil, errorStatus(codes.Internal, "subnet_allocate_failed", err.Error())
-			}
-		}
-	}
+	// Subnet allocation is no longer done at apply time: with per-host /24s
+	// (issue #28) the leader can't pick a host until the scheduler places a
+	// replica, so the runtime reconciler allocates lazily via
+	// Internal.EnsureSubnet on first placement.
 
 	cmd := &pb.Command{
 		Identity: admission.IdentityFromContext(ctx),
@@ -276,4 +241,3 @@ type ValidationError struct {
 }
 
 func (e *ValidationError) Error() string { return e.Message }
-

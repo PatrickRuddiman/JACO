@@ -2008,6 +2008,7 @@ type SubnetAllocate struct {
 	Deployment    string                 `protobuf:"bytes,1,opt,name=deployment,proto3" json:"deployment,omitempty"`
 	Network       string                 `protobuf:"bytes,2,opt,name=network,proto3" json:"network,omitempty"`
 	Cidr          string                 `protobuf:"bytes,3,opt,name=cidr,proto3" json:"cidr,omitempty"`
+	Host          string                 `protobuf:"bytes,4,opt,name=host,proto3" json:"host,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2063,10 +2064,18 @@ func (x *SubnetAllocate) GetCidr() string {
 	return ""
 }
 
+func (x *SubnetAllocate) GetHost() string {
+	if x != nil {
+		return x.Host
+	}
+	return ""
+}
+
 type SubnetFree struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Deployment    string                 `protobuf:"bytes,1,opt,name=deployment,proto3" json:"deployment,omitempty"`
 	Network       string                 `protobuf:"bytes,2,opt,name=network,proto3" json:"network,omitempty"`
+	Host          string                 `protobuf:"bytes,3,opt,name=host,proto3" json:"host,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2111,6 +2120,13 @@ func (x *SubnetFree) GetDeployment() string {
 func (x *SubnetFree) GetNetwork() string {
 	if x != nil {
 		return x.Network
+	}
+	return ""
+}
+
+func (x *SubnetFree) GetHost() string {
+	if x != nil {
+		return x.Host
 	}
 	return ""
 }
@@ -2505,19 +2521,21 @@ const file_jaco_v1_commands_proto_rawDesc = "" +
 	"\x0eCertBlobUpsert\x12%\n" +
 	"\x04blob\x18\x01 \x01(\v2\x11.jaco.v1.CertBlobR\x04blob\"\"\n" +
 	"\x0eCertBlobRemove\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\"^\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\"r\n" +
 	"\x0eSubnetAllocate\x12\x1e\n" +
 	"\n" +
 	"deployment\x18\x01 \x01(\tR\n" +
 	"deployment\x12\x18\n" +
 	"\anetwork\x18\x02 \x01(\tR\anetwork\x12\x12\n" +
-	"\x04cidr\x18\x03 \x01(\tR\x04cidr\"F\n" +
+	"\x04cidr\x18\x03 \x01(\tR\x04cidr\x12\x12\n" +
+	"\x04host\x18\x04 \x01(\tR\x04host\"Z\n" +
 	"\n" +
 	"SubnetFree\x12\x1e\n" +
 	"\n" +
 	"deployment\x18\x01 \x01(\tR\n" +
 	"deployment\x12\x18\n" +
-	"\anetwork\x18\x02 \x01(\tR\anetwork\"M\n" +
+	"\anetwork\x18\x02 \x01(\tR\anetwork\x12\x12\n" +
+	"\x04host\x18\x03 \x01(\tR\x04host\"M\n" +
 	"\n" +
 	"TokenIssue\x12\x1a\n" +
 	"\bidentity\x18\x01 \x01(\tR\bidentity\x12#\n" +

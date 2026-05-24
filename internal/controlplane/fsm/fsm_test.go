@@ -179,6 +179,132 @@ func TestApplyDeploymentApplyThenDeleteCascadesRoutes(t *testing.T) {
 	}
 }
 
+// TestApplyRoutesSameDomainDifferentPaths guards the route-store key: path-
+// based routing (#34) puts several routes on ONE domain, so the store must
+// key on (domain, path) — keying on domain alone collapses them to one and
+// silently breaks the path split (e.g. jaco.sh/api → api, jaco.sh → web).
+func TestApplyRoutesSameDomainDifferentPaths(t *testing.T) {
+	f, s, _ := newFSM(t)
+
+	applyCmd(t, f, 1, &pb.Command{
+		Identity: "operator",
+		Ts:       timestamppb.Now(),
+		Payload: &pb.Command_DeploymentApply{DeploymentApply: &pb.DeploymentApply{
+			Deployment: "stack",
+			Revision:   1,
+			Routes: []*pb.Route{
+				{Domain: "jaco.sh", Path: "/api", Deployment: "stack", Service: "api", Port: 8080, TlsAuto: true},
+				{Domain: "jaco.sh", Deployment: "stack", Service: "web", Port: 80, TlsAuto: true},
+			},
+		}},
+	})
+
+	if s.Routes.Len() != 2 {
+		t.Fatalf("same-domain routes collapsed: Routes.Len = %d, want 2", s.Routes.Len())
+	}
+	api, ok := s.Routes.Get(state.RouteKey("jaco.sh", "/api"))
+	if !ok || api.GetService() != "api" {
+		t.Errorf("jaco.sh/api route missing or wrong service: %+v", api)
+	}
+	web, ok := s.Routes.Get(state.RouteKey("jaco.sh", ""))
+	if !ok || web.GetService() != "web" {
+		t.Errorf("jaco.sh catch-all route missing or wrong service: %+v", web)
+	}
+}
+
+// seedSubnet applies a SubnetAllocate so the test can build a known
+// (deployment, network, host) -> cidr layout in state.
+func seedSubnet(t *testing.T, f *fsm.FSM, idx uint64, dep, net, host, cidr string) {
+	t.Helper()
+	applyCmd(t, f, idx, &pb.Command{
+		Ts: timestamppb.Now(),
+		Payload: &pb.Command_SubnetAllocate{SubnetAllocate: &pb.SubnetAllocate{
+			Deployment: dep, Network: net, Host: host, Cidr: cidr,
+		}},
+	})
+}
+
+func TestApplySubnetFree_FullKeyRemovesOne(t *testing.T) {
+	f, s, _ := newFSM(t)
+	seedSubnet(t, f, 1, "sample", "frontend", "host-a", "10.244.0.0/24")
+	seedSubnet(t, f, 2, "sample", "frontend", "host-b", "10.244.1.0/24")
+
+	applyCmd(t, f, 3, &pb.Command{
+		Ts:      timestamppb.Now(),
+		Payload: &pb.Command_SubnetFree{SubnetFree: &pb.SubnetFree{Deployment: "sample", Network: "frontend", Host: "host-a"}},
+	})
+
+	if _, ok := s.Subnets.Get(state.SubnetKey("sample", "frontend", "host-a")); ok {
+		t.Errorf("host-a subnet should be freed")
+	}
+	if _, ok := s.Subnets.Get(state.SubnetKey("sample", "frontend", "host-b")); !ok {
+		t.Errorf("host-b subnet should survive a full-key free of host-a")
+	}
+}
+
+func TestApplySubnetFree_EmptyHostCascadesAllHosts(t *testing.T) {
+	f, s, _ := newFSM(t)
+	seedSubnet(t, f, 1, "sample", "frontend", "host-a", "10.244.0.0/24")
+	seedSubnet(t, f, 2, "sample", "frontend", "host-b", "10.244.1.0/24")
+	seedSubnet(t, f, 3, "other", "frontend", "host-a", "10.244.2.0/24")
+
+	applyCmd(t, f, 4, &pb.Command{
+		Ts:      timestamppb.Now(),
+		Payload: &pb.Command_SubnetFree{SubnetFree: &pb.SubnetFree{Deployment: "sample", Network: "frontend"}},
+	})
+
+	if _, ok := s.Subnets.Get(state.SubnetKey("sample", "frontend", "host-a")); ok {
+		t.Errorf("sample/frontend/host-a should be freed by cascade")
+	}
+	if _, ok := s.Subnets.Get(state.SubnetKey("sample", "frontend", "host-b")); ok {
+		t.Errorf("sample/frontend/host-b should be freed by cascade")
+	}
+	if _, ok := s.Subnets.Get(state.SubnetKey("other", "frontend", "host-a")); !ok {
+		t.Errorf("other deployment's subnet must be untouched")
+	}
+}
+
+func TestApplyDeploymentDelete_FreesAllDeploymentSubnets(t *testing.T) {
+	f, s, _ := newFSM(t)
+	seedSubnet(t, f, 1, "sample", "frontend", "host-a", "10.244.0.0/24")
+	seedSubnet(t, f, 2, "sample", "backend", "host-b", "10.244.1.0/24")
+	seedSubnet(t, f, 3, "keepme", "frontend", "host-a", "10.244.2.0/24")
+
+	applyCmd(t, f, 4, &pb.Command{
+		Ts:      timestamppb.Now(),
+		Payload: &pb.Command_DeploymentDelete{DeploymentDelete: &pb.DeploymentDelete{Deployment: "sample"}},
+	})
+
+	if s.Subnets.Len() != 1 {
+		t.Errorf("Subnets.Len = %d, want 1 (only keepme survives)", s.Subnets.Len())
+	}
+	if _, ok := s.Subnets.Get(state.SubnetKey("keepme", "frontend", "host-a")); !ok {
+		t.Errorf("keepme subnet must survive deletion of sample")
+	}
+}
+
+func TestApplyNodeRemove_FreesAllHostSubnets(t *testing.T) {
+	f, s, _ := newFSM(t)
+	seedSubnet(t, f, 1, "sample", "frontend", "host-a", "10.244.0.0/24")
+	seedSubnet(t, f, 2, "other", "backend", "host-a", "10.244.1.0/24")
+	seedSubnet(t, f, 3, "sample", "frontend", "host-b", "10.244.2.0/24")
+
+	applyCmd(t, f, 4, &pb.Command{
+		Ts:      timestamppb.Now(),
+		Payload: &pb.Command_NodeRemove{NodeRemove: &pb.NodeRemove{Hostname: "host-a"}},
+	})
+
+	if _, ok := s.Subnets.Get(state.SubnetKey("sample", "frontend", "host-a")); ok {
+		t.Errorf("sample/frontend/host-a should be freed when host-a leaves")
+	}
+	if _, ok := s.Subnets.Get(state.SubnetKey("other", "backend", "host-a")); ok {
+		t.Errorf("other/backend/host-a should be freed when host-a leaves")
+	}
+	if _, ok := s.Subnets.Get(state.SubnetKey("sample", "frontend", "host-b")); !ok {
+		t.Errorf("host-b subnet must survive removal of host-a")
+	}
+}
+
 func TestApplyReplicaCounterIncrement(t *testing.T) {
 	f, s, _ := newFSM(t)
 
@@ -250,7 +376,7 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 	})
 	applyCmd(t, f1, 4, &pb.Command{
 		Payload: &pb.Command_SubnetAllocate{SubnetAllocate: &pb.SubnetAllocate{
-			Deployment: "sample", Network: "_default", Cidr: "10.42.0.0/24",
+			Deployment: "sample", Network: "_default", Cidr: "10.42.0.0/24", Host: "node-a",
 		}},
 	})
 
@@ -279,10 +405,10 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 	if _, ok := s2.Deployments.Get("sample"); !ok {
 		t.Errorf("restored deployment missing")
 	}
-	if _, ok := s2.Routes.Get("a.example"); !ok {
+	if _, ok := s2.Routes.Get(state.RouteKey("a.example", "")); !ok {
 		t.Errorf("restored route missing")
 	}
-	if _, ok := s2.Subnets.Get(state.SubnetKey("sample", "_default")); !ok {
+	if _, ok := s2.Subnets.Get(state.SubnetKey("sample", "_default", "node-a")); !ok {
 		t.Errorf("restored subnet missing")
 	}
 	_ = s1 // silence unused (kept for clarity in the test setup)
@@ -293,7 +419,7 @@ type recordingSink struct {
 	data *bytes.Buffer
 }
 
-func newRecordingSink() *recordingSink     { return &recordingSink{data: &bytes.Buffer{}} }
+func newRecordingSink() *recordingSink               { return &recordingSink{data: &bytes.Buffer{}} }
 func (s *recordingSink) Write(p []byte) (int, error) { return s.data.Write(p) }
 func (s *recordingSink) Close() error                { return nil }
 func (s *recordingSink) ID() string                  { return "test" }

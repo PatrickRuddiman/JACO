@@ -25,7 +25,7 @@ func TestReconciler_StopReplicaWhenHostChangesAway(t *testing.T) {
 	var raftIdx uint64
 	seedAll(t, f, &raftIdx)
 
-	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, silentLogger())
+	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, okEnsureSubnet, silentLogger())
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	done := make(chan error, 1)
@@ -74,7 +74,7 @@ func TestReconciler_OrphanSweepFailsBeforeClusterMeta(t *testing.T) {
 	brokers := watch.NewRegistry()
 	st := state.New(brokers)
 	d := newFakeDocker()
-	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, silentLogger())
+	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, okEnsureSubnet, silentLogger())
 	if err := rec.OrphanSweep(context.Background()); err == nil {
 		t.Errorf("OrphanSweep with empty cluster meta returned nil err")
 	}
@@ -112,7 +112,7 @@ func TestReconciler_StartReplicaFailsWhenComposeServiceMissing(t *testing.T) {
 		},
 	}}, raftIdx)
 
-	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, silentLogger())
+	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, okEnsureSubnet, silentLogger())
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	done := make(chan error, 1)
@@ -154,7 +154,7 @@ func TestReconciler_StartReplicaFailsWhenDeploymentMissing(t *testing.T) {
 		NodeStatusUpdate: &pb.NodeStatusUpdate{Hostname: "host-a", Status: pb.NodeStatus_NODE_STATUS_READY},
 	}}, raftIdx)
 
-	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, silentLogger())
+	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, okEnsureSubnet, silentLogger())
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	done := make(chan error, 1)
@@ -180,7 +180,7 @@ func TestWatcher_AccessorReturnsNonNil(t *testing.T) {
 	brokers := watch.NewRegistry()
 	st := state.New(brokers)
 	d := newFakeDocker()
-	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, silentLogger())
+	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, okEnsureSubnet, silentLogger())
 	if rec.Watcher() == nil {
 		t.Errorf("Watcher() = nil")
 	}

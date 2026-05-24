@@ -23,26 +23,24 @@ table inet jaco {
         elements = { 10.244.0.0/24 }
     }
 
+    set jaco_pool {
+        type ipv4_addr
+        flags interval
+        elements = { 10.244.0.0/24, 10.244.1.0/24, 10.244.2.0/24, 10.244.3.0/24 }
+    }
+
     chain forward {
-        type filter hook forward priority 0; policy drop;
+        type filter hook forward priority 0; policy accept;
         ct state established,related accept
         ip saddr @dep_net_other_default ip daddr @dep_net_other_default accept
         ip saddr @dep_net_other_metrics ip daddr @dep_net_other_metrics accept
         ip saddr @dep_net_sample_backend ip daddr @dep_net_sample_backend accept
         ip saddr @dep_net_sample_frontend ip daddr @dep_net_sample_frontend accept
-        drop
+        ip saddr @jaco_pool ip daddr @jaco_pool drop
     }
 
     chain input {
-        type filter hook input priority 0; policy drop;
-        iif lo accept
-        ct state established,related accept
-        udp dport 51820 accept
-        iifname "wg-jaco" accept
-        iifname "jaco-*" udp dport 53 accept
-        tcp dport 7000 accept
-        tcp dport { 80, 443 } accept
-        drop
+        type filter hook input priority 0; policy accept;
     }
 
     chain output {

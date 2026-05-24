@@ -7,6 +7,8 @@ import (
 	"log"
 	"net"
 	"os/exec"
+	"sort"
+	"strings"
 	"time"
 
 	"golang.zx2c4.com/wireguard/wgctrl"
@@ -78,6 +80,13 @@ type Syncer struct {
 	// the same every tick, so the operator only needs to hear about it
 	// once per daemon lifetime.
 	loggedConfigError bool
+
+	// loggedRouteError does the same for the route-reconcile step (jaco0
+	// absent / lacking CAP_NET_ADMIN repeats every tick).
+	loggedRouteError bool
+
+	// loggedMeshError suppresses repeat mesh-address/route warnings.
+	loggedMeshError bool
 }
 
 // Run blocks until ctx is cancelled. Each tick computes the desired
@@ -137,6 +146,138 @@ func (s *Syncer) tick(client *wgctrl.Client) {
 			s.loggedConfigError = true
 		}
 	}
+	s.reconcileRoutes()
+}
+
+// reconcileRoutes installs a kernel route over the wg interface for every
+// OTHER host's container /24 and removes routes for subnets that no longer
+// exist. The WG mesh then carries the cross-host packets (issue #28). JACO is
+// the only thing that adds routes to this interface, so current-minus-desired
+// is exactly the set of orphaned JACO routes.
+func (s *Syncer) reconcileRoutes() {
+	s.ensureMeshAddr()
+	current, err := listRoutes(s.Iface)
+	if err != nil {
+		if !s.loggedRouteError {
+			s.Logger.Printf("wgmesh route list %s: %v (route reconcile disabled; only logged once)", s.Iface, err)
+			s.loggedRouteError = true
+		}
+		return
+	}
+	desired := s.desiredRoutes()
+	_, del := routeDiff(desired, current)
+	// Source-address hint: host-originated traffic to a peer's container /24
+	// (e.g. the embedded ingress proxying to a replica on another host) is
+	// sourced from this node's WG mesh IP, so the destination host's mesh→pool
+	// firewall exemption admits it and the reply routes back over the mesh.
+	// Without it the kernel picks a non-overlay source (often the default-route
+	// egress) and the far side drops or mis-routes the packet — this is the
+	// ONLY way a bridgeless ingress node (no local pool IP at all) can reach
+	// the overlay (issue #28). `src` only affects locally-originated packets;
+	// forwarded container↔container traffic keeps its own source. `ip route
+	// replace` re-asserts the src every tick.
+	src := SlotIP(s.SelfHostname).String()
+	for _, cidr := range desired {
+		if out, rerr := exec.Command("ip", "route", "replace", cidr, "dev", s.Iface, "src", src).CombinedOutput(); rerr != nil {
+			s.Logger.Printf("wgmesh route replace %s dev %s src %s: %v: %s", cidr, s.Iface, src, rerr, string(out))
+		}
+	}
+	for _, cidr := range del {
+		if cidr == MeshNetwork {
+			continue // the mesh route is managed by ensureMeshAddr, not a peer /24
+		}
+		if out, rerr := exec.Command("ip", "route", "del", cidr, "dev", s.Iface).CombinedOutput(); rerr != nil {
+			s.Logger.Printf("wgmesh route del %s dev %s: %v: %s", cidr, s.Iface, rerr, string(out))
+		}
+	}
+}
+
+// ensureMeshAddr gives jaco0 this node's WG mesh address (SlotIP) plus a route
+// to the whole mesh subnet. jaco0 is point-to-point, so assigning the address
+// does NOT auto-create a connected route — without the explicit route the host
+// can neither reach peer mesh IPs nor reply to them, and overlay traffic the
+// host originates leaks out the default gateway (issue #28). Idempotent: the
+// "address exists" error is ignored; the route uses replace.
+func (s *Syncer) ensureMeshAddr() {
+	ip := SlotIP(s.SelfHostname).String()
+	_ = exec.Command("ip", "addr", "add", ip+"/32", "dev", s.Iface).Run() // ignore "File exists"
+	if out, rerr := exec.Command("ip", "route", "replace", MeshNetwork, "dev", s.Iface).CombinedOutput(); rerr != nil {
+		if !s.loggedMeshError {
+			s.Logger.Printf("wgmesh mesh route %s dev %s: %v: %s (only logged once)", MeshNetwork, s.Iface, rerr, string(out))
+			s.loggedMeshError = true
+		}
+	}
+}
+
+// desiredRoutes is every container /24 owned by a host other than self.
+func (s *Syncer) desiredRoutes() []string {
+	var out []string
+	for _, sn := range s.State.Subnets.List() {
+		if sn.GetHost() == "" || sn.GetHost() == s.SelfHostname {
+			continue
+		}
+		out = append(out, sn.GetCidr())
+	}
+	return out
+}
+
+// listRoutes parses `ip route show dev <iface>` plain-text output (no
+// -j/JSON, for busybox compatibility) into the set of CIDRs routed over the
+// interface.
+func listRoutes(iface string) ([]string, error) {
+	out, err := exec.Command("ip", "route", "show", "dev", iface).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("ip route show dev %s: %w: %s", iface, err, string(out))
+	}
+	return parseRouteCIDRs(string(out)), nil
+}
+
+// parseRouteCIDRs extracts the destination prefix (first token) of each
+// non-empty line, keeping only CIDR-form entries (a.b.c.d/n). JACO only
+// installs /24s, so default/scope/link lines without a prefix are skipped.
+func parseRouteCIDRs(s string) []string {
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		dst := fields[0]
+		if !strings.Contains(dst, "/") {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(dst); err != nil {
+			continue
+		}
+		out = append(out, dst)
+	}
+	return out
+}
+
+// routeDiff returns the CIDRs to add and remove so the live route set
+// (current) matches desired. Output is sorted for deterministic application.
+func routeDiff(desired, current []string) (add, del []string) {
+	want := make(map[string]bool, len(desired))
+	for _, c := range desired {
+		want[c] = true
+	}
+	have := make(map[string]bool, len(current))
+	for _, c := range current {
+		have[c] = true
+	}
+	for c := range want {
+		if !have[c] {
+			add = append(add, c)
+		}
+	}
+	for c := range have {
+		if !want[c] {
+			del = append(del, c)
+		}
+	}
+	sort.Strings(add)
+	sort.Strings(del)
+	return add, del
 }
 
 // BuildConfig is the typed counterpart to RenderConfig. Returns a
@@ -175,11 +316,24 @@ func BuildConfig(st *state.State, selfHostname string, selfPrivate wgtypes.Key) 
 			// than fail the whole reconcile.
 			continue
 		}
+		// AllowedIPs is WireGuard's crypto-routing table: the peer's /32 mesh
+		// address PLUS every container /24 that peer owns (issue #28). Without
+		// the /24s, packets a kernel route sends to jaco0 for a peer's
+		// containers would be dropped as having no matching peer.
+		allowed := []net.IPNet{{IP: ip, Mask: net.CIDRMask(32, 32)}}
+		for _, sn := range st.Subnets.List() {
+			if sn.GetHost() != n.GetHostname() {
+				continue
+			}
+			if _, ipnet, perr := net.ParseCIDR(sn.GetCidr()); perr == nil && ipnet != nil {
+				allowed = append(allowed, *ipnet)
+			}
+		}
 		keepalive := 25 * time.Second
 		cfg.Peers = append(cfg.Peers, wgtypes.PeerConfig{
 			PublicKey:                   pubKey,
 			Endpoint:                    &net.UDPAddr{IP: endpointIP, Port: DefaultListenPort},
-			AllowedIPs:                  []net.IPNet{{IP: ip, Mask: net.CIDRMask(32, 32)}},
+			AllowedIPs:                  allowed,
 			PersistentKeepaliveInterval: &keepalive,
 			ReplaceAllowedIPs:           true,
 		})
