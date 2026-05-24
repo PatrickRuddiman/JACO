@@ -18,17 +18,16 @@ type JacoYAML struct {
 	Routes     []JacoRouteDecl   `yaml:"routes"`
 }
 
-// JacoServiceDecl is one service entry. ComposeService names a service in the
-// adjacent compose file; Replicas is the desired count; Placement picks the
-// scheduler mode (spread / pack / hosts) and Hosts pins targets when
-// Placement=hosts.
+// JacoServiceDecl is one service entry. Name must equal the corresponding
+// service key in the adjacent compose file. Replicas is the desired count;
+// Placement picks the scheduler mode (spread / pack / hosts) and Hosts pins
+// targets when Placement=hosts.
 type JacoServiceDecl struct {
-	Name           string   `yaml:"name"`
-	Replicas       int      `yaml:"replicas"`
-	Placement      string   `yaml:"placement"`
-	Hosts          []string `yaml:"hosts"`
-	ComposeService string   `yaml:"compose_service"`
-	Networks       []string `yaml:"networks"`
+	Name      string   `yaml:"name"`
+	Replicas  int      `yaml:"replicas"`
+	Placement string   `yaml:"placement"`
+	Hosts     []string `yaml:"hosts"`
+	Networks  []string `yaml:"networks"`
 }
 
 // JacoRouteDecl is one Caddy-served HTTP(S) route.
@@ -42,7 +41,22 @@ type JacoRouteDecl struct {
 // ParseJacoYAML unmarshals the manifest and applies defaults (Placement spread,
 // TLS auto). Returns a typed JacoYAML; validation against the compose file
 // happens in validateJacoYAML.
+//
+// It rejects input that contains compose_service keys: the field was removed
+// pre-1.0 and name is now the single source of truth.
 func ParseJacoYAML(body []byte) (*JacoYAML, error) {
+	// Pre-check: reject compose_service before struct decode so the error
+	// message is clear regardless of struct tag changes. Walk the entire
+	// decoded tree, not just services[*], so the field is caught no matter
+	// where a user tucks it (top-level, nested subtree, YAML merge target).
+	var raw any
+	if err := yaml.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("parse jaco yaml: %w", err)
+	}
+	if containsKey(raw, "compose_service") {
+		return nil, fmt.Errorf("compose_service is no longer supported; rename \"name\" to match the compose service key")
+	}
+
 	var j JacoYAML
 	if err := yaml.Unmarshal(body, &j); err != nil {
 		return nil, fmt.Errorf("parse jaco yaml: %w", err)
@@ -50,9 +64,6 @@ func ParseJacoYAML(body []byte) (*JacoYAML, error) {
 	for i := range j.Services {
 		if j.Services[i].Placement == "" {
 			j.Services[i].Placement = "spread"
-		}
-		if j.Services[i].ComposeService == "" {
-			j.Services[i].ComposeService = j.Services[i].Name
 		}
 	}
 	for i := range j.Routes {
@@ -119,12 +130,11 @@ func toServiceSpecs(decls []JacoServiceDecl) []*pb.ServiceSpec {
 	out := make([]*pb.ServiceSpec, 0, len(decls))
 	for _, d := range decls {
 		out = append(out, &pb.ServiceSpec{
-			Name:           d.Name,
-			Replicas:       int32(d.Replicas),
-			Placement:      placementToProto(d.Placement),
-			Hosts:          append([]string(nil), d.Hosts...),
-			ComposeService: d.ComposeService,
-			Networks:       append([]string(nil), d.Networks...),
+			Name:      d.Name,
+			Replicas:  int32(d.Replicas),
+			Placement: placementToProto(d.Placement),
+			Hosts:     append([]string(nil), d.Hosts...),
+			Networks:  append([]string(nil), d.Networks...),
 		})
 	}
 	return out
@@ -143,6 +153,41 @@ func toRoutes(deployment string, decls []JacoRouteDecl) []*pb.Route {
 		})
 	}
 	return out
+}
+
+// containsKey recursively walks a decoded YAML tree and reports whether any
+// map node in the tree (at any depth) has the given key. Used to catch
+// deprecated keys regardless of where the user placed them.
+func containsKey(node any, key string) bool {
+	switch v := node.(type) {
+	case map[string]any:
+		if _, ok := v[key]; ok {
+			return true
+		}
+		for _, child := range v {
+			if containsKey(child, key) {
+				return true
+			}
+		}
+	case map[any]any:
+		// yaml.v3 normally decodes to map[string]any, but defensive handling
+		// for any code path that lands here with an interface-keyed map.
+		for k, child := range v {
+			if ks, ok := k.(string); ok && ks == key {
+				return true
+			}
+			if containsKey(child, key) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if containsKey(child, key) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func placementToProto(s string) pb.ServiceSpec_PlacementMode {

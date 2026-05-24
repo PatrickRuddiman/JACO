@@ -98,7 +98,8 @@ message ServiceSpec {
   int32 replicas = 2;
   PlacementMode placement = 3;
   repeated string hosts = 4;
-  string compose_service = 5;
+  reserved 5; // was: compose_service (removed pre-1.0)
+  reserved "compose_service";
   repeated string networks = 6;
 }
 
