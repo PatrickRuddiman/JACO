@@ -161,7 +161,7 @@ func seedAll(t *testing.T, f *fsm.FSM, raftIdx *uint64) {
 	apply(t, f, &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_DeploymentApply{
 		DeploymentApply: &pb.DeploymentApply{
 			Deployment: "smoke", Revision: 1, ComposeYaml: []byte(composeYAML),
-			Services: []*pb.ServiceSpec{{Name: "web", Replicas: 1, ComposeService: "web", Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD}},
+			Services: []*pb.ServiceSpec{{Name: "web", Replicas: 1, Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD}},
 		},
 	}}, *raftIdx)
 }
