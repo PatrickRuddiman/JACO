@@ -14,10 +14,19 @@ import (
 
 // Defaults match slices/daemon.md §4.
 //
-// The 0.0.0.0 bind on listen_addr / cluster_addr is intentional: the
-// daemon listens on every interface, and cmd/jacod auto-detects a real
-// advertise IP at startup via internal/daemon/netdetect. Operators on
-// multi-NIC hosts can pin a specific host:port to override.
+// listen_addr / cluster_addr default to an unspecified host (0.0.0.0) so
+// the bind FOLLOWS the auto-detected advertise face rather than listening
+// on every interface. At startup cmd/jacod resolves a private-LAN-first IP
+// via internal/daemon/netdetect and binds the gRPC (7000) + raft (7001)
+// planes to THAT face — the control/data plane is not world-reachable on a
+// public NIC by default (issue #44), so JACO does not depend on an external
+// firewall for that boundary. netdetect never auto-picks a public address;
+// a host with only a public face fails fast with guidance to pin one.
+//
+// Operators pin a specific routable host:port to override — required for
+// overlay-only clusters whose nodes share no private LAN, and useful on
+// multi-NIC hosts. A pinned value is honored verbatim for both bind and
+// advertise.
 const (
 	DefaultDataDir     = "/var/lib/jaco"
 	DefaultListenAddr  = "0.0.0.0:7000"
