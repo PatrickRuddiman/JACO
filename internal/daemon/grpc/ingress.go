@@ -40,6 +40,7 @@ func ingressBuilder(st *state.State, acmeEmail string) func() ([]byte, error) {
 				Service:    r.GetService(),
 				Port:       int(r.GetPort()),
 				TLSAuto:    r.GetTlsAuto(),
+				Path:       r.GetPath(),
 			})
 		}
 

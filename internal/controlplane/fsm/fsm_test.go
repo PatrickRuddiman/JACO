@@ -179,6 +179,39 @@ func TestApplyDeploymentApplyThenDeleteCascadesRoutes(t *testing.T) {
 	}
 }
 
+// TestApplyRoutesSameDomainDifferentPaths guards the route-store key: path-
+// based routing (#34) puts several routes on ONE domain, so the store must
+// key on (domain, path) — keying on domain alone collapses them to one and
+// silently breaks the path split (e.g. jaco.sh/api → api, jaco.sh → web).
+func TestApplyRoutesSameDomainDifferentPaths(t *testing.T) {
+	f, s, _ := newFSM(t)
+
+	applyCmd(t, f, 1, &pb.Command{
+		Identity: "operator",
+		Ts:       timestamppb.Now(),
+		Payload: &pb.Command_DeploymentApply{DeploymentApply: &pb.DeploymentApply{
+			Deployment: "stack",
+			Revision:   1,
+			Routes: []*pb.Route{
+				{Domain: "jaco.sh", Path: "/api", Deployment: "stack", Service: "api", Port: 8080, TlsAuto: true},
+				{Domain: "jaco.sh", Deployment: "stack", Service: "web", Port: 80, TlsAuto: true},
+			},
+		}},
+	})
+
+	if s.Routes.Len() != 2 {
+		t.Fatalf("same-domain routes collapsed: Routes.Len = %d, want 2", s.Routes.Len())
+	}
+	api, ok := s.Routes.Get(state.RouteKey("jaco.sh", "/api"))
+	if !ok || api.GetService() != "api" {
+		t.Errorf("jaco.sh/api route missing or wrong service: %+v", api)
+	}
+	web, ok := s.Routes.Get(state.RouteKey("jaco.sh", ""))
+	if !ok || web.GetService() != "web" {
+		t.Errorf("jaco.sh catch-all route missing or wrong service: %+v", web)
+	}
+}
+
 // seedSubnet applies a SubnetAllocate so the test can build a known
 // (deployment, network, host) -> cidr layout in state.
 func seedSubnet(t *testing.T, f *fsm.FSM, idx uint64, dep, net, host, cidr string) {
@@ -372,7 +405,7 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 	if _, ok := s2.Deployments.Get("sample"); !ok {
 		t.Errorf("restored deployment missing")
 	}
-	if _, ok := s2.Routes.Get("a.example"); !ok {
+	if _, ok := s2.Routes.Get(state.RouteKey("a.example", "")); !ok {
 		t.Errorf("restored route missing")
 	}
 	if _, ok := s2.Subnets.Get(state.SubnetKey("sample", "_default", "node-a")); !ok {

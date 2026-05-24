@@ -188,7 +188,7 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 		name := p.DeploymentDelete.GetDeployment()
 		for _, r := range f.State.Routes.List() {
 			if r.GetDeployment() == name {
-				f.State.Routes.Remove(r.GetDomain(), idx)
+				f.State.Routes.Remove(state.RouteKey(r.GetDomain(), r.GetPath()), idx)
 			}
 		}
 		for _, rd := range f.State.ReplicasDesired.List() {
@@ -283,7 +283,14 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 		return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
 
 	case *pb.Command_RouteRemove:
-		f.State.Routes.Remove(p.RouteRemove.GetDomain(), idx)
+		// RouteRemove targets a whole domain (no path field), so drop every
+		// route under it — the store keys on (domain, path) now, so a single
+		// Remove(domain) would no longer match.
+		for _, r := range f.State.Routes.List() {
+			if r.GetDomain() == p.RouteRemove.GetDomain() {
+				f.State.Routes.Remove(state.RouteKey(r.GetDomain(), r.GetPath()), idx)
+			}
+		}
 		return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
 
 	case *pb.Command_CertStore:
