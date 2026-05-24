@@ -42,6 +42,12 @@ type Reconciler struct {
 	Pool       string
 	EnsureSNAT func(ctx context.Context, pool string) error
 
+	// EnsureOverlay re-asserts the intra-pool ACCEPT exemptions that let
+	// cross-host container traffic past Docker's container-isolation drops
+	// (raw PREROUTING direct-routing + FORWARD inter-network isolation, issue
+	// #28). Optional and Pool-gated, same as EnsureSNAT.
+	EnsureOverlay func(ctx context.Context, pool string) error
+
 	// degraded tracks whether the last Tick saw an Apply failure.
 	degraded bool
 }
@@ -58,6 +64,15 @@ func (r *Reconciler) Tick(ctx context.Context) error {
 	if r.EnsureSNAT != nil && r.Pool != "" {
 		if err := r.EnsureSNAT(ctx, r.Pool); err != nil {
 			_ = r.Audit(ctx, "SNAT_EXEMPT_FAILED", map[string]string{"error": err.Error()})
+		}
+	}
+
+	// Re-assert the overlay-isolation exemptions too — same rationale, also in
+	// Docker-owned chains (raw PREROUTING + DOCKER-USER) outside table inet
+	// jaco. Best-effort and independent of the inet jaco isolation status.
+	if r.EnsureOverlay != nil && r.Pool != "" {
+		if err := r.EnsureOverlay(ctx, r.Pool); err != nil {
+			_ = r.Audit(ctx, "OVERLAY_EXEMPT_FAILED", map[string]string{"error": err.Error()})
 		}
 	}
 

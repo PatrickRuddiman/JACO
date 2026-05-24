@@ -174,6 +174,66 @@ func TestReconcile_AssertsSNATExemptEachTick(t *testing.T) {
 	}
 }
 
+func TestReconcile_AssertsOverlayExemptEachTick(t *testing.T) {
+	var gotPool string
+	calls := 0
+	r := &firewall.Reconciler{
+		Lister:       &fakeLister{body: []byte(validJSON)},
+		Applier:      &recordingApplier{},
+		Audit:        (&recordingAudit{}).fn(),
+		UpdateStatus: (&recordingStatus{}).fn(),
+		Render:       goodInput,
+		Pool:         "10.244.0.0/16",
+		EnsureOverlay: func(_ context.Context, pool string) error {
+			calls++
+			gotPool = pool
+			return nil
+		},
+	}
+	if err := r.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("EnsureOverlay called %d times, want 1", calls)
+	}
+	if gotPool != "10.244.0.0/16" {
+		t.Errorf("EnsureOverlay pool = %q, want 10.244.0.0/16", gotPool)
+	}
+}
+
+func TestReconcile_OverlayExemptFailureAuditsButDoesNotFail(t *testing.T) {
+	// A failure asserting the overlay exemption is best-effort: it audits
+	// OVERLAY_EXEMPT_FAILED but must not fail the tick or flip isolation status.
+	aud := &recordingAudit{}
+	stat := &recordingStatus{}
+	r := &firewall.Reconciler{
+		Lister:       &fakeLister{body: []byte(validJSON)},
+		Applier:      &recordingApplier{},
+		Audit:        aud.fn(),
+		UpdateStatus: stat.fn(),
+		Render:       goodInput,
+		Pool:         "10.244.0.0/16",
+		EnsureOverlay: func(_ context.Context, _ string) error {
+			return errors.New("iptables boom")
+		},
+	}
+	if err := r.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick should not fail on overlay-exempt error: %v", err)
+	}
+	if len(stat.Updates()) != 0 {
+		t.Errorf("overlay-exempt failure flipped status: %v", stat.Updates())
+	}
+	found := false
+	for _, c := range aud.Codes() {
+		if c == "OVERLAY_EXEMPT_FAILED" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected OVERLAY_EXEMPT_FAILED audit, got %v", aud.Codes())
+	}
+}
+
 func TestReconcile_DriftDetectedReappliesAndAudits(t *testing.T) {
 	// The AC: when nft list shows drift, the reconciler re-renders + applies
 	// and writes an ISOLATION_RULESET_RECONCILED audit event.

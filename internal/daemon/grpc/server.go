@@ -553,8 +553,9 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 					IngressPorts: []int{80, 443},
 				}
 			},
-			Pool:       s.ipamPool,
-			EnsureSNAT: firewall.EnsureSNATExempt,
+			Pool:          s.ipamPool,
+			EnsureSNAT:    firewall.EnsureSNATExempt,
+			EnsureOverlay: firewall.EnsureOverlayExempt,
 		}
 		s.subsystemsWG.Add(1)
 		go func() {
