@@ -182,30 +182,41 @@ func TestRender_RulesetContainsExpectedChainsAndElements(t *testing.T) {
 		"table inet jaco {",
 		"set dep_net_sample_frontend {",
 		"elements = { 10.244.0.0/24 }",
+		"set jaco_pool {",
+		// forward: isolate JACO's own pool, accept everything else.
 		"chain forward {",
-		"policy drop;",
 		"ct state established,related accept",
 		"ip saddr @dep_net_sample_frontend ip daddr @dep_net_sample_frontend accept",
+		"ip saddr @jaco_pool ip daddr @jaco_pool drop",
+		// both base chains are policy accept — JACO never blanket-drops host
+		// ingress or non-JACO forwarded traffic.
+		"type filter hook forward priority 0; policy accept;",
 		"chain input {",
-		"iif lo accept",
-		"udp dport 51820 accept",
-		"iifname \"wg-jaco\" accept",
-		"iifname \"jaco-*\" udp dport 53 accept",
-		"tcp dport 7000 accept",
-		"tcp dport { 80, 443 } accept",
+		"type filter hook input priority 0; policy accept;",
 		"chain output {",
-		"policy accept;",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("ruleset missing %q in:\n%s", want, got)
 		}
 	}
+	// JACO must NOT police host ingress — no policy-drop, no management-plane
+	// allowlist (the operator's SSH port / VPN / VNet / Tailscale are unknown).
+	for _, forbidden := range []string{"policy drop;", "tcp dport 22", "tailscale0", "iif lo accept"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("ruleset must not contain %q (disrupts operator host choices):\n%s", forbidden, got)
+		}
+	}
 }
 
-func TestRender_SinglePortNoBraces(t *testing.T) {
-	got := firewall.Render(firewall.RuleInput{IngressPorts: []int{443}})
-	if !strings.Contains(got, "tcp dport 443 accept") {
-		t.Errorf("single ingress port should render without braces; got:\n%s", got)
+func TestRender_DoesNotDropWhenNoSubnets(t *testing.T) {
+	// With no JACO subnets there is nothing to isolate, so the forward chain
+	// carries no pool drop — and still never a policy-drop.
+	got := firewall.Render(firewall.RuleInput{})
+	if strings.Contains(got, "policy drop;") {
+		t.Errorf("empty input must not produce a policy-drop chain:\n%s", got)
+	}
+	if strings.Contains(got, "jaco_pool") {
+		t.Errorf("no subnets should mean no jaco_pool set:\n%s", got)
 	}
 }
 
