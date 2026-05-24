@@ -84,6 +84,9 @@ type Syncer struct {
 	// loggedRouteError does the same for the route-reconcile step (jaco0
 	// absent / lacking CAP_NET_ADMIN repeats every tick).
 	loggedRouteError bool
+
+	// loggedMeshError suppresses repeat mesh-address/route warnings.
+	loggedMeshError bool
 }
 
 // Run blocks until ctx is cancelled. Each tick computes the desired
@@ -152,6 +155,7 @@ func (s *Syncer) tick(client *wgctrl.Client) {
 // the only thing that adds routes to this interface, so current-minus-desired
 // is exactly the set of orphaned JACO routes.
 func (s *Syncer) reconcileRoutes() {
+	s.ensureMeshAddr()
 	current, err := listRoutes(s.Iface)
 	if err != nil {
 		if !s.loggedRouteError {
@@ -163,56 +167,46 @@ func (s *Syncer) reconcileRoutes() {
 	desired := s.desiredRoutes()
 	_, del := routeDiff(desired, current)
 	// Source-address hint: host-originated traffic to a peer's container /24
-	// (the embedded ingress proxying to a replica on another host) must carry
-	// a pool source so the destination host's pool→pool firewall exemption
-	// admits it — jaco0 itself has no address, so without this the kernel
-	// picks a non-pool source and the far side drops the packet (issue #28).
-	// `src` only affects locally-originated packets; forwarded container↔
-	// container traffic is untouched. Empty until a local bridge exists; a
-	// later tick adds it once one does. `ip route replace` re-asserts every
-	// tick so a route installed before a bridge existed gains the src.
-	gw := s.localPoolGateway()
+	// (e.g. the embedded ingress proxying to a replica on another host) is
+	// sourced from this node's WG mesh IP, so the destination host's mesh→pool
+	// firewall exemption admits it and the reply routes back over the mesh.
+	// Without it the kernel picks a non-overlay source (often the default-route
+	// egress) and the far side drops or mis-routes the packet — this is the
+	// ONLY way a bridgeless ingress node (no local pool IP at all) can reach
+	// the overlay (issue #28). `src` only affects locally-originated packets;
+	// forwarded container↔container traffic keeps its own source. `ip route
+	// replace` re-asserts the src every tick.
+	src := SlotIP(s.SelfHostname).String()
 	for _, cidr := range desired {
-		args := []string{"route", "replace", cidr, "dev", s.Iface}
-		if gw != "" {
-			args = append(args, "src", gw)
-		}
-		if out, rerr := exec.Command("ip", args...).CombinedOutput(); rerr != nil {
-			s.Logger.Printf("wgmesh route replace %s dev %s src %q: %v: %s", cidr, s.Iface, gw, rerr, string(out))
+		if out, rerr := exec.Command("ip", "route", "replace", cidr, "dev", s.Iface, "src", src).CombinedOutput(); rerr != nil {
+			s.Logger.Printf("wgmesh route replace %s dev %s src %s: %v: %s", cidr, s.Iface, src, rerr, string(out))
 		}
 	}
 	for _, cidr := range del {
+		if cidr == MeshNetwork {
+			continue // the mesh route is managed by ensureMeshAddr, not a peer /24
+		}
 		if out, rerr := exec.Command("ip", "route", "del", cidr, "dev", s.Iface).CombinedOutput(); rerr != nil {
 			s.Logger.Printf("wgmesh route del %s dev %s: %v: %s", cidr, s.Iface, rerr, string(out))
 		}
 	}
 }
 
-// localPoolGateway returns a pool IP assigned to this node — the .1 gateway of
-// one of its local container /24s — for use as the `src` on peer routes so
-// host-originated overlay traffic (e.g. the ingress proxying cross-host) has a
-// pool source address. Returns "" when the node has no local subnet yet (the
-// route is then installed without a src and gains one on a later tick once a
-// bridge exists). Deterministic: the lexicographically-first local CIDR.
-func (s *Syncer) localPoolGateway() string {
-	var cidrs []string
-	for _, sn := range s.State.Subnets.List() {
-		if sn.GetHost() == s.SelfHostname {
-			cidrs = append(cidrs, sn.GetCidr())
+// ensureMeshAddr gives jaco0 this node's WG mesh address (SlotIP) plus a route
+// to the whole mesh subnet. jaco0 is point-to-point, so assigning the address
+// does NOT auto-create a connected route — without the explicit route the host
+// can neither reach peer mesh IPs nor reply to them, and overlay traffic the
+// host originates leaks out the default gateway (issue #28). Idempotent: the
+// "address exists" error is ignored; the route uses replace.
+func (s *Syncer) ensureMeshAddr() {
+	ip := SlotIP(s.SelfHostname).String()
+	_ = exec.Command("ip", "addr", "add", ip+"/32", "dev", s.Iface).Run() // ignore "File exists"
+	if out, rerr := exec.Command("ip", "route", "replace", MeshNetwork, "dev", s.Iface).CombinedOutput(); rerr != nil {
+		if !s.loggedMeshError {
+			s.Logger.Printf("wgmesh mesh route %s dev %s: %v: %s (only logged once)", MeshNetwork, s.Iface, rerr, string(out))
+			s.loggedMeshError = true
 		}
 	}
-	if len(cidrs) == 0 {
-		return ""
-	}
-	sort.Strings(cidrs)
-	_, ipnet, err := net.ParseCIDR(cidrs[0])
-	if err != nil {
-		return ""
-	}
-	gw := make(net.IP, len(ipnet.IP))
-	copy(gw, ipnet.IP)
-	gw[len(gw)-1] |= 1 // .1 of the /24 — Docker's bridge gateway address
-	return gw.String()
 }
 
 // desiredRoutes is every container /24 owned by a host other than self.

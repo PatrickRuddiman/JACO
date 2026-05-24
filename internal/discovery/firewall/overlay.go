@@ -7,14 +7,18 @@ import (
 	"strings"
 )
 
-// overlayAcceptRule is the iptables rule-spec (sans table/chain/op) that
-// matches intra-pool overlay traffic: packets whose source AND destination are
-// both inside the IPAM /16. Cross-host container traffic arriving over the WG
-// mesh (jaco0) is always pool→pool, so this is the exemption key for Docker's
-// container-isolation drops (issue #28). Returned as args so the caller can
-// pass them to `iptables -C`, `-D`, and `-I` alike.
-func overlayAcceptRule(pool string) []string {
-	return []string{"-s", pool, "-d", pool, "-j", "ACCEPT"}
+// meshSubnet mirrors wgmesh.MeshNetwork — the WG mesh /24. Host-originated
+// overlay traffic (the embedded ingress proxying to a replica on another host)
+// is sourced from this node's mesh IP, so the destination host must admit
+// mesh→pool just like container→container pool→pool (issue #28). Kept as a
+// local const to avoid a firewall→wgmesh import; both must stay in sync.
+const meshSubnet = "10.99.0.0/24"
+
+// overlayAcceptRule is the iptables rule-spec (sans table/chain/op) for one
+// overlay source→dest ACCEPT. Returned as args so the caller can pass it to
+// `iptables -D` and `-I` alike.
+func overlayAcceptRule(src, dst string) []string {
+	return []string{"-s", src, "-d", dst, "-j", "ACCEPT"}
 }
 
 // EnsureOverlayExempt clears the two Docker (28+) firewall drops that silently
@@ -29,76 +33,85 @@ func overlayAcceptRule(pool string) []string {
 //   - filter FORWARD → DOCKER: `! -i <bridge> -o <bridge> -j DROP`
 //     (inter-network isolation).
 //
-// We punch a pool→pool ACCEPT to the TOP of each chain (raw PREROUTING and the
-// Docker-sanctioned DOCKER-USER chain, which is traversed before the isolation
-// drop). Docker re-adds per-container drops as containers come and go, and a
-// plain `-C` existence check passes even when our ACCEPT has drifted below a
-// later-added drop — so, exactly like EnsureSNATExempt, this force-tops the
-// rule every reconcile tick rather than trusting a one-shot insert.
+// Two overlay sources legitimately reach a container across hosts: another
+// container (pool→pool, east-west) and a host's ingress sourced from the WG
+// mesh IP (mesh→pool, north-south — the only way a node with no local replica
+// can proxy). We pin both ACCEPTs to the TOP of each chain (raw PREROUTING and
+// the Docker-sanctioned DOCKER-USER chain). Docker re-adds per-container drops
+// as containers come and go, and a plain `-C` check passes even when our
+// ACCEPTs have drifted below a later-added drop — so this re-pins them whenever
+// the top of the chain no longer matches, rather than trusting a one-shot
+// insert.
 func EnsureOverlayExempt(ctx context.Context, pool string) error {
-	// raw PREROUTING — clears the per-container direct-routing DROP.
-	if err := ensureTopAccept(ctx, []string{"-t", "raw"}, "PREROUTING", pool); err != nil {
+	specs := [][2]string{{pool, pool}, {meshSubnet, pool}}
+	if err := ensureTopAccepts(ctx, []string{"-t", "raw"}, "PREROUTING", specs); err != nil {
 		return fmt.Errorf("raw PREROUTING overlay exempt: %w", err)
 	}
-	// DOCKER-USER — runs first in FORWARD, ahead of Docker's isolation DROP.
-	if err := ensureTopAccept(ctx, nil, "DOCKER-USER", pool); err != nil {
+	if err := ensureTopAccepts(ctx, nil, "DOCKER-USER", specs); err != nil {
 		return fmt.Errorf("DOCKER-USER overlay exempt: %w", err)
 	}
 	return nil
 }
 
-// ensureTopAccept guarantees exactly one pool→pool ACCEPT sits at the top of
-// the named chain (tableArgs is e.g. ["-t","raw"], or nil for the default
-// filter table). Deletes every drifted/duplicate copy, then inserts one at
-// position 1 — unless it is already first, in which case it does nothing.
-func ensureTopAccept(ctx context.Context, tableArgs []string, chain, pool string) error {
-	if firstRuleIsPoolAccept(ctx, tableArgs, chain, pool) {
-		return nil // already at the top — nothing to do
+// ensureTopAccepts guarantees the given src→dst ACCEPTs occupy the top of the
+// chain, in order. No-op when they already do (avoids per-tick churn); else it
+// deletes any stray copies and re-inserts all of them at the top.
+func ensureTopAccepts(ctx context.Context, tableArgs []string, chain string, specs [][2]string) error {
+	wants := make([]string, len(specs))
+	for i, sp := range specs {
+		wants[i] = overlayWant(chain, sp[0], sp[1])
 	}
-	rule := overlayAcceptRule(pool)
-	del := concatArgs(tableArgs, []string{"-D", chain}, rule)
-	for i := 0; i < 16; i++ {
-		if err := exec.CommandContext(ctx, "iptables", del...).Run(); err != nil {
-			break // no (more) copies to delete
+	if out, err := exec.CommandContext(ctx, "iptables", concatArgs(tableArgs, []string{"-S", chain}, nil)...).CombinedOutput(); err == nil {
+		if topAppendedRulesMatch(string(out), chain, wants) {
+			return nil // already pinned at the top — nothing to do
 		}
 	}
-	insert := concatArgs(tableArgs, []string{"-I", chain, "1"}, rule)
-	if out, err := exec.CommandContext(ctx, "iptables", insert...).CombinedOutput(); err != nil {
-		return fmt.Errorf("iptables insert %s overlay accept: %w (output: %s)", chain, err, string(out))
+	// Drop any drifted/duplicate copies of each rule.
+	for _, sp := range specs {
+		del := concatArgs(tableArgs, []string{"-D", chain}, overlayAcceptRule(sp[0], sp[1]))
+		for i := 0; i < 16; i++ {
+			if err := exec.CommandContext(ctx, "iptables", del...).Run(); err != nil {
+				break // no (more) copies to delete
+			}
+		}
+	}
+	// Insert in reverse so specs[0] lands topmost.
+	for i := len(specs) - 1; i >= 0; i-- {
+		insert := concatArgs(tableArgs, []string{"-I", chain, "1"}, overlayAcceptRule(specs[i][0], specs[i][1]))
+		if out, err := exec.CommandContext(ctx, "iptables", insert...).CombinedOutput(); err != nil {
+			return fmt.Errorf("iptables insert %s overlay accept: %w (output: %s)", chain, err, string(out))
+		}
 	}
 	return nil
 }
 
-// firstRuleIsPoolAccept reports whether the first appended rule of the chain is
-// already our pool→pool ACCEPT (so we avoid churning it every tick).
-func firstRuleIsPoolAccept(ctx context.Context, tableArgs []string, chain, pool string) bool {
-	args := concatArgs(tableArgs, []string{"-S", chain}, nil)
-	out, err := exec.CommandContext(ctx, "iptables", args...).CombinedOutput()
-	if err != nil {
-		return false
-	}
-	return firstAppendedRuleIs(string(out), chain, overlayWant(chain, pool))
+// overlayWant is the `iptables -S` rendering of one src→dst ACCEPT once
+// appended to the chain.
+func overlayWant(chain, src, dst string) string {
+	return fmt.Sprintf("-A %s -s %s -d %s -j ACCEPT", chain, src, dst)
 }
 
-// overlayWant is the `iptables -S` rendering our pool→pool ACCEPT takes once
-// appended to the chain — the exact string firstAppendedRuleIs compares against.
-func overlayWant(chain, pool string) string {
-	return fmt.Sprintf("-A %s -s %s -d %s -j ACCEPT", chain, pool, pool)
-}
-
-// firstAppendedRuleIs reports whether the first `-A <chain>` line in `iptables
-// -S` output equals want (policy `-P` lines and other chains are skipped). Pure
-// so the drift-detection logic is unit-testable without shelling out.
-func firstAppendedRuleIs(savedOutput, chain, want string) bool {
+// topAppendedRulesMatch reports whether the first len(wants) `-A <chain>` lines
+// in `iptables -S` output equal wants, in order (policy `-P` lines and other
+// chains are skipped). Pure so the drift check is unit-testable.
+func topAppendedRulesMatch(savedOutput, chain string, wants []string) bool {
 	prefix := "-A " + chain
+	var appended []string
 	for _, line := range strings.Split(savedOutput, "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, prefix) {
-			continue // skip the `-P`/policy line(s) and unrelated chains
+		if strings.HasPrefix(line, prefix) {
+			appended = append(appended, line)
 		}
-		return line == want // first appended rule must be our ACCEPT
 	}
-	return false
+	if len(appended) < len(wants) {
+		return false
+	}
+	for i, w := range wants {
+		if appended[i] != w {
+			return false
+		}
+	}
+	return true
 }
 
 // concatArgs joins arg groups into a fresh slice (no aliasing — each call to a
