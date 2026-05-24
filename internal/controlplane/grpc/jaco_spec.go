@@ -35,7 +35,8 @@ type JacoRouteDecl struct {
 	Domain  string `yaml:"domain"`
 	Service string `yaml:"service"`
 	Port    int    `yaml:"port"`
-	TLS     string `yaml:"tls"` // "auto" (default) | "off"
+	TLS     string `yaml:"tls"`            // "auto" (default) | "off"
+	Path    string `yaml:"path,omitempty"` // optional URL path prefix; "" = catch-all
 }
 
 // ParseJacoYAML unmarshals the manifest and applies defaults (Placement spread,
@@ -105,6 +106,11 @@ func validateJacoYAML(j *JacoYAML) (code string, message string, ok bool) {
 		}
 		serviceNames[s.Name] = true
 	}
+	// (domain, path) is the uniqueness key — Caddy can only dispatch one
+	// upstream per request, so any duplicate (regardless of service/port/tls)
+	// would silently shadow another route. Reject all duplicates up front.
+	type domainPath struct{ domain, path string }
+	seenRoutes := map[domainPath]bool{}
 	for _, r := range j.Routes {
 		if r.Domain == "" {
 			return "validation_failed", "route domain is required", false
@@ -120,6 +126,11 @@ func validateJacoYAML(j *JacoYAML) (code string, message string, ok bool) {
 		default:
 			return "validation_failed", fmt.Sprintf("route %q has unknown tls %q (want auto|off)", r.Domain, r.TLS), false
 		}
+		key := domainPath{r.Domain, r.Path}
+		if seenRoutes[key] {
+			return "validation_failed", fmt.Sprintf("route conflict: domain %q path %q is declared more than once; (domain, path) combinations must be unique", r.Domain, r.Path), false
+		}
+		seenRoutes[key] = true
 	}
 	return "", "", true
 }
@@ -150,6 +161,7 @@ func toRoutes(deployment string, decls []JacoRouteDecl) []*pb.Route {
 			Service:    d.Service,
 			Port:       int32(d.Port),
 			TlsAuto:    d.TLS == "auto",
+			Path:       d.Path,
 		})
 	}
 	return out
