@@ -17,6 +17,7 @@ import (
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
+	"github.com/PatrickRuddiman/jaco/internal/scheduler"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -27,11 +28,7 @@ import (
 // healthy poll).
 const MaxConsecutiveFailures = 3
 
-// LeaderStatus + Applier types match the other scheduler subpackages.
-type LeaderStatus interface {
-	IsLeader() bool
-}
-
+// Applier wraps raft.Apply.
 type Applier func(cmd []byte) error
 
 // Restarter consumes the ReplicasObserved broker and applies the restart
@@ -39,12 +36,12 @@ type Applier func(cmd []byte) error
 type Restarter struct {
 	state   *state.State
 	brokers *watch.Registry
-	leader  LeaderStatus
+	leader  scheduler.LeaderStatus
 	apply   Applier
 }
 
 // New constructs a Restarter.
-func New(s *state.State, brokers *watch.Registry, leader LeaderStatus, apply Applier) *Restarter {
+func New(s *state.State, brokers *watch.Registry, leader scheduler.LeaderStatus, apply Applier) *Restarter {
 	return &Restarter{state: s, brokers: brokers, leader: leader, apply: apply}
 }
 

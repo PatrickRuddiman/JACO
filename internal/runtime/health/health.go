@@ -34,20 +34,6 @@ const (
 	HealthyConsecutiveCount = 5
 )
 
-// Clock abstracts time.Now / time.After so tests don't burn wall time.
-type Clock interface {
-	Now() time.Time
-	After(d time.Duration) <-chan time.Time
-}
-
-type systemClock struct{}
-
-func (systemClock) Now() time.Time                         { return time.Now() }
-func (systemClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
-
-// SystemClock returns the production Clock implementation.
-func SystemClock() Clock { return systemClock{} }
-
 // SubmitFn writes a ReplicaObserved update through the control plane. The
 // daemon wires this to either a local raft.Apply (when self is the leader)
 // or an Internal.Submit gRPC call (when self is a follower).
@@ -57,7 +43,8 @@ type SubmitFn func(ctx context.Context, obs *pb.ReplicaObserved) error
 type Watcher struct {
 	docker dockerx.Docker
 	submit SubmitFn
-	clock  Clock
+	now    func() time.Time
+	after  func(time.Duration) <-chan time.Time
 
 	mu       sync.Mutex
 	watchers map[string]*replicaWatcher
@@ -75,15 +62,21 @@ type replicaWatcher struct {
 	startedAt         time.Time
 }
 
-// NewWatcher constructs a Watcher. clock may be nil to use SystemClock.
-func NewWatcher(d dockerx.Docker, submit SubmitFn, clock Clock) *Watcher {
-	if clock == nil {
-		clock = SystemClock()
+// NewWatcher constructs a Watcher. now / after may both be nil to use the
+// real time.Now / time.After; tests install fakes to avoid burning wall
+// time on the per-replica poll cadence.
+func NewWatcher(d dockerx.Docker, submit SubmitFn, now func() time.Time, after func(time.Duration) <-chan time.Time) *Watcher {
+	if now == nil {
+		now = time.Now
+	}
+	if after == nil {
+		after = time.After
 	}
 	return &Watcher{
 		docker:   d,
 		submit:   submit,
-		clock:    clock,
+		now:      now,
+		after:    after,
 		watchers: map[string]*replicaWatcher{},
 	}
 }
@@ -146,7 +139,7 @@ func (w *Watcher) loop(ctx context.Context, rw *replicaWatcher) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-w.clock.After(interval):
+		case <-w.after(interval):
 		}
 
 		obs := w.poll(ctx, rw)
@@ -175,7 +168,7 @@ func (w *Watcher) poll(ctx context.Context, rw *replicaWatcher) *pb.ReplicaObser
 			Code:         "inspect_failed",
 			Message:      err.Error(),
 			ContainerId:  rw.containerID,
-			LastHealthAt: timestamppb.New(w.clock.Now()),
+			LastHealthAt: timestamppb.New(w.now()),
 		}
 	}
 
@@ -187,12 +180,12 @@ func (w *Watcher) poll(ctx context.Context, rw *replicaWatcher) *pb.ReplicaObser
 		State:        state,
 		Code:         code,
 		ContainerId:  rw.containerID,
-		LastHealthAt: timestamppb.New(w.clock.Now()),
+		LastHealthAt: timestamppb.New(w.now()),
 	}
 	if !rw.startedAt.IsZero() {
 		obs.StartedAt = timestamppb.New(rw.startedAt)
 	} else if state == pb.ReplicaState_REPLICA_STATE_RUNNING {
-		rw.startedAt = w.clock.Now()
+		rw.startedAt = w.now()
 		obs.StartedAt = timestamppb.New(rw.startedAt)
 	}
 	if exitCode != 0 {
