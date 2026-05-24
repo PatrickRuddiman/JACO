@@ -42,10 +42,9 @@ func nodeIssueJoinTokenCmd() *cobra.Command {
 	)
 	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
 	c.Flags().StringVar(&token, "token", "", "operator bearer token (or JACO_TOKEN); required")
-	c.Flags().StringVar(&caCert, "ca-cert", "", "path to cluster CA cert PEM; required")
+	c.Flags().StringVar(&caCert, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
 	c.Flags().BoolVar(&showCA, "show-ca", false, "append the cluster CA certificate to the output")
 	_ = c.MarkFlagRequired("server")
-	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(cmd *cobra.Command, _ []string) error {
 		if token == "" {
@@ -54,7 +53,11 @@ func nodeIssueJoinTokenCmd() *cobra.Command {
 		if token == "" {
 			return fmt.Errorf("--token or JACO_TOKEN env is required")
 		}
-		conn, err := dialServer(server, mustReadFile(caCert))
+		caCertPEM, err := readCACert(caCert)
+		if err != nil {
+			return err
+		}
+		conn, err := dialServer(server, caCertPEM)
 		if err != nil {
 			return err
 		}
@@ -159,10 +162,9 @@ func nodeRemoveCmd() *cobra.Command {
 	)
 	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
 	c.Flags().StringVar(&token, "token", "", "operator bearer token (or JACO_TOKEN)")
-	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
+	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
 	c.Flags().BoolVar(&force, "force", false, "skip drain enforcement")
 	_ = c.MarkFlagRequired("server")
-	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, args []string) error {
 		if token == "" {
@@ -171,7 +173,11 @@ func nodeRemoveCmd() *cobra.Command {
 		if token == "" {
 			return fmt.Errorf("--token or JACO_TOKEN env is required")
 		}
-		conn, err := dialServer(server, mustReadFile(caCertPath))
+		caCertPEM, err := readCACert(caCertPath)
+		if err != nil {
+			return err
+		}
+		conn, err := dialServer(server, caCertPEM)
 		if err != nil {
 			return err
 		}
@@ -200,15 +206,18 @@ func nodeListCmd() *cobra.Command {
 	var server, token, caCertPath string
 	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
 	c.Flags().StringVar(&token, "token", "", "operator bearer token (or JACO_TOKEN)")
-	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
+	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
 	_ = c.MarkFlagRequired("server")
-	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, _ []string) error {
 		if token == "" {
 			token = os.Getenv("JACO_TOKEN")
 		}
-		conn, err := dialServer(server, mustReadFile(caCertPath))
+		caCertPEM, err := readCACert(caCertPath)
+		if err != nil {
+			return err
+		}
+		conn, err := dialServer(server, caCertPEM)
 		if err != nil {
 			return err
 		}
@@ -253,13 +262,20 @@ func dialServer(addr string, caCertPEM []byte) (*grpc.ClientConn, error) {
 // silence unused if --ca-cert is the only path callers exercise.
 var _ = insecure.NewCredentials
 
-func mustReadFile(path string) []byte {
+// readCACert reads the PEM-encoded CA certificate at path. When the file does
+// not exist it returns the documented user-facing error so operators know how
+// to fix it. An empty path is treated as "no cert" (returns nil, nil) so that
+// dialServer falls back to InsecureSkipVerify.
+func readCACert(path string) ([]byte, error) {
+	if path == "" {
+		return nil, nil
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
-		// Cobra will surface the runE error; this helper is only called when
-		// the flag is required, so the file path must exist or we error out
-		// during RunE. Use a placeholder that triggers a clean error.
-		return []byte("__MISSING__:" + err.Error())
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("ca cert not found at %s — pass --ca-cert or set JACO_CA_CERT", path)
+		}
+		return nil, fmt.Errorf("read CA cert %s: %w", path, err)
 	}
-	return b
+	return b, nil
 }
