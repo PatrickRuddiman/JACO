@@ -198,7 +198,7 @@ func TestWatcher_HealthcheckStartingToHealthyTransitions(t *testing.T) {
 	}}
 	sub := newRecordingSubmit()
 	clock := newFakeClock()
-	w := health.NewWatcher(d, sub.Submit, clock)
+	w := health.NewWatcher(d, sub.Submit, clock.Now, clock.After)
 
 	w.Start(context.Background(), "sample-web-0", "c-1", true)
 	t.Cleanup(func() { w.Stop("sample-web-0") })
@@ -240,7 +240,7 @@ func TestWatcher_HealthcheckUnhealthyEmitsDegraded(t *testing.T) {
 	}}
 	sub := newRecordingSubmit()
 	clock := newFakeClock()
-	w := health.NewWatcher(d, sub.Submit, clock)
+	w := health.NewWatcher(d, sub.Submit, clock.Now, clock.After)
 	w.Start(context.Background(), "sample-web-0", "c-1", true)
 	t.Cleanup(func() { w.Stop("sample-web-0") })
 
@@ -257,7 +257,7 @@ func TestWatcher_NoHealthcheckRequiresFiveConsecutiveRunningPolls(t *testing.T) 
 	d := &fakeDocker{state: &types.ContainerState{Status: "running"}}
 	sub := newRecordingSubmit()
 	clock := newFakeClock()
-	w := health.NewWatcher(d, sub.Submit, clock)
+	w := health.NewWatcher(d, sub.Submit, clock.Now, clock.After)
 	w.Start(context.Background(), "sample-web-0", "c-1", false /* no healthcheck */)
 	t.Cleanup(func() { w.Stop("sample-web-0") })
 
@@ -283,7 +283,7 @@ func TestWatcher_ExitedContainerEmitsFailedWithExitCode(t *testing.T) {
 	d := &fakeDocker{state: &types.ContainerState{Status: "exited", ExitCode: 137}}
 	sub := newRecordingSubmit()
 	clock := newFakeClock()
-	w := health.NewWatcher(d, sub.Submit, clock)
+	w := health.NewWatcher(d, sub.Submit, clock.Now, clock.After)
 	w.Start(context.Background(), "sample-web-0", "c-1", false)
 	t.Cleanup(func() { w.Stop("sample-web-0") })
 
@@ -316,7 +316,7 @@ func TestWatcher_PopulatesPerNetworkIPs(t *testing.T) {
 	}
 	sub := newRecordingSubmit()
 	clock := newFakeClock()
-	w := health.NewWatcher(d, sub.Submit, clock)
+	w := health.NewWatcher(d, sub.Submit, clock.Now, clock.After)
 	w.Start(context.Background(), "app-web-0", "c-1", false)
 	t.Cleanup(func() { w.Stop("app-web-0") })
 
@@ -338,7 +338,7 @@ func TestWatcher_InspectErrorEmitsFailedInspectFailed(t *testing.T) {
 	d.setInspectErr(fmt.Errorf("docker is down"))
 	sub := newRecordingSubmit()
 	clock := newFakeClock()
-	w := health.NewWatcher(d, sub.Submit, clock)
+	w := health.NewWatcher(d, sub.Submit, clock.Now, clock.After)
 	w.Start(context.Background(), "sample-web-0", "c-1", true)
 	t.Cleanup(func() { w.Stop("sample-web-0") })
 
@@ -362,7 +362,7 @@ func TestWatcher_LastHealthAtIsAlwaysFresh(t *testing.T) {
 	}}
 	sub := newRecordingSubmit()
 	clock := newFakeClock()
-	w := health.NewWatcher(d, sub.Submit, clock)
+	w := health.NewWatcher(d, sub.Submit, clock.Now, clock.After)
 	w.Start(context.Background(), "sample-web-0", "c-1", true)
 	t.Cleanup(func() { w.Stop("sample-web-0") })
 
@@ -408,7 +408,7 @@ func TestWatcher_StateMappingIsClosed_OnlyKnownEnumValuesEmitted(t *testing.T) {
 		d := &fakeDocker{state: s}
 		sub := newRecordingSubmit()
 		clock := newFakeClock()
-		w := health.NewWatcher(d, sub.Submit, clock)
+		w := health.NewWatcher(d, sub.Submit, clock.Now, clock.After)
 		w.Start(context.Background(), fmt.Sprintf("r-%d", i), "c-1", true)
 		clock.waitForPending(t, 1)
 		clock.Advance(health.FastPollInterval)
@@ -425,7 +425,7 @@ func TestWatcher_StopCancelsLoop(t *testing.T) {
 	d := &fakeDocker{state: &types.ContainerState{Status: "running"}}
 	sub := newRecordingSubmit()
 	clock := newFakeClock()
-	w := health.NewWatcher(d, sub.Submit, clock)
+	w := health.NewWatcher(d, sub.Submit, clock.Now, clock.After)
 	w.Start(context.Background(), "sample-web-0", "c-1", false)
 	clock.waitForPending(t, 1)
 
@@ -446,7 +446,7 @@ func TestWatcher_PollCadenceSwitchesToSlowAfterRunning(t *testing.T) {
 	}}
 	sub := newRecordingSubmit()
 	clock := newFakeClock()
-	w := health.NewWatcher(d, sub.Submit, clock)
+	w := health.NewWatcher(d, sub.Submit, clock.Now, clock.After)
 	w.Start(context.Background(), "sample-web-0", "c-1", true)
 	t.Cleanup(func() { w.Stop("sample-web-0") })
 

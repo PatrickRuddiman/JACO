@@ -81,8 +81,8 @@ func TestReconciler_OrphanSweepFailsBeforeClusterMeta(t *testing.T) {
 }
 
 // TestReconciler_StartReplicaFailsWhenComposeServiceMissing — a
-// ReplicaDesired references a service whose compose_service doesn't
-// exist in the deployment's compose. startReplica should surface an
+// ReplicaDesired references a service whose name doesn't match any key
+// in the deployment's compose file. startReplica should surface an
 // error (logged), and no container should be created.
 func TestReconciler_StartReplicaFailsWhenComposeServiceMissing(t *testing.T) {
 	brokers := watch.NewRegistry()
@@ -92,7 +92,7 @@ func TestReconciler_StartReplicaFailsWhenComposeServiceMissing(t *testing.T) {
 	var raftIdx uint64
 
 	// Seed cluster + node manually so we can reference a deployment whose
-	// compose_service doesn't match the YAML.
+	// service name doesn't match the compose YAML.
 	raftIdx++
 	apply(t, f, &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_ClusterInit{
 		ClusterInit: &pb.ClusterInit{ClusterId: "cluster-x", SelfHostname: "host-a", SelfAddress: "host-a:7000"},
@@ -102,14 +102,13 @@ func TestReconciler_StartReplicaFailsWhenComposeServiceMissing(t *testing.T) {
 		NodeStatusUpdate: &pb.NodeStatusUpdate{Hostname: "host-a", Status: pb.NodeStatus_NODE_STATUS_READY},
 	}}, raftIdx)
 
-	// Deployment whose service references a compose_service that isn't
-	// in the compose YAML.
+	// Deployment whose service name "ghost" isn't a key in the compose YAML.
 	raftIdx++
 	apply(t, f, &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_DeploymentApply{
 		DeploymentApply: &pb.DeploymentApply{
 			Deployment: "smoke", Revision: 1,
 			ComposeYaml: []byte("services:\n  web:\n    image: nginx:1.27\n"),
-			Services:    []*pb.ServiceSpec{{Name: "web", Replicas: 1, ComposeService: "ghost"}},
+			Services:    []*pb.ServiceSpec{{Name: "ghost", Replicas: 1}},
 		},
 	}}, raftIdx)
 
@@ -122,14 +121,14 @@ func TestReconciler_StartReplicaFailsWhenComposeServiceMissing(t *testing.T) {
 	raftIdx++
 	apply(t, f, &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_ReplicaDesiredUpsert{
 		ReplicaDesiredUpsert: &pb.ReplicaDesiredUpsert{Replica: &pb.ReplicaDesired{
-			Id: "smoke-web-0", Deployment: "smoke", Service: "web", Host: "host-a", Image: "nginx:1.27",
+			Id: "smoke-ghost-0", Deployment: "smoke", Service: "ghost", Host: "host-a", Image: "nginx:1.27",
 		}},
 	}}, raftIdx)
 
 	// Wait briefly — startReplica should fail; no container created.
 	time.Sleep(200 * time.Millisecond)
-	if _, ok := d.snapshotByReplicaID()["smoke-web-0"]; ok {
-		t.Errorf("startReplica created a container despite missing compose_service")
+	if _, ok := d.snapshotByReplicaID()["smoke-ghost-0"]; ok {
+		t.Errorf("startReplica created a container despite service not in compose")
 	}
 	cancel()
 	<-done

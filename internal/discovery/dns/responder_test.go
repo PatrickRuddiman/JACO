@@ -116,24 +116,15 @@ func TestHandle_ServiceNotInScopeReturnsNXDOMAIN(t *testing.T) {
 	}
 }
 
-// fakeForwarder echoes a canned response.
-type fakeForwarder struct {
-	respond func(host string) ([]net.IP, error)
-}
-
-func (f *fakeForwarder) LookupHost(host string) ([]net.IP, error) {
-	return f.respond(host)
-}
-
 func TestHandle_ExternalNameForwardedToUpstream(t *testing.T) {
 	called := false
-	fw := &fakeForwarder{respond: func(host string) ([]net.IP, error) {
+	fw := jdns.LookupHostFn(func(host string) ([]net.IP, error) {
 		called = true
 		if host != "example.com" {
 			t.Errorf("forwarded host = %q", host)
 		}
 		return []net.IP{net.IPv4(93, 184, 216, 34)}, nil
-	}}
+	})
 	r := jdns.New(
 		jdns.Scope{Deployment: "sample", Network: "frontend"},
 		jdns.ServiceMap{"web": {net.IPv4(10, 244, 5, 2)}},
@@ -152,9 +143,9 @@ func TestHandle_ExternalNameForwardedToUpstream(t *testing.T) {
 }
 
 func TestHandle_ExternalNameForwarderErrorReturnsNXDOMAIN(t *testing.T) {
-	fw := &fakeForwarder{respond: func(string) ([]net.IP, error) {
+	fw := jdns.LookupHostFn(func(string) ([]net.IP, error) {
 		return nil, errors.New("upstream nope")
-	}}
+	})
 	r := jdns.New(jdns.Scope{Deployment: "x", Network: "y"}, jdns.ServiceMap{}, fw)
 	resp := r.Handle(aQuery("missing.example.com"))
 	if resp.Rcode != mdns.RcodeNameError {
@@ -194,9 +185,9 @@ func TestHandle_AAAAExternalForwardsV6AndReportsExistence(t *testing.T) {
 	// External AAAA is forwarded: IPv6 addresses are returned; an external
 	// name that resolves to IPv4-only is NODATA (NOERROR), not NXDOMAIN.
 	v6 := net.ParseIP("2606:4700:4700::1111")
-	fwd := &fakeForwarder{respond: func(string) ([]net.IP, error) {
+	fwd := jdns.LookupHostFn(func(string) ([]net.IP, error) {
 		return []net.IP{net.IPv4(1, 1, 1, 1), v6}, nil
-	}}
+	})
 	r := jdns.New(jdns.Scope{Deployment: "x", Network: "y"}, jdns.ServiceMap{}, fwd)
 	q := new(mdns.Msg)
 	q.SetQuestion(mdns.Fqdn("one.example.com"), mdns.TypeAAAA)
@@ -212,9 +203,9 @@ func TestHandle_AAAAExternalForwardsV6AndReportsExistence(t *testing.T) {
 	}
 
 	// IPv4-only external name → NODATA on AAAA (NOERROR, no answer).
-	fwd4 := &fakeForwarder{respond: func(string) ([]net.IP, error) {
+	fwd4 := jdns.LookupHostFn(func(string) ([]net.IP, error) {
 		return []net.IP{net.IPv4(1, 1, 1, 1)}, nil
-	}}
+	})
 	r4 := jdns.New(jdns.Scope{Deployment: "x", Network: "y"}, jdns.ServiceMap{}, fwd4)
 	q4 := new(mdns.Msg)
 	q4.SetQuestion(mdns.Fqdn("v4only.example.com"), mdns.TypeAAAA)

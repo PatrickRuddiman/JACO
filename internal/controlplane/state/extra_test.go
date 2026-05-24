@@ -40,26 +40,3 @@ func TestLookupTokenByHash_Miss(t *testing.T) {
 	}
 }
 
-// TestReplicaCounterKey — deterministic key format used by the FSM
-// and the scheduler to look up per-(deployment, service) replica
-// counters.
-func TestReplicaCounterKey(t *testing.T) {
-	if got := state.ReplicaCounterKey("d", "s"); got != "d\x00s" {
-		t.Errorf("ReplicaCounterKey = %q, want d\x00s", got)
-	}
-	// Bracket each side with empty
-	if got := state.ReplicaCounterKey("", "s"); got != "\x00s" {
-		t.Errorf("empty deployment = %q", got)
-	}
-	if got := state.ReplicaCounterKey("d", ""); got != "d\x00" {
-		t.Errorf("empty service = %q", got)
-	}
-}
-
-// TestRolloutPlanKey — same shape; ensures keys match what the
-// scheduler reads via state.RolloutPlans.Get.
-func TestRolloutPlanKey(t *testing.T) {
-	if got := state.RolloutPlanKey("d", "s"); got != "d\x00s" {
-		t.Errorf("RolloutPlanKey = %q, want d\\x00s", got)
-	}
-}

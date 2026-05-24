@@ -98,7 +98,8 @@ message ServiceSpec {
   int32 replicas = 2;
   PlacementMode placement = 3;
   repeated string hosts = 4;
-  string compose_service = 5;
+  reserved 5; // was: compose_service (removed pre-1.0)
+  reserved "compose_service";
   repeated string networks = 6;
 }
 
@@ -142,6 +143,11 @@ message Route {
   string service = 3;
   int32 port = 4;
   bool tls_auto = 5;
+  // path is an optional URL path prefix (e.g. "/api/"). Default "" means
+  // catch-all. Caddy matches routes in declaration order (first match
+  // wins); JACO is responsible for emitting routes longest-prefix-first
+  // so the more specific path is tried before the catch-all.
+  string path = 6;
 }
 
 // ----- Ingress entities -----

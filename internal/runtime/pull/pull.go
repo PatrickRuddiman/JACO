@@ -26,22 +26,6 @@ const (
 	StateDone    State = "done"
 )
 
-// Clock abstracts time.Now + time.After so tests can pin the sleep cadence
-// without burning wall time.
-type Clock interface {
-	Now() time.Time
-	After(d time.Duration) <-chan time.Time
-}
-
-// systemClock is the production Clock.
-type systemClock struct{}
-
-func (systemClock) Now() time.Time                         { return time.Now() }
-func (systemClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
-
-// SystemClock returns the production clock implementation.
-func SystemClock() Clock { return systemClock{} }
-
 // StateFn receives every state transition during a pull. attempt counts up
 // from 1; nextRetryAt is set only on failed-then-retrying transitions
 // (zero time on pulling/done).
@@ -53,11 +37,11 @@ type Puller interface {
 }
 
 // Pull retries dockerx.ImagePull with exponential backoff until ctx is
-// cancelled or the pull succeeds. clock may be nil to use SystemClock.
-// onState may be nil.
-func Pull(ctx context.Context, d Puller, ref string, clock Clock, onState StateFn) error {
-	if clock == nil {
-		clock = SystemClock()
+// cancelled or the pull succeeds. after may be nil to use time.After;
+// tests use a fake to avoid burning wall time. onState may be nil.
+func Pull(ctx context.Context, d Puller, ref string, after func(time.Duration) <-chan time.Time, onState StateFn) error {
+	if after == nil {
+		after = time.After
 	}
 	if ref == "" {
 		return errors.New("pull: ref is required")
@@ -82,13 +66,13 @@ func Pull(ctx context.Context, d Puller, ref string, clock Clock, onState StateF
 		// Pull failed (either at request time or during stream drain). Sleep
 		// for the backoff window, then retry.
 		delay := BackoffDuration(attempt)
-		next := clock.Now().Add(delay)
+		next := time.Now().Add(delay)
 		notify(onState, StateFailed, attempt, next, err)
 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-clock.After(delay):
+		case <-after(delay):
 			// continue
 		}
 	}

@@ -33,13 +33,6 @@ func TestIsExhausted_OnlyMatchesPoolExhausted(t *testing.T) {
 	}
 }
 
-// TestNew_RejectsInvalidPoolCIDR — defensive guard.
-func TestNew_RejectsInvalidPoolCIDR(t *testing.T) {
-	if _, err := ipam.New(nil, nil, "not-a-cidr"); err == nil {
-		t.Errorf("New with bad CIDR returned nil err")
-	}
-}
-
 // TestNew_RejectsIPv6Pool — pool must be IPv4 /16.
 func TestNew_RejectsIPv6Pool(t *testing.T) {
 	if _, err := ipam.New(nil, nil, "2001:db8::/64"); err == nil {

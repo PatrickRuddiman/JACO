@@ -130,8 +130,8 @@ func TestReconcile_HappyPathNoDriftSilent(t *testing.T) {
 	aud := &recordingAudit{}
 	stat := &recordingStatus{}
 	r := &firewall.Reconciler{
-		Lister:       &fakeLister{body: []byte(validJSON)},
-		Applier:      apl,
+		Lister:       (&fakeLister{body: []byte(validJSON)}).List,
+		Applier:      apl.Apply,
 		Audit:        aud.fn(),
 		UpdateStatus: stat.fn(),
 		Render:       goodInput,
@@ -151,8 +151,8 @@ func TestReconcile_AssertsSNATExemptEachTick(t *testing.T) {
 	var gotPool string
 	calls := 0
 	r := &firewall.Reconciler{
-		Lister:       &fakeLister{body: []byte(validJSON)},
-		Applier:      &recordingApplier{},
+		Lister:       (&fakeLister{body: []byte(validJSON)}).List,
+		Applier:      (&recordingApplier{}).Apply,
 		Audit:        (&recordingAudit{}).fn(),
 		UpdateStatus: (&recordingStatus{}).fn(),
 		Render:       goodInput,
@@ -178,8 +178,8 @@ func TestReconcile_AssertsOverlayExemptEachTick(t *testing.T) {
 	var gotPool string
 	calls := 0
 	r := &firewall.Reconciler{
-		Lister:       &fakeLister{body: []byte(validJSON)},
-		Applier:      &recordingApplier{},
+		Lister:       (&fakeLister{body: []byte(validJSON)}).List,
+		Applier:      (&recordingApplier{}).Apply,
 		Audit:        (&recordingAudit{}).fn(),
 		UpdateStatus: (&recordingStatus{}).fn(),
 		Render:       goodInput,
@@ -207,8 +207,8 @@ func TestReconcile_OverlayExemptFailureAuditsButDoesNotFail(t *testing.T) {
 	aud := &recordingAudit{}
 	stat := &recordingStatus{}
 	r := &firewall.Reconciler{
-		Lister:       &fakeLister{body: []byte(validJSON)},
-		Applier:      &recordingApplier{},
+		Lister:       (&fakeLister{body: []byte(validJSON)}).List,
+		Applier:      (&recordingApplier{}).Apply,
 		Audit:        aud.fn(),
 		UpdateStatus: stat.fn(),
 		Render:       goodInput,
@@ -241,8 +241,8 @@ func TestReconcile_DriftDetectedReappliesAndAudits(t *testing.T) {
 	aud := &recordingAudit{}
 	stat := &recordingStatus{}
 	r := &firewall.Reconciler{
-		Lister:       &fakeLister{body: []byte(driftedJSON)},
-		Applier:      apl,
+		Lister:       (&fakeLister{body: []byte(driftedJSON)}).List,
+		Applier:      apl.Apply,
 		Audit:        aud.fn(),
 		UpdateStatus: stat.fn(),
 		Render:       goodInput,
@@ -259,13 +259,41 @@ func TestReconcile_DriftDetectedReappliesAndAudits(t *testing.T) {
 	}
 }
 
+// TestReconcile_ColdBootEmptyDocAppliesRuleset covers the first-boot path:
+// when the `inet jaco` table doesn't exist yet, NftList returns the empty
+// document `{"nftables":[]}` (instead of a "table not found" error), and
+// the reconciler must treat that as full drift and call Apply to create
+// the table.
+func TestReconcile_ColdBootEmptyDocAppliesRuleset(t *testing.T) {
+	apl := &recordingApplier{}
+	aud := &recordingAudit{}
+	stat := &recordingStatus{}
+	r := &firewall.Reconciler{
+		Lister:       (&fakeLister{body: []byte(`{"nftables":[]}`)}).List,
+		Applier:      apl.Apply,
+		Audit:        aud.fn(),
+		UpdateStatus: stat.fn(),
+		Render:       goodInput,
+	}
+	if err := r.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if apl.Count() != 1 {
+		t.Errorf("Apply called %d times on cold boot; want 1", apl.Count())
+	}
+	codes := aud.Codes()
+	if len(codes) != 1 || codes[0] != "ISOLATION_RULESET_RECONCILED" {
+		t.Errorf("audit codes = %v, want [ISOLATION_RULESET_RECONCILED]", codes)
+	}
+}
+
 func TestReconcile_ApplyFailureFlipsIsolationUnavailable(t *testing.T) {
 	apl := &recordingApplier{err: errors.New("nftables: parse error")}
 	aud := &recordingAudit{}
 	stat := &recordingStatus{}
 	r := &firewall.Reconciler{
-		Lister:       &fakeLister{body: []byte(driftedJSON)},
-		Applier:      apl,
+		Lister:       (&fakeLister{body: []byte(driftedJSON)}).List,
+		Applier:      apl.Apply,
 		Audit:        aud.fn(),
 		UpdateStatus: stat.fn(),
 		Render:       goodInput,
@@ -286,16 +314,16 @@ func TestReconcile_RecoveryFromIsolationUnavailableEmitsReady(t *testing.T) {
 	stat := &recordingStatus{}
 	// Start with drifted state + Apply error to set the degraded flag.
 	r := &firewall.Reconciler{
-		Lister:       &fakeLister{body: []byte(driftedJSON)},
-		Applier:      &recordingApplier{err: errors.New("transient")},
+		Lister:       (&fakeLister{body: []byte(driftedJSON)}).List,
+		Applier:      (&recordingApplier{err: errors.New("transient")}).Apply,
 		Audit:        aud.fn(),
 		UpdateStatus: stat.fn(),
 		Render:       goodInput,
 	}
 	_ = r.Tick(context.Background())
 	// Swap to healthy state + working applier.
-	r.Lister = &fakeLister{body: []byte(validJSON)}
-	r.Applier = apl
+	r.Lister = (&fakeLister{body: []byte(validJSON)}).List
+	r.Applier = apl.Apply
 	if err := r.Tick(context.Background()); err != nil {
 		t.Fatalf("second Tick: %v", err)
 	}
@@ -318,8 +346,8 @@ func TestReconcile_ListErrorIsTransientNotDegradation(t *testing.T) {
 	aud := &recordingAudit{}
 	stat := &recordingStatus{}
 	r := &firewall.Reconciler{
-		Lister:       &fakeLister{err: errors.New("nft exec failed")},
-		Applier:      apl,
+		Lister:       (&fakeLister{err: errors.New("nft exec failed")}).List,
+		Applier:      apl.Apply,
 		Audit:        aud.fn(),
 		UpdateStatus: stat.fn(),
 		Render:       goodInput,

@@ -128,7 +128,7 @@ func (m *Manager) ensure(ctx context.Context, sn *pb.Subnet) {
 		return
 	}
 	scope := Scope{Deployment: sn.GetDeployment(), Network: sn.GetNetwork()}
-	resp := New(scope, ServiceMap{}, defaultForwarder{})
+	resp := New(scope, ServiceMap{}, LookupHost)
 
 	addr := fmt.Sprintf("%s:%d", gw, ListenPort)
 	udp := &dns.Server{Addr: addr, Net: "udp", Handler: dnsHandlerFunc(resp.Handle)}
@@ -282,9 +282,9 @@ func networksOfService(st *state.State, deployment, service string) []string {
 	return nil
 }
 
-type defaultForwarder struct{}
-
-func (defaultForwarder) LookupHost(host string) ([]net.IP, error) {
+// LookupHost is the production LookupHostFn — wraps net.LookupHost and
+// parses the resulting strings into net.IPs.
+func LookupHost(host string) ([]net.IP, error) {
 	addrs, err := net.LookupHost(host)
 	if err != nil {
 		return nil, err

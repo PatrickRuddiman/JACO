@@ -35,7 +35,7 @@ func (c *fakeClock) Advance(d time.Duration) {
 
 // newHarness builds state+FSM+applier so the storage's raft writes land in
 // state.Certs. lessee is the node identity baked into Lock calls.
-func newHarness(t *testing.T, lessee string, clock storage.Clock) (*storage.JacoStorage, *state.State) {
+func newHarness(t *testing.T, lessee string, clock *fakeClock) (*storage.JacoStorage, *state.State) {
 	t.Helper()
 	brokers := watch.NewRegistry()
 	st := state.New(brokers)
@@ -46,7 +46,7 @@ func newHarness(t *testing.T, lessee string, clock storage.Clock) (*storage.Jaco
 		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
 		return nil
 	}
-	return storage.New(st, apply, lessee, clock), st
+	return storage.New(st, apply, lessee, clock.Now), st
 }
 
 func TestLock_FirstLesseeAcquires(t *testing.T) {
@@ -80,8 +80,8 @@ func TestLock_ContentionResolvedWithSingleWinner(t *testing.T) {
 		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
 		return nil
 	}
-	sA := storage.New(st, apply, "node-a", clock)
-	sB := storage.New(st, apply, "node-b", clock)
+	sA := storage.New(st, apply, "node-a", clock.Now)
+	sB := storage.New(st, apply, "node-b", clock.Now)
 
 	if err := sA.Lock(context.Background(), "issue_cert_example.com"); err != nil {
 		t.Fatalf("node-a Lock: %v", err)
@@ -110,8 +110,8 @@ func TestLock_ExpiredLockAcquirableByNewLessee(t *testing.T) {
 		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
 		return nil
 	}
-	sA := storage.New(st, apply, "node-a", clock)
-	sB := storage.New(st, apply, "node-b", clock)
+	sA := storage.New(st, apply, "node-a", clock.Now)
+	sB := storage.New(st, apply, "node-b", clock.Now)
 
 	if err := sA.Lock(context.Background(), "issue_cert_example.com"); err != nil {
 		t.Fatalf("Lock: %v", err)
@@ -155,8 +155,8 @@ func TestUnlock_ReleasesAndAllowsImmediateReacquire(t *testing.T) {
 		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
 		return nil
 	}
-	sA := storage.New(st, apply, "node-a", clock)
-	sB := storage.New(st, apply, "node-b", clock)
+	sA := storage.New(st, apply, "node-a", clock.Now)
+	sB := storage.New(st, apply, "node-b", clock.Now)
 
 	if err := sA.Lock(context.Background(), "issue_cert_example.com"); err != nil {
 		t.Fatalf("Lock A: %v", err)

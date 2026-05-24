@@ -278,7 +278,7 @@ func TestApply_FailsWhenNftMissing(t *testing.T) {
 	if err := firewall.IsAvailable(); err == nil {
 		t.Skip("nft is available on PATH; this test asserts the missing-binary path")
 	}
-	err := firewall.DefaultApplier().Apply(context.Background(), "table inet test {}\n")
+	err := firewall.NftApply(context.Background(), "table inet test {}\n")
 	if err == nil {
 		t.Errorf("expected error when nft not on PATH")
 	}

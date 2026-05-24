@@ -436,7 +436,7 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 		}
 	}()
 
-	rollouts := rollout.New(st, apply, rollout.SystemClock())
+	rollouts := rollout.New(st, apply, nil)
 	sched := scheduler.New(st, brokers, node, apply, rollouts)
 	s.subsystemsWG.Add(1)
 	go func() {
@@ -502,8 +502,8 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 	// available on PATH or the kernel netfilter API is unreachable.
 	if err := firewall.IsAvailable(); err == nil {
 		fw := &firewall.Reconciler{
-			Lister:  firewall.DefaultLister(),
-			Applier: firewall.DefaultApplier(),
+			Lister:  firewall.NftList,
+			Applier: firewall.NftApply,
 			Audit: func(ctx context.Context, code string, details map[string]string) error {
 				cmd := &pb.Command{
 					Identity: "firewall",

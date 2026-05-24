@@ -29,7 +29,7 @@ func TestProxies_DeployApplyReachesHandler(t *testing.T) {
 	deploy := pb.NewDeployClient(conn)
 	_, err = deploy.Apply(authCtx, &pb.ApplyRequest{
 		ComposeYaml: []byte(proxyTestCompose),
-		JacoYaml:    []byte("deployment: smoke\nservices:\n  - name: web\n    compose_service: web\n    replicas: 1\n"),
+		JacoYaml:    []byte("deployment: smoke\nservices:\n  - name: web\n    replicas: 1\n"),
 	})
 	// Apply may surface a validation error (depending on what compose
 	// expects), but the call must reach the controlplane handler — not
