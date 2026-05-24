@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,10 +102,11 @@ func (c *clusterServer) Init(_ context.Context, req *pb.ClusterInitRequest) (*pb
 	advertiseAddr := c.effectiveAdvertiseAddr()
 
 	result, err := bootstrap.Run(bootstrap.Options{
-		DataDir:       c.dataDir,
-		Name:          hostname,
-		BindAddr:      bindAddr,
-		AdvertiseAddr: advertiseAddr,
+		DataDir:             c.dataDir,
+		Name:                hostname,
+		BindAddr:            bindAddr,
+		AdvertiseAddr:       advertiseAddr,
+		ListenAdvertiseAddr: c.server.TCPAdvertiseAddr(),
 	})
 	if err != nil {
 		if errors.Is(err, errRaftExists) || isRaftExistsErr(err) {
@@ -157,7 +159,25 @@ func (c *clusterServer) Join(ctx context.Context, req *pb.ClusterJoinRequest) (*
 		return nil, status.Errorf(codes.Internal, "hostname: %v", err)
 	}
 
-	keyPEM, csrPEM, err := ca.GenerateNodeKeypair(hostname)
+	// Collect IP SANs for the joiner's CSR. The signed cert is presented
+	// by this node's gRPC TLS listener, so the gRPC listen advertise IP is
+	// the load-bearing one — clients dial the gRPC listener by that IP.
+	// The raft transport advertise IP is included too when distinct; dedupe
+	// in ca.GenerateNodeKeypair collapses identical values into one SAN.
+	advertise := c.effectiveAdvertiseAddr()
+	grpcAdvertise := c.server.TCPAdvertiseAddr()
+	var clusterIP, listenIP net.IP
+	if advertise != "" {
+		if host, _, splitErr := net.SplitHostPort(advertise); splitErr == nil {
+			clusterIP = net.ParseIP(host) // nil when host is a DNS name
+		}
+	}
+	if grpcAdvertise != "" {
+		if host, _, splitErr := net.SplitHostPort(grpcAdvertise); splitErr == nil {
+			listenIP = net.ParseIP(host)
+		}
+	}
+	keyPEM, csrPEM, err := ca.GenerateNodeKeypair(hostname, listenIP, clusterIP)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "generate keypair: %v", err)
 	}
@@ -176,18 +196,17 @@ func (c *clusterServer) Join(ctx context.Context, req *pb.ClusterJoinRequest) (*
 	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	advertise := c.effectiveAdvertiseAddr()
-	// grpcAddr is the joiner's own cross-host gRPC listener address, used
-	// by the leader (or any other node) to dial back via Internal.Submit.
-	// Resolved at startup by cmd/jacod via netdetect when listen_addr is
-	// unspecified; falls back to the bound address when explicit.
-	grpcAddr := c.server.TCPAdvertiseAddr()
+	// grpcAdvertise (computed above for the cert's IP SAN) is the joiner's
+	// own cross-host gRPC listener address, used by the leader (or any
+	// other node) to dial back via Internal.Submit. Resolved at startup by
+	// cmd/jacod via netdetect when listen_addr is unspecified; falls back
+	// to the bound address when explicit.
 	resp, err := pb.NewClusterClient(conn).NodeJoin(dialCtx, &pb.NodeJoinRequest{
 		Name:          hostname,
 		JoinToken:     req.GetJoinToken(),
 		CsrPem:        csrPEM,
 		AdvertiseAddr: advertise,
-		GrpcAddress:   grpcAddr,
+		GrpcAddress:   grpcAdvertise,
 	})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "node join rpc: %v", err)
