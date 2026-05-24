@@ -88,8 +88,16 @@ func (m *Manager) Run(ctx context.Context) error {
 }
 
 func (m *Manager) reconcileSubnets(ctx context.Context) {
+	// Only the LOCAL host's bridge gateway is bindable here. With per-host
+	// /24s (issue #28) every host has its own subnet+gateway for the same
+	// (deployment, network); binding another host's gateway fails with
+	// "cannot assign requested address". So spawn a responder only for
+	// subnets allocated to this host.
 	live := map[string]*pb.Subnet{}
 	for _, sn := range m.State.Subnets.List() {
+		if sn.GetHost() != m.Hostname {
+			continue
+		}
 		live[scopeKey(sn.GetDeployment(), sn.GetNetwork())] = sn
 	}
 	m.mu.Lock()

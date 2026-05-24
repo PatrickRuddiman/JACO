@@ -167,6 +167,28 @@ func TestManager_ReconcileSubnets_BadCIDRSkipped(t *testing.T) {
 	}
 }
 
+// TestManager_ReconcileSubnets_SkipsNonLocalHostSubnet — with per-host /24s
+// (issue #28) a subnet allocated to a DIFFERENT host must NOT get a local
+// responder (its gateway isn't on this host → bind would fail). Only the
+// local host's bridge gateway is bound.
+func TestManager_ReconcileSubnets_SkipsNonLocalHostSubnet(t *testing.T) {
+	st := state.New(watch.NewRegistry())
+	st.Subnets.Apply(&pb.Subnet{Deployment: "app", Network: "frontend", Cidr: "10.244.9.0/24", Host: "host-b"}, 1)
+	m := &Manager{
+		State:     st,
+		Brokers:   watch.NewRegistry(),
+		Logger:    log.New(&bytes.Buffer{}, "", 0),
+		Hostname:  "host-a",
+		listeners: map[string]*listenerEntry{},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.reconcileSubnets(ctx)
+	if len(m.listeners) != 0 {
+		t.Errorf("non-local-host subnet created a listener; want 0, got %d", len(m.listeners))
+	}
+}
+
 // TestManager_ReconcileSubnets_RemovesStaleListeners — when a subnet
 // disappears from state.Subnets the manager shuts down its listeners.
 // We seed a synthetic listenerEntry whose servers have no listener

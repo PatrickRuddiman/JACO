@@ -62,20 +62,23 @@ func (r *Reconciler) Tick(ctx context.Context) error {
 	}
 
 	expected := r.Render()
-	listBytes, listErr := r.Lister.List(ctx)
-	// A list error almost always means `table inet jaco` doesn't exist yet —
-	// `nft -j list table inet jaco` errors on a missing table. Treat that as
-	// drift and apply (which creates the table) rather than bailing; otherwise
-	// the table never bootstraps on a fresh host. A genuinely broken `nft`
-	// surfaces below as an Apply failure (→ isolation_unavailable).
-	needApply := listErr != nil
-	var selfErr error
-	if !needApply {
-		selfErr = SelfTestFromJSON(listBytes, expected)
-		needApply = selfErr != nil
+	listBytes, err := r.Lister.List(ctx)
+	if err != nil {
+		// Can't read live state — surface the error but don't flip status yet
+		// (a transient `nft` exec failure shouldn't mark the node down).
+		//
+		// NOTE: `nft -j list table inet jaco` also errors when the table is
+		// absent, so the isolation table does not auto-bootstrap here. That's
+		// intentional for now: the rendered `input` chain (policy drop) does
+		// not yet permit SSH or the Tailscale interface, so applying it on a
+		// remotely-managed host would lock the operator out. Enabling the
+		// table safely (SSH/Tailscale allow + correct WG iface name) is a
+		// separate change tracked outside issue #28.
+		return fmt.Errorf("nft list: %w", err)
 	}
 
-	if !needApply {
+	selfErr := SelfTestFromJSON(listBytes, expected)
+	if selfErr == nil {
 		// Live state matches expected. If we were degraded, signal recovery.
 		if r.degraded {
 			r.degraded = false
@@ -91,8 +94,8 @@ func (r *Reconciler) Tick(ctx context.Context) error {
 		return nil
 	}
 
-	// Missing table (bootstrap) or drift — render + apply.
-	ruleset := Render(expected)
+	// Mismatch detected — re-render + apply.
+	ruleset := Render(r.Render())
 	if applyErr := r.Applier.Apply(ctx, ruleset); applyErr != nil {
 		r.degraded = true
 		_ = r.UpdateStatus(ctx, "isolation_unavailable", applyErr.Error())
@@ -100,10 +103,7 @@ func (r *Reconciler) Tick(ctx context.Context) error {
 	}
 
 	// Apply succeeded. Audit the reconcile with a compact diff summary.
-	summary := "bootstrap"
-	if selfErr != nil {
-		summary = summarizeDrift(selfErr)
-	}
+	summary := summarizeDrift(selfErr)
 	if err := r.Audit(ctx, "ISOLATION_RULESET_RECONCILED", map[string]string{
 		"action":  "applied",
 		"summary": summary,

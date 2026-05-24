@@ -253,37 +253,8 @@ func TestReconcile_RecoveryFromIsolationUnavailableEmitsReady(t *testing.T) {
 	}
 }
 
-// TestReconcile_MissingTableBootstraps — a list error means `table inet jaco`
-// doesn't exist yet; the reconciler must apply (create) it rather than bail,
-// and a successful apply must NOT mark the node isolation_unavailable.
-func TestReconcile_MissingTableBootstraps(t *testing.T) {
+func TestReconcile_ListErrorIsTransientNotDegradation(t *testing.T) {
 	apl := &recordingApplier{}
-	aud := &recordingAudit{}
-	stat := &recordingStatus{}
-	r := &firewall.Reconciler{
-		Lister:       &fakeLister{err: errors.New("nft: No such file or directory")},
-		Applier:      apl,
-		Audit:        aud.fn(),
-		UpdateStatus: stat.fn(),
-		Render:       goodInput,
-	}
-	if err := r.Tick(context.Background()); err != nil {
-		t.Fatalf("Tick should bootstrap the table, got: %v", err)
-	}
-	if apl.Count() != 1 {
-		t.Errorf("Apply called %d times; want 1 (bootstrap)", apl.Count())
-	}
-	for _, u := range stat.Updates() {
-		if u.status == "isolation_unavailable" {
-			t.Errorf("missing table should not mark isolation_unavailable: %+v", stat.Updates())
-		}
-	}
-}
-
-// TestReconcile_ListAndApplyErrorMarksDegraded — when nft is genuinely broken
-// (both list AND apply fail) the node flips to isolation_unavailable.
-func TestReconcile_ListAndApplyErrorMarksDegraded(t *testing.T) {
-	apl := &recordingApplier{err: errors.New("nft -f: syntax error")}
 	aud := &recordingAudit{}
 	stat := &recordingStatus{}
 	r := &firewall.Reconciler{
@@ -293,17 +264,12 @@ func TestReconcile_ListAndApplyErrorMarksDegraded(t *testing.T) {
 		UpdateStatus: stat.fn(),
 		Render:       goodInput,
 	}
-	if err := r.Tick(context.Background()); err == nil {
-		t.Fatalf("expected error when both list and apply fail")
+	err := r.Tick(context.Background())
+	if err == nil {
+		t.Fatalf("expected Tick to surface list error")
 	}
-	found := false
-	for _, u := range stat.Updates() {
-		if u.status == "isolation_unavailable" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected isolation_unavailable status; got %+v", stat.Updates())
+	if len(stat.Updates()) != 0 {
+		t.Errorf("status update fired on transient list error: %v", stat.Updates())
 	}
 }
 
