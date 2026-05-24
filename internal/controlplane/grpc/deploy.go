@@ -26,6 +26,16 @@ type deployServer struct {
 	raft  *raftnode.Node
 }
 
+// ValidateDeploymentName returns a typed InvalidArgument error when name is
+// empty. Shared by every Deploy.* RPC and by the daemon-side Deploy.Logs
+// handler so the wire-level error shape stays uniform.
+func ValidateDeploymentName(name string) error {
+	if name == "" {
+		return errorStatus(codes.InvalidArgument, "validation_failed", "deployment is required")
+	}
+	return nil
+}
+
 // enumerateNetworks returns the union of network names declared across
 // services. Empty services (no network field) get a "_default" entry so
 // the daemon's discovery layer still allocates a subnet for them.
@@ -68,16 +78,16 @@ func (d *deployServer) Apply(ctx context.Context, req *pb.ApplyRequest) (*pb.App
 		return nil, errorStatus(codes.InvalidArgument, "validation_failed", err.Error())
 	}
 
-	// Confirm every JacoServiceDecl.compose_service exists in compose.
+	// Confirm every service name matches a key in the compose file.
 	composeNames := map[string]bool{}
 	for _, s := range composeProject.Services {
 		composeNames[s.Name] = true
 	}
 	for _, s := range jacoSpec.Services {
-		if !composeNames[s.ComposeService] {
+		if !composeNames[s.Name] {
 			return nil, errorStatus(codes.InvalidArgument, "validation_failed",
-				fmt.Sprintf("service %q references compose_service %q which is not in the compose file",
-					s.Name, s.ComposeService))
+				fmt.Sprintf("service %q not found in the compose file; name must equal a compose service key",
+					s.Name))
 		}
 	}
 
@@ -147,8 +157,8 @@ func (d *deployServer) Rollback(ctx context.Context, req *pb.RollbackRequest) (*
 		return nil, errorStatus(codes.Unavailable, "no_leader", "rollback requires leader")
 	}
 	name := req.GetDeployment()
-	if name == "" {
-		return nil, errorStatus(codes.InvalidArgument, "validation_failed", "deployment is required")
+	if err := ValidateDeploymentName(name); err != nil {
+		return nil, err
 	}
 	dep, ok := d.state.Deployments.Get(name)
 	if !ok {
@@ -197,8 +207,8 @@ func (d *deployServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.D
 		return nil, errorStatus(codes.Unavailable, "no_leader", "delete requires leader")
 	}
 	name := req.GetDeployment()
-	if name == "" {
-		return nil, errorStatus(codes.InvalidArgument, "validation_failed", "deployment is required")
+	if err := ValidateDeploymentName(name); err != nil {
+		return nil, err
 	}
 	cmd := &pb.Command{
 		Identity: admission.IdentityFromContext(ctx),

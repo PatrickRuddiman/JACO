@@ -65,10 +65,9 @@ func TestSubsystems_SchedulerMaterializesReplicaDesired(t *testing.T) {
 				Revision:    1,
 				ComposeYaml: []byte(subsystemsTestCompose),
 				Services: []*pb.ServiceSpec{{
-					Name:           "web",
-					Replicas:       1,
-					ComposeService: "web",
-					Placement:      pb.ServiceSpec_PLACEMENT_MODE_SPREAD,
+					Name:      "web",
+					Replicas:  1,
+					Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD,
 				}},
 			},
 		},
@@ -152,7 +151,7 @@ func TestSubsystems_RuntimeReconcilerCreatesContainerEndToEnd(t *testing.T) {
 				Revision:    1,
 				ComposeYaml: []byte(subsystemsTestCompose),
 				Services: []*pb.ServiceSpec{{
-					Name: "web", Replicas: 1, ComposeService: "web",
+					Name: "web", Replicas: 1,
 					Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD,
 				}},
 			},

@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
+	grpcsrv "github.com/PatrickRuddiman/jaco/internal/controlplane/grpc"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/lifecycle"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/logs"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
@@ -151,8 +152,8 @@ func (s *Server) streamLocalLogs(req *pb.LogsRequest, sender logsSender) error {
 	}
 
 	wanted := req.GetDeployment()
-	if wanted == "" {
-		return status.Error(codes.InvalidArgument, "deployment is required")
+	if err := grpcsrv.ValidateDeploymentName(wanted); err != nil {
+		return err
 	}
 	wantedService := req.GetService()
 
