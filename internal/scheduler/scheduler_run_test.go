@@ -145,7 +145,7 @@ func TestDriveRollout_StartsAndAdvancesPlan(t *testing.T) {
 		return nil
 	}
 	clock := newFakeClock(time.Unix(1000, 0))
-	r := rollout.New(st, applier, clock)
+	r := rollout.New(st, applier, clock.Now)
 	s := scheduler.New(st, brokers, lead, applier, r)
 
 	seedNode(t, f, "node-a", &raftIdx)
@@ -225,7 +225,7 @@ func TestDriveRollout_RefusesRestartAtSameRevision(t *testing.T) {
 		return nil
 	}
 	clock := newFakeClock(time.Unix(1000, 0))
-	r := rollout.New(st, applier, clock)
+	r := rollout.New(st, applier, clock.Now)
 	s := scheduler.New(st, brokers, lead, applier, r)
 
 	seedNode(t, f, "node-a", &raftIdx)
@@ -287,7 +287,7 @@ func TestDriveRollout_AdvancesAndCompletes(t *testing.T) {
 		return nil
 	}
 	clock := newFakeClock(time.Unix(1000, 0))
-	r := rollout.New(st, applier, clock)
+	r := rollout.New(st, applier, clock.Now)
 	s := scheduler.New(st, brokers, lead, applier, r)
 
 	seedNode(t, f, "node-a", &raftIdx)

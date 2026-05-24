@@ -26,6 +26,16 @@ type deployServer struct {
 	raft  *raftnode.Node
 }
 
+// ValidateDeploymentName returns a typed InvalidArgument error when name is
+// empty. Shared by every Deploy.* RPC and by the daemon-side Deploy.Logs
+// handler so the wire-level error shape stays uniform.
+func ValidateDeploymentName(name string) error {
+	if name == "" {
+		return errorStatus(codes.InvalidArgument, "validation_failed", "deployment is required")
+	}
+	return nil
+}
+
 // enumerateNetworks returns the union of network names declared across
 // services. Empty services (no network field) get a "_default" entry so
 // the daemon's discovery layer still allocates a subnet for them.
@@ -147,8 +157,8 @@ func (d *deployServer) Rollback(ctx context.Context, req *pb.RollbackRequest) (*
 		return nil, errorStatus(codes.Unavailable, "no_leader", "rollback requires leader")
 	}
 	name := req.GetDeployment()
-	if name == "" {
-		return nil, errorStatus(codes.InvalidArgument, "validation_failed", "deployment is required")
+	if err := ValidateDeploymentName(name); err != nil {
+		return nil, err
 	}
 	dep, ok := d.state.Deployments.Get(name)
 	if !ok {
@@ -197,8 +207,8 @@ func (d *deployServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.D
 		return nil, errorStatus(codes.Unavailable, "no_leader", "delete requires leader")
 	}
 	name := req.GetDeployment()
-	if name == "" {
-		return nil, errorStatus(codes.InvalidArgument, "validation_failed", "deployment is required")
+	if err := ValidateDeploymentName(name); err != nil {
+		return nil, err
 	}
 	cmd := &pb.Command{
 		Identity: admission.IdentityFromContext(ctx),

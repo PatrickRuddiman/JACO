@@ -73,7 +73,7 @@ func New(docker dockerx.Docker, st *state.State, brokers *watch.Registry, hostna
 		state:    st,
 		brokers:  brokers,
 		hostname: hostname,
-		watcher:  health.NewWatcher(docker, submit, nil),
+		watcher:  health.NewWatcher(docker, submit, nil, nil),
 		logger:   logger,
 	}
 }

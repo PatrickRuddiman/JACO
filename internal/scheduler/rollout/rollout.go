@@ -26,18 +26,6 @@ const (
 	HealthFreshness = 10 * time.Second
 )
 
-// Clock abstracts time.Now so tests can advance time without sleeps.
-type Clock interface {
-	Now() time.Time
-}
-
-type systemClock struct{}
-
-func (systemClock) Now() time.Time { return time.Now() }
-
-// SystemClock returns the production Clock.
-func SystemClock() Clock { return systemClock{} }
-
 // Applier wraps raft.Apply.
 type Applier func(cmd []byte) error
 
@@ -45,15 +33,16 @@ type Applier func(cmd []byte) error
 type Rollout struct {
 	state *state.State
 	apply Applier
-	clock Clock
+	now   func() time.Time
 }
 
-// New constructs a Rollout. clock=nil falls through to SystemClock.
-func New(s *state.State, apply Applier, clock Clock) *Rollout {
-	if clock == nil {
-		clock = SystemClock()
+// New constructs a Rollout. now=nil falls through to time.Now; tests pass
+// a fake to advance time without sleeps.
+func New(s *state.State, apply Applier, now func() time.Time) *Rollout {
+	if now == nil {
+		now = time.Now
 	}
-	return &Rollout{state: s, apply: apply, clock: clock}
+	return &Rollout{state: s, apply: apply, now: now}
 }
 
 // Start creates a new RolloutPlan with state IN_PROGRESS. Refuses when a
@@ -65,7 +54,7 @@ func (r *Rollout) Start(deployment, service string, targetRev uint64, totalSteps
 				deployment, service, existing.GetCurrentStep(), existing.GetTotalSteps())
 		}
 	}
-	now := r.clock.Now()
+	now := r.now()
 	plan := &pb.RolloutPlan{
 		Deployment:     deployment,
 		Service:        service,
@@ -137,7 +126,7 @@ func (r *Rollout) AdvanceStep(deployment, service string) error {
 	}
 
 	plan.CurrentStep++
-	plan.LastStepAt = timestamppb.New(r.clock.Now())
+	plan.LastStepAt = timestamppb.New(r.now())
 	return r.applyPlan(plan)
 }
 
@@ -148,7 +137,7 @@ func (r *Rollout) Complete(deployment, service string) error {
 		return fmt.Errorf("no rollout plan for %s/%s", deployment, service)
 	}
 	plan.State = pb.RolloutState_ROLLOUT_STATE_COMPLETED
-	plan.LastStepAt = timestamppb.New(r.clock.Now())
+	plan.LastStepAt = timestamppb.New(r.now())
 	return r.applyPlan(plan)
 }
 
@@ -162,9 +151,9 @@ func (r *Rollout) Abort(_ context.Context, deployment, service, reason string) e
 	}
 	plan.State = pb.RolloutState_ROLLOUT_STATE_ABORTED
 	plan.FailureReason = reason
-	plan.LastStepAt = timestamppb.New(r.clock.Now())
+	plan.LastStepAt = timestamppb.New(r.now())
 
-	planCmd := planCommand(plan, r.clock.Now())
+	planCmd := planCommand(plan, r.now())
 
 	// Build the deployment rollback command. The FSM's DeploymentRollback
 	// handler will flip applied_revision <-> previous_revision and audit
@@ -174,7 +163,7 @@ func (r *Rollout) Abort(_ context.Context, deployment, service, reason string) e
 	if dep, ok := r.state.Deployments.Get(deployment); ok && dep.GetPreviousRevision() > 0 {
 		children = append(children, &pb.Command{
 			Identity: "rollout",
-			Ts:       timestamppb.New(r.clock.Now()),
+			Ts:       timestamppb.New(r.now()),
 			Payload: &pb.Command_DeploymentRollback{DeploymentRollback: &pb.DeploymentRollback{
 				Deployment: deployment,
 				Revision:   dep.GetPreviousRevision(),
@@ -184,7 +173,7 @@ func (r *Rollout) Abort(_ context.Context, deployment, service, reason string) e
 
 	batch := &pb.Command{
 		Identity: "rollout",
-		Ts:       timestamppb.New(r.clock.Now()),
+		Ts:       timestamppb.New(r.now()),
 		Payload:  &pb.Command_Batch{Batch: &pb.Batch{Children: children}},
 	}
 	data, err := proto.Marshal(batch)
@@ -199,7 +188,7 @@ func (r *Rollout) Abort(_ context.Context, deployment, service, reason string) e
 // Returns the deployment names of every aborted plan.
 func (r *Rollout) CheckTimeouts(ctx context.Context) ([]string, error) {
 	var aborted []string
-	now := r.clock.Now()
+	now := r.now()
 	for _, plan := range r.state.RolloutPlans.List() {
 		if plan.GetState() != pb.RolloutState_ROLLOUT_STATE_IN_PROGRESS {
 			continue
@@ -219,7 +208,7 @@ func (r *Rollout) CheckTimeouts(ctx context.Context) ([]string, error) {
 }
 
 func (r *Rollout) applyPlan(plan *pb.RolloutPlan) error {
-	cmd := planCommand(plan, r.clock.Now())
+	cmd := planCommand(plan, r.now())
 	data, err := proto.Marshal(cmd)
 	if err != nil {
 		return err
@@ -240,7 +229,7 @@ func planCommand(plan *pb.RolloutPlan, now time.Time) *pb.Command {
 func (r *Rollout) auditAndHold(deployment, service, reason string) error {
 	cmd := &pb.Command{
 		Identity: "rollout",
-		Ts:       timestamppb.New(r.clock.Now()),
+		Ts:       timestamppb.New(r.now()),
 		Payload: &pb.Command_AuditAppend{AuditAppend: &pb.AuditAppend{
 			Event: &pb.AuditEvent{
 				Type:     pb.AuditEventType_AUDIT_EVENT_TYPE_ROLLOUT_INVARIANT_HOLD,
@@ -279,5 +268,5 @@ func (r *Rollout) isFresh(ts *timestamppb.Timestamp) bool {
 	if ts == nil {
 		return false
 	}
-	return r.clock.Now().Sub(ts.AsTime()) < HealthFreshness
+	return r.now().Sub(ts.AsTime()) < HealthFreshness
 }
