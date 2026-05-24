@@ -58,6 +58,44 @@ func TestStreamInterceptor_UnauthMethodBypassesResolve(t *testing.T) {
 	}
 }
 
+func TestStreamInterceptor_UnixPeerBypassesBearer(t *testing.T) {
+	st := newStateWithToken("alice", "s3cret", false)
+
+	var observedID string
+	handler := func(_ any, ss grpc.ServerStream) error {
+		observedID = admission.IdentityFromContext(ss.Context())
+		return nil
+	}
+	info := &grpc.StreamServerInfo{FullMethod: "/jaco.v1.Watch/Subscribe"}
+	// Unix-socket peer, NO bearer token — the socket perms are the auth.
+	stream := &stubStream{ctx: ctxWithUnixPeer(context.Background())}
+
+	if err := admission.StreamInterceptor(st)(nil, stream, info, handler); err != nil {
+		t.Fatalf("expected unix peer to bypass bearer, got %v", err)
+	}
+	if observedID != admission.LocalIdentity {
+		t.Errorf("identity = %q, want %q", observedID, admission.LocalIdentity)
+	}
+}
+
+func TestStreamInterceptor_TCPPeerStillRequiresToken(t *testing.T) {
+	st := newStateWithToken("alice", "s3cret", false)
+	handler := func(_ any, _ grpc.ServerStream) error {
+		t.Errorf("handler should not be invoked: TCP peer without token must be rejected")
+		return nil
+	}
+	info := &grpc.StreamServerInfo{FullMethod: "/jaco.v1.Watch/Subscribe"}
+	stream := &stubStream{ctx: ctxWithTCPPeer(context.Background())}
+	err := admission.StreamInterceptor(st)(nil, stream, info, handler)
+	if err == nil {
+		t.Fatalf("expected rejection for TCP peer without token")
+	}
+	se, _ := status.FromError(err)
+	if se.Code() != codes.Unauthenticated {
+		t.Errorf("code = %v, want Unauthenticated", se.Code())
+	}
+}
+
 func TestStreamInterceptor_InvalidTokenRejected(t *testing.T) {
 	st := newStateWithToken("alice", "s3cret", false)
 	handler := func(_ any, _ grpc.ServerStream) error {

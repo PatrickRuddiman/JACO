@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc/metadata"
 
 	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
@@ -27,24 +26,18 @@ func logsCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 	}
 	var (
-		server, opToken, caCertPath string
-		follow                      bool
-		since                       string
+		server, opToken, caCertPath, socket string
+		follow                              bool
+		since                               string
 	)
-	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
-	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN)")
+	c.Flags().StringVar(&server, "server", "", "leader address (host:port); off-node only — omit to use the local socket")
+	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN); required with --server")
 	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
+	c.Flags().StringVar(&socket, "socket", socketDefault(), "local jacod unix socket (used when --server is omitted)")
 	c.Flags().BoolVarP(&follow, "follow", "f", false, "stream new lines as they arrive")
 	c.Flags().StringVar(&since, "since", "5m", "only lines newer than this duration (e.g. 1h, 30m)")
-	_ = c.MarkFlagRequired("server")
 
 	c.RunE = func(_ *cobra.Command, args []string) error {
-		if opToken == "" {
-			opToken = os.Getenv("JACO_TOKEN")
-		}
-		if opToken == "" {
-			return fmt.Errorf("--token or JACO_TOKEN env is required")
-		}
 		deployment, service, err := splitDeploymentService(args[0])
 		if err != nil {
 			return err
@@ -54,11 +47,7 @@ func logsCmd() *cobra.Command {
 			return err
 		}
 
-		caCertPEM, err := readCACert(caCertPath)
-		if err != nil {
-			return err
-		}
-		conn, err := dialServer(server, caCertPEM)
+		conn, withAuth, err := dialOperator(operatorAuth{server: server, token: opToken, caCert: caCertPath, socket: socket})
 		if err != nil {
 			return err
 		}
@@ -66,7 +55,7 @@ func logsCmd() *cobra.Command {
 
 		ctx, cancel := logsContext(follow)
 		defer cancel()
-		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+opToken)
+		ctx = withAuth(ctx)
 
 		client := pb.NewDeployClient(conn)
 		return runLogs(ctx, client, deployment, service, follow, sinceSeconds, os.Stdout)
