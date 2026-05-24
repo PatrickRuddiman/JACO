@@ -3,6 +3,7 @@ package storage_test
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"sync"
 	"testing"
 	"time"
@@ -207,6 +208,39 @@ func TestLoad_MissingKeyReturnsNotExist(t *testing.T) {
 	_, err := s.Load(context.Background(), "no/such/key")
 	if !errors.Is(err, storage.ErrNotExist) {
 		t.Errorf("Load err = %v; want ErrNotExist", err)
+	}
+	// certmagic decides "no cert yet" via errors.Is(err, fs.ErrNotExist), so the
+	// missing-key error MUST also match fs.ErrNotExist or ACME issuance breaks.
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Load err = %v; must match fs.ErrNotExist for certmagic", err)
+	}
+}
+
+func TestCertMagicStorage_ConvertsStatAndIsUsable(t *testing.T) {
+	// caddy.StorageConverter: the registered module must hand back a working
+	// certmagic.Storage whose Stat returns certmagic.KeyInfo (the missing
+	// method that panicked the TLS automation policy, issue #28).
+	s, _ := newHarness(t, "node-a", newFakeClock(time.Now()))
+	cm, err := s.CertMagicStorage()
+	if err != nil {
+		t.Fatalf("CertMagicStorage: %v", err)
+	}
+	if cm == nil {
+		t.Fatal("CertMagicStorage returned nil certmagic.Storage")
+	}
+	ctx := context.Background()
+	if err := s.Store(ctx, "acme/site.crt", []byte("hello")); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	ki, err := cm.Stat(ctx, "acme/site.crt")
+	if err != nil {
+		t.Fatalf("certmagic Stat: %v", err)
+	}
+	if ki.Key != "acme/site.crt" || ki.Size != 5 || !ki.IsTerminal {
+		t.Errorf("certmagic.KeyInfo = %+v, want {Key:acme/site.crt Size:5 IsTerminal:true}", ki)
+	}
+	if _, err := cm.Stat(ctx, "missing"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("certmagic Stat missing err = %v; want fs.ErrNotExist", err)
 	}
 }
 

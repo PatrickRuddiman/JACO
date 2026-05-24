@@ -4,14 +4,21 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync/atomic"
 
 	"github.com/caddyserver/caddy/v2"
+	// Register Caddy's standard modules (http, tls, reverse_proxy, acme,
+	// static_response, …). Importing caddy/v2 alone only pulls the core, so
+	// caddy.Load rejects every real config with "unknown module: http/tls".
+	// Without this the embedded ingress never binds :80/:443 (issue #28).
+	_ "github.com/caddyserver/caddy/v2/modules/standard"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
+	"github.com/PatrickRuddiman/jaco/internal/discovery/bridge"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/config"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
@@ -47,15 +54,44 @@ func ingressBuilder(st *state.State, acmeEmail string) func() ([]byte, error) {
 			})
 		}
 
-		// Service metadata: replica id → IP. Until the discovery slice
-		// publishes IPs into state, this is empty — Caddy will route to
-		// the deployment by hostname (deployment_service.jaco.internal)
-		// which docker DNS resolves once bridges are up.
+		// Service metadata: replica id → overlay IP, read from the per-network
+		// detail Details["ip.<dockerNetwork>"] the health watcher writes (same
+		// source the DNS responder uses, issue #28). Every replica with a known
+		// IP is an eligible upstream — including ones on other hosts: the WG
+		// route src-hint (wgmesh) gives host-originated overlay traffic a pool
+		// source so the destination host's pool→pool firewall exemption admits
+		// the proxied connection. BuildCaddyConfig intersects these IPs with
+		// the running+fresh replica set.
 		services := map[string]config.ServiceMeta{}
+		for _, obs := range st.ReplicasObserved.List() {
+			rep, ok := st.ReplicasDesired.Get(obs.GetId())
+			if !ok {
+				continue
+			}
+			for _, network := range serviceNetworks(st, rep.GetDeployment(), rep.GetService()) {
+				ip := obs.GetDetails()["ip."+bridge.DockerNetworkName(rep.GetDeployment(), network)]
+				if ip == "" {
+					continue
+				}
+				key := config.MetaKey(rep.GetDeployment(), rep.GetService())
+				meta, ok := services[key]
+				if !ok {
+					meta = config.ServiceMeta{
+						Deployment: rep.GetDeployment(),
+						Service:    rep.GetService(),
+						ReplicaIPs: map[string]string{},
+					}
+				}
+				meta.ReplicaIPs[obs.GetId()] = ip
+				services[key] = meta
+			}
+		}
 
-		return config.BuildCaddyConfig(routes, replicas, services, config.BuildOpts{
+		cfg, err := config.BuildCaddyConfig(routes, replicas, services, config.BuildOpts{
 			ACMEEmail: acmeEmail,
 		})
+		log.Printf("ingress: built caddy config (%d routes, %d observed replicas, %d bytes, err=%v)", len(routes), len(replicas), len(cfg), err)
+		return cfg, err
 	}
 }
 
@@ -81,12 +117,16 @@ func ingressLoaderEmbedded() func(ctx context.Context, cfg []byte) error {
 	var started atomic.Bool
 	return func(_ context.Context, cfg []byte) error {
 		if !bytes.Contains(cfg, []byte("reverse_proxy")) {
+			log.Printf("ingress: skipping caddy.Load (no reverse_proxy route yet)")
 			return nil
 		}
 		if err := caddy.Load(cfg, false); err != nil {
+			log.Printf("ingress: caddy.Load FAILED: %v", err)
 			return fmt.Errorf("caddy.Load: %w", err)
 		}
-		started.Store(true)
+		if started.CompareAndSwap(false, true) {
+			log.Printf("ingress: caddy loaded + listening on :80/:443")
+		}
 		return nil
 	}
 }
@@ -153,4 +193,20 @@ func replicaIDService(id string, st *state.State) string {
 		return r.GetService()
 	}
 	return ""
+}
+
+// serviceNetworks returns the networks a service is attached to, read from
+// its deployment's ServiceSpec — the key needed to look up the right
+// per-network container IP in ReplicaObserved.Details.
+func serviceNetworks(st *state.State, deployment, service string) []string {
+	dep, ok := st.Deployments.Get(deployment)
+	if !ok {
+		return nil
+	}
+	for _, svc := range dep.GetServices() {
+		if svc.GetName() == service {
+			return svc.GetNetworks()
+		}
+	}
+	return nil
 }
