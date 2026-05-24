@@ -169,7 +169,7 @@ func TestDriveRollout_StartsAndAdvancesPlan(t *testing.T) {
 		DeploymentApply: &pb.DeploymentApply{
 			Deployment: "sample", Revision: 2, ComposeYaml: []byte(updatedCompose),
 			Services: []*pb.ServiceSpec{{
-				Name: "web", Replicas: 2, ComposeService: "web",
+				Name: "web", Replicas: 2,
 				Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD,
 			}},
 		},
@@ -257,7 +257,7 @@ func TestDriveRollout_RefusesRestartAtSameRevision(t *testing.T) {
 	upd := &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_DeploymentApply{
 		DeploymentApply: &pb.DeploymentApply{
 			Deployment: "sample", Revision: 1, ComposeYaml: []byte(updated),
-			Services: []*pb.ServiceSpec{{Name: "web", Replicas: 1, ComposeService: "web"}},
+			Services: []*pb.ServiceSpec{{Name: "web", Replicas: 1}},
 		},
 	}}
 	uData, _ := proto.Marshal(upd)
@@ -319,7 +319,7 @@ func TestDriveRollout_AdvancesAndCompletes(t *testing.T) {
 		DeploymentApply: &pb.DeploymentApply{
 			Deployment: "sample", Revision: 2, ComposeYaml: []byte(updatedCompose),
 			Services: []*pb.ServiceSpec{{
-				Name: "web", Replicas: 2, ComposeService: "web",
+				Name: "web", Replicas: 2,
 				Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD,
 			}},
 		},
@@ -398,23 +398,22 @@ func fmtIdx(n uint64) string {
 }
 
 // TestLookupImage_NilProjectReturnsEmpty — defensive guard exercised
-// when compose parse fails earlier in Reconcile.
+// when a service name doesn't match any compose key.
 func TestLookupImage_NilProjectReturnsEmpty(t *testing.T) {
 	// The function is unexported; we exercise it via a Reconcile call
-	// where the compose parse succeeds but the ServiceSpec references
-	// an unknown compose_service. That path is the lookup-returns-""
-	// branch.
+	// where the ServiceSpec.Name doesn't match any compose service.
+	// That path is the lookup-returns-"" branch.
 	s, st, f, _ := newScheduler(t, true)
 	var raftIdx uint64
 	seedNode(t, f, "node-a", &raftIdx)
 
-	// ComposeService = "ghost" — won't be in the compose project.
+	// Name = "ghost" — not in sampleCompose → lookup returns "".
 	raftIdx++
 	cmd := &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_DeploymentApply{
 		DeploymentApply: &pb.DeploymentApply{
 			Deployment: "sample", Revision: 1, ComposeYaml: []byte(sampleCompose),
 			Services: []*pb.ServiceSpec{{
-				Name: "web", Replicas: 1, ComposeService: "ghost",
+				Name: "ghost", Replicas: 1,
 				Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD,
 			}},
 		},
@@ -428,6 +427,6 @@ func TestLookupImage_NilProjectReturnsEmpty(t *testing.T) {
 	// to PENDING. Confirm Deployment.Status flipped.
 	dep, _ := st.Deployments.Get("sample")
 	if dep.GetStatus() != pb.DeploymentStatus_DEPLOYMENT_STATUS_PENDING {
-		t.Errorf("deployment status = %v, want PENDING (unknown compose_service)", dep.GetStatus())
+		t.Errorf("deployment status = %v, want PENDING (service not in compose)", dep.GetStatus())
 	}
 }

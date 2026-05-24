@@ -131,12 +131,8 @@ func crossValidate(jacoBytes []byte, composePath string) error {
 	}
 
 	for _, svc := range jacoSpec.Services {
-		composeName := svc.ComposeService
-		if composeName == "" {
-			composeName = svc.Name
-		}
-		if !composeServices[composeName] {
-			return fmt.Errorf("jaco service %q references compose service %q which is not defined in the compose file", svc.Name, composeName)
+		if !composeServices[svc.Name] {
+			return fmt.Errorf("jaco service %q is not defined in the compose file", svc.Name)
 		}
 	}
 	return nil
