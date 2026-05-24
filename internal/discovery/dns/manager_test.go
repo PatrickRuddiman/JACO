@@ -73,7 +73,7 @@ func TestResponderScope(t *testing.T) {
 // returns at least 127.0.0.1 on every supported platform. The forwarder
 // strips non-IP results.
 func TestDefaultForwarder_LoopbackResolves(t *testing.T) {
-	ips, err := defaultForwarder{}.LookupHost("localhost")
+	ips, err := LookupHost("localhost")
 	if err != nil {
 		// CI containers occasionally have no resolv.conf for "localhost".
 		// In that case skip rather than fail; behaviour is OS-dependent.
@@ -97,7 +97,7 @@ func TestDefaultForwarder_LoopbackResolves(t *testing.T) {
 // returns an error; the forwarder propagates it (the responder uses
 // the error to drop the answer).
 func TestDefaultForwarder_UnresolvableSurfacesError(t *testing.T) {
-	_, err := defaultForwarder{}.LookupHost("nonexistent-host-jaco-tests.invalid")
+	_, err := LookupHost("nonexistent-host-jaco-tests.invalid")
 	if err == nil {
 		t.Errorf("LookupHost on .invalid hostname returned nil err")
 	}

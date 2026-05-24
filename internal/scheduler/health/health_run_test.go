@@ -36,6 +36,17 @@ func TestRun_FiresOnFailureEvent(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- r.Run(ctx) }()
 
+	// Wait for Run's goroutine to register its subscription before we
+	// publish — otherwise the FSM Apply below races the Subscribe call
+	// in Run and the event is dropped on the floor.
+	subDeadline := time.Now().Add(2 * time.Second)
+	for brokers.ReplicasObserved.SubscriberCount() == 0 {
+		if time.Now().After(subDeadline) {
+			t.Fatalf("Run did not subscribe to ReplicasObserved within 2s")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
 	// Apply a FAILED ReplicaObserved through the FSM (will fire the
 	// watch broker).
 	raftIdx++

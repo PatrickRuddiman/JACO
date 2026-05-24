@@ -11,12 +11,14 @@ import (
 // ReconcileInterval is the safety-tick cadence of Loop().
 const ReconcileInterval = 30 * time.Second
 
-// Lister returns the live `nft -j list table inet jaco` JSON output. The
-// production implementation shells out to `nft`; tests inject a fake that
-// returns a canned document.
-type Lister interface {
-	List(ctx context.Context) ([]byte, error)
-}
+// ListFn returns the live `nft -j list table inet jaco` JSON output. The
+// production implementation shells out to `nft` (firewall.NftList); tests
+// inject a fake that returns a canned document.
+type ListFn func(ctx context.Context) ([]byte, error)
+
+// ApplyFn writes a ruleset to disk and runs `nft -f` against it. Production
+// uses firewall.NftApply; tests inject a recording fake.
+type ApplyFn func(ctx context.Context, ruleset string) error
 
 // AuditFn raft-Applies an audit event for the reconciler. Production wires
 // this to Internal.Submit / raft.Apply; tests inject a recording fake.
@@ -29,11 +31,11 @@ type IsolationStatusFn func(ctx context.Context, status string, reason string) e
 
 // Reconciler glues SelfTest + Render + Apply into one drift-detection loop.
 type Reconciler struct {
-	Lister         Lister
-	Applier        Applier
-	Audit          AuditFn
-	UpdateStatus   IsolationStatusFn
-	Render         func() RuleInput
+	Lister       ListFn
+	Applier      ApplyFn
+	Audit        AuditFn
+	UpdateStatus IsolationStatusFn
+	Render       func() RuleInput
 
 	// degraded tracks whether the last Tick saw an Apply failure.
 	degraded bool
@@ -45,7 +47,7 @@ type Reconciler struct {
 // isolation_unavailable via UpdateStatus).
 func (r *Reconciler) Tick(ctx context.Context) error {
 	expected := r.Render()
-	listBytes, err := r.Lister.List(ctx)
+	listBytes, err := r.Lister(ctx)
 	if err != nil {
 		// Can't read live state — surface the error but don't flip status yet
 		// (a transient `nft` exec failure shouldn't mark the node down).
@@ -71,7 +73,7 @@ func (r *Reconciler) Tick(ctx context.Context) error {
 
 	// Mismatch detected — re-render + apply.
 	ruleset := Render(r.Render())
-	if applyErr := r.Applier.Apply(ctx, ruleset); applyErr != nil {
+	if applyErr := r.Applier(ctx, ruleset); applyErr != nil {
 		r.degraded = true
 		_ = r.UpdateStatus(ctx, "isolation_unavailable", applyErr.Error())
 		return fmt.Errorf("apply ruleset: %w", applyErr)

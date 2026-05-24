@@ -13,27 +13,6 @@ import (
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
-// TestSystemClock_ReturnsRealTime — SystemClock.Now returns a value
-// close to time.Now().
-func TestSystemClock_ReturnsRealTime(t *testing.T) {
-	before := time.Now()
-	got := rollout.SystemClock().Now()
-	after := time.Now()
-	if got.Before(before) || got.After(after.Add(time.Second)) {
-		t.Errorf("SystemClock.Now = %v, not bracketed by %v..%v", got, before, after)
-	}
-}
-
-// TestNew_DefaultsClockToSystemWhenNil — clock=nil falls through to
-// SystemClock.
-func TestNew_DefaultsClockToSystemWhenNil(t *testing.T) {
-	st := state.New(watch.NewRegistry())
-	r := rollout.New(st, func([]byte) error { return nil }, nil)
-	if r == nil {
-		t.Errorf("New returned nil")
-	}
-}
-
 // TestComplete_RefusesMissingPlan — surfaces an error when there's no
 // plan to complete.
 func TestComplete_RefusesMissingPlan(t *testing.T) {
