@@ -561,15 +561,14 @@ func (x *Node) GetGrpcAddress() string {
 }
 
 type ServiceSpec struct {
-	state          protoimpl.MessageState    `protogen:"open.v1"`
-	Name           string                    `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Replicas       int32                     `protobuf:"varint,2,opt,name=replicas,proto3" json:"replicas,omitempty"`
-	Placement      ServiceSpec_PlacementMode `protobuf:"varint,3,opt,name=placement,proto3,enum=jaco.v1.ServiceSpec_PlacementMode" json:"placement,omitempty"`
-	Hosts          []string                  `protobuf:"bytes,4,rep,name=hosts,proto3" json:"hosts,omitempty"`
-	ComposeService string                    `protobuf:"bytes,5,opt,name=compose_service,json=composeService,proto3" json:"compose_service,omitempty"`
-	Networks       []string                  `protobuf:"bytes,6,rep,name=networks,proto3" json:"networks,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state         protoimpl.MessageState    `protogen:"open.v1"`
+	Name          string                    `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Replicas      int32                     `protobuf:"varint,2,opt,name=replicas,proto3" json:"replicas,omitempty"`
+	Placement     ServiceSpec_PlacementMode `protobuf:"varint,3,opt,name=placement,proto3,enum=jaco.v1.ServiceSpec_PlacementMode" json:"placement,omitempty"`
+	Hosts         []string                  `protobuf:"bytes,4,rep,name=hosts,proto3" json:"hosts,omitempty"`
+	Networks      []string                  `protobuf:"bytes,6,rep,name=networks,proto3" json:"networks,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ServiceSpec) Reset() {
@@ -628,13 +627,6 @@ func (x *ServiceSpec) GetHosts() []string {
 		return x.Hosts
 	}
 	return nil
-}
-
-func (x *ServiceSpec) GetComposeService() string {
-	if x != nil {
-		return x.ComposeService
-	}
-	return ""
 }
 
 func (x *ServiceSpec) GetNetworks() []string {
@@ -1794,19 +1786,18 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\fgrpc_address\x18\b \x01(\tR\vgrpcAddress\x1a@\n" +
 	"\x12StatusDetailsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd9\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc7\x02\n" +
 	"\vServiceSpec\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
 	"\breplicas\x18\x02 \x01(\x05R\breplicas\x12@\n" +
 	"\tplacement\x18\x03 \x01(\x0e2\".jaco.v1.ServiceSpec.PlacementModeR\tplacement\x12\x14\n" +
-	"\x05hosts\x18\x04 \x03(\tR\x05hosts\x12'\n" +
-	"\x0fcompose_service\x18\x05 \x01(\tR\x0ecomposeService\x12\x1a\n" +
+	"\x05hosts\x18\x04 \x03(\tR\x05hosts\x12\x1a\n" +
 	"\bnetworks\x18\x06 \x03(\tR\bnetworks\"}\n" +
 	"\rPlacementMode\x12\x1e\n" +
 	"\x1aPLACEMENT_MODE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15PLACEMENT_MODE_SPREAD\x10\x01\x12\x17\n" +
 	"\x13PLACEMENT_MODE_PACK\x10\x02\x12\x18\n" +
-	"\x14PLACEMENT_MODE_HOSTS\x10\x03\"\xe9\x03\n" +
+	"\x14PLACEMENT_MODE_HOSTS\x10\x03J\x04\b\x05\x10\x06R\x0fcompose_service\"\xe9\x03\n" +
 	"\n" +
 	"Deployment\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12)\n" +
