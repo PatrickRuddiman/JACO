@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -42,10 +43,9 @@ func nodeIssueJoinTokenCmd() *cobra.Command {
 	)
 	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
 	c.Flags().StringVar(&token, "token", "", "operator bearer token (or JACO_TOKEN); required")
-	c.Flags().StringVar(&caCert, "ca-cert", "", "path to cluster CA cert PEM; required")
+	c.Flags().StringVar(&caCert, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
 	c.Flags().BoolVar(&showCA, "show-ca", false, "append the cluster CA certificate to the output")
 	_ = c.MarkFlagRequired("server")
-	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(cmd *cobra.Command, _ []string) error {
 		if token == "" {
@@ -54,7 +54,11 @@ func nodeIssueJoinTokenCmd() *cobra.Command {
 		if token == "" {
 			return fmt.Errorf("--token or JACO_TOKEN env is required")
 		}
-		conn, err := dialServer(server, mustReadFile(caCert))
+		caCertPEM, err := readCACert(caCert)
+		if err != nil {
+			return err
+		}
+		conn, err := dialServer(server, caCertPEM)
 		if err != nil {
 			return err
 		}
@@ -64,7 +68,7 @@ func nodeIssueJoinTokenCmd() *cobra.Command {
 		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
 		resp, err := pb.NewClusterClient(conn).IssueJoinToken(ctx, &pb.IssueJoinTokenRequest{})
 		if err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 		fmt.Fprint(cmd.OutOrStdout(), formatIssueJoinToken(server, resp.GetToken(), 24*time.Hour, string(resp.GetCaCert()), showCA))
 		return nil
@@ -139,7 +143,7 @@ func runNodeJoin(ctx context.Context, client pb.ClusterClient, peer, token strin
 		PeerAddr:  peer,
 		JoinToken: token,
 	}); err != nil {
-		return err
+		return cliclient.FormatError(err)
 	}
 	fmt.Fprintln(out, "Joined cluster.")
 	return nil
@@ -159,10 +163,9 @@ func nodeRemoveCmd() *cobra.Command {
 	)
 	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
 	c.Flags().StringVar(&token, "token", "", "operator bearer token (or JACO_TOKEN)")
-	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
+	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
 	c.Flags().BoolVar(&force, "force", false, "skip drain enforcement")
 	_ = c.MarkFlagRequired("server")
-	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, args []string) error {
 		if token == "" {
@@ -171,7 +174,11 @@ func nodeRemoveCmd() *cobra.Command {
 		if token == "" {
 			return fmt.Errorf("--token or JACO_TOKEN env is required")
 		}
-		conn, err := dialServer(server, mustReadFile(caCertPath))
+		caCertPEM, err := readCACert(caCertPath)
+		if err != nil {
+			return err
+		}
+		conn, err := dialServer(server, caCertPEM)
 		if err != nil {
 			return err
 		}
@@ -182,7 +189,7 @@ func nodeRemoveCmd() *cobra.Command {
 		if _, err := pb.NewClusterClient(conn).NodeRemove(ctx, &pb.NodeRemoveRequest{
 			Hostname: args[0], Force: force,
 		}); err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 		fmt.Printf("Removed node %s\n", args[0])
 		return nil
@@ -200,15 +207,18 @@ func nodeListCmd() *cobra.Command {
 	var server, token, caCertPath string
 	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
 	c.Flags().StringVar(&token, "token", "", "operator bearer token (or JACO_TOKEN)")
-	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
+	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
 	_ = c.MarkFlagRequired("server")
-	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, _ []string) error {
 		if token == "" {
 			token = os.Getenv("JACO_TOKEN")
 		}
-		conn, err := dialServer(server, mustReadFile(caCertPath))
+		caCertPEM, err := readCACert(caCertPath)
+		if err != nil {
+			return err
+		}
+		conn, err := dialServer(server, caCertPEM)
 		if err != nil {
 			return err
 		}
@@ -218,7 +228,7 @@ func nodeListCmd() *cobra.Command {
 		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
 		resp, err := pb.NewClusterClient(conn).NodeList(ctx, &pb.NodeListRequest{})
 		if err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 		for _, n := range resp.GetNodes() {
 			fmt.Printf("%s\t%s\t%s\n", n.GetHostname(), n.GetAddress(), n.GetStatus())
@@ -253,13 +263,20 @@ func dialServer(addr string, caCertPEM []byte) (*grpc.ClientConn, error) {
 // silence unused if --ca-cert is the only path callers exercise.
 var _ = insecure.NewCredentials
 
-func mustReadFile(path string) []byte {
+// readCACert reads the PEM-encoded CA certificate at path. When the file does
+// not exist it returns the documented user-facing error so operators know how
+// to fix it. An empty path is treated as "no cert" (returns nil, nil) so that
+// dialServer falls back to InsecureSkipVerify.
+func readCACert(path string) ([]byte, error) {
+	if path == "" {
+		return nil, nil
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
-		// Cobra will surface the runE error; this helper is only called when
-		// the flag is required, so the file path must exist or we error out
-		// during RunE. Use a placeholder that triggers a clean error.
-		return []byte("__MISSING__:" + err.Error())
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("ca cert not found at %s — pass --ca-cert or set JACO_CA_CERT", path)
+		}
+		return nil, fmt.Errorf("read CA cert %s: %w", path, err)
 	}
-	return b
+	return b, nil
 }

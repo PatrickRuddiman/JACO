@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -67,7 +68,7 @@ cannot be recovered.`,
 func runClusterInit(ctx context.Context, client pb.ClusterClient, clusterName string, out io.Writer) error {
 	resp, err := client.Init(ctx, &pb.ClusterInitRequest{ClusterName: clusterName})
 	if err != nil {
-		return err
+		return cliclient.FormatError(err)
 	}
 	fmt.Fprintln(out, "Cluster initialized.")
 	fmt.Fprintln(out, "  cluster_id:    ", resp.GetClusterId())
@@ -102,7 +103,7 @@ func clusterStatusCmd() *cobra.Command {
 func runClusterStatus(ctx context.Context, client pb.ClusterClient, out io.Writer) error {
 	resp, err := client.Status(ctx, &pb.ClusterStatusRequest{})
 	if err != nil {
-		return err
+		return cliclient.FormatError(err)
 	}
 	if !resp.GetInitialized() {
 		fmt.Fprintln(out, "Status:    uninitialized")
