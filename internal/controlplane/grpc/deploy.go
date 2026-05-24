@@ -34,27 +34,6 @@ func ValidateDeploymentName(name string) error {
 	return nil
 }
 
-// enumerateNetworks returns the union of network names declared across
-// services. Empty services (no network field) get a "_default" entry so
-// the daemon's discovery layer still allocates a subnet for them.
-func enumerateNetworks(services []JacoServiceDecl) []string {
-	seen := map[string]bool{}
-	for _, s := range services {
-		if len(s.Networks) == 0 {
-			seen["_default"] = true
-			continue
-		}
-		for _, n := range s.Networks {
-			seen[n] = true
-		}
-	}
-	out := make([]string, 0, len(seen))
-	for n := range seen {
-		out = append(out, n)
-	}
-	return out
-}
-
 // Apply parses + validates the jaco.yaml + compose.yaml, then either returns
 // a Diff (dry_run) or raft-Applies a DeploymentApply command whose FSM hook
 // writes the Deployment + Routes entities (scheduler-driven ReplicaDesired
