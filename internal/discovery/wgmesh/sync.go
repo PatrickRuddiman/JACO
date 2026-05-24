@@ -160,10 +160,25 @@ func (s *Syncer) reconcileRoutes() {
 		}
 		return
 	}
-	add, del := routeDiff(s.desiredRoutes(), current)
-	for _, cidr := range add {
-		if out, rerr := exec.Command("ip", "route", "add", cidr, "dev", s.Iface).CombinedOutput(); rerr != nil {
-			s.Logger.Printf("wgmesh route add %s dev %s: %v: %s", cidr, s.Iface, rerr, string(out))
+	desired := s.desiredRoutes()
+	_, del := routeDiff(desired, current)
+	// Source-address hint: host-originated traffic to a peer's container /24
+	// (the embedded ingress proxying to a replica on another host) must carry
+	// a pool source so the destination host's pool→pool firewall exemption
+	// admits it — jaco0 itself has no address, so without this the kernel
+	// picks a non-pool source and the far side drops the packet (issue #28).
+	// `src` only affects locally-originated packets; forwarded container↔
+	// container traffic is untouched. Empty until a local bridge exists; a
+	// later tick adds it once one does. `ip route replace` re-asserts every
+	// tick so a route installed before a bridge existed gains the src.
+	gw := s.localPoolGateway()
+	for _, cidr := range desired {
+		args := []string{"route", "replace", cidr, "dev", s.Iface}
+		if gw != "" {
+			args = append(args, "src", gw)
+		}
+		if out, rerr := exec.Command("ip", args...).CombinedOutput(); rerr != nil {
+			s.Logger.Printf("wgmesh route replace %s dev %s src %q: %v: %s", cidr, s.Iface, gw, rerr, string(out))
 		}
 	}
 	for _, cidr := range del {
@@ -171,6 +186,33 @@ func (s *Syncer) reconcileRoutes() {
 			s.Logger.Printf("wgmesh route del %s dev %s: %v: %s", cidr, s.Iface, rerr, string(out))
 		}
 	}
+}
+
+// localPoolGateway returns a pool IP assigned to this node — the .1 gateway of
+// one of its local container /24s — for use as the `src` on peer routes so
+// host-originated overlay traffic (e.g. the ingress proxying cross-host) has a
+// pool source address. Returns "" when the node has no local subnet yet (the
+// route is then installed without a src and gains one on a later tick once a
+// bridge exists). Deterministic: the lexicographically-first local CIDR.
+func (s *Syncer) localPoolGateway() string {
+	var cidrs []string
+	for _, sn := range s.State.Subnets.List() {
+		if sn.GetHost() == s.SelfHostname {
+			cidrs = append(cidrs, sn.GetCidr())
+		}
+	}
+	if len(cidrs) == 0 {
+		return ""
+	}
+	sort.Strings(cidrs)
+	_, ipnet, err := net.ParseCIDR(cidrs[0])
+	if err != nil {
+		return ""
+	}
+	gw := make(net.IP, len(ipnet.IP))
+	copy(gw, ipnet.IP)
+	gw[len(gw)-1] |= 1 // .1 of the /24 — Docker's bridge gateway address
+	return gw.String()
 }
 
 // desiredRoutes is every container /24 owned by a host other than self.
