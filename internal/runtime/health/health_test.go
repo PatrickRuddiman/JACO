@@ -24,9 +24,10 @@ import (
 // the noisy-on-misuse contract we want.
 type fakeDocker struct {
 	dockerx.Docker
-	mu        sync.Mutex
-	state     *types.ContainerState
+	mu         sync.Mutex
+	state      *types.ContainerState
 	inspectErr error
+	networks   map[string]*network.EndpointSettings
 }
 
 func (f *fakeDocker) ContainerInspect(_ context.Context, _ string) (types.ContainerJSON, error) {
@@ -35,12 +36,16 @@ func (f *fakeDocker) ContainerInspect(_ context.Context, _ string) (types.Contai
 	if f.inspectErr != nil {
 		return types.ContainerJSON{}, f.inspectErr
 	}
-	return types.ContainerJSON{
+	cj := types.ContainerJSON{
 		ContainerJSONBase: &types.ContainerJSONBase{
 			ID:    "c-1",
 			State: f.state,
 		},
-	}, nil
+	}
+	if f.networks != nil {
+		cj.NetworkSettings = &types.NetworkSettings{Networks: f.networks}
+	}
+	return cj, nil
 }
 
 func (f *fakeDocker) setState(s *types.ContainerState) {
@@ -295,6 +300,36 @@ func TestWatcher_ExitedContainerEmitsFailedWithExitCode(t *testing.T) {
 	}
 	if got := obs.GetDetails()["exit_code"]; got != "137" {
 		t.Errorf("details.exit_code = %q, want 137", got)
+	}
+}
+
+// TestWatcher_PopulatesPerNetworkIPs — poll records each attached network's
+// container IP under Details["ip.<dockerNetwork>"] (issue #28), so the DNS
+// responder can resolve service names to per-host IPs.
+func TestWatcher_PopulatesPerNetworkIPs(t *testing.T) {
+	d := &fakeDocker{
+		state: &types.ContainerState{Status: "running"},
+		networks: map[string]*network.EndpointSettings{
+			"jaco_app__default": {IPAddress: "10.244.5.2"},
+			"jaco_app_backend":  {IPAddress: "10.244.6.2"},
+		},
+	}
+	sub := newRecordingSubmit()
+	clock := newFakeClock()
+	w := health.NewWatcher(d, sub.Submit, clock.Now, clock.After)
+	w.Start(context.Background(), "app-web-0", "c-1", false)
+	t.Cleanup(func() { w.Stop("app-web-0") })
+
+	clock.waitForPending(t, 1)
+	clock.Advance(health.FastPollInterval)
+	sub.waitForCalls(t, 1)
+
+	obs := sub.snapshot()[0]
+	if got := obs.GetDetails()["ip.jaco_app__default"]; got != "10.244.5.2" {
+		t.Errorf("ip.jaco_app__default = %q, want 10.244.5.2", got)
+	}
+	if got := obs.GetDetails()["ip.jaco_app_backend"]; got != "10.244.6.2" {
+		t.Errorf("ip.jaco_app_backend = %q, want 10.244.6.2", got)
 	}
 }
 

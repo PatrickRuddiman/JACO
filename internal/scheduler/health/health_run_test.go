@@ -30,25 +30,20 @@ func TestRun_FiresOnFailureEvent(t *testing.T) {
 		return nil
 	}
 	r := health.New(st, brokers, &fakeLeader{leader: true}, apply)
+	handled := make(chan watch.Event[*pb.ReplicaObserved], 4)
+	r.NotifyHandled(handled)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- r.Run(ctx) }()
 
-	// Wait for Run's goroutine to register its subscription before we
-	// publish — otherwise the FSM Apply below races the Subscribe call
-	// in Run and the event is dropped on the floor.
-	subDeadline := time.Now().Add(2 * time.Second)
-	for brokers.ReplicasObserved.SubscriberCount() == 0 {
-		if time.Now().After(subDeadline) {
-			t.Fatalf("Run did not subscribe to ReplicasObserved within 2s")
-		}
-		time.Sleep(2 * time.Millisecond)
+	select {
+	case <-r.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Run did not subscribe to ReplicasObserved within 2s")
 	}
 
-	// Apply a FAILED ReplicaObserved through the FSM (will fire the
-	// watch broker).
 	raftIdx++
 	cmd := &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_ReplicaObservedUpdate{
 		ReplicaObservedUpdate: &pb.ReplicaObservedUpdate{Replica: &pb.ReplicaObserved{
@@ -58,18 +53,18 @@ func TestRun_FiresOnFailureEvent(t *testing.T) {
 	data, _ := proto.Marshal(cmd)
 	f.Apply(&hraft.Log{Index: raftIdx, Data: data})
 
-	// Wait briefly for Restarter.Run to consume the event and apply
-	// the batch (increment + restart command).
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if c, ok := st.RestartCounters.Get("smoke-web-0"); ok && c.GetConsecutiveFailures() == 1 {
-			cancel()
-			<-done
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	select {
+	case <-handled:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Run did not consume the FAILED event within 2s")
 	}
-	t.Errorf("Run did not produce a restart counter increment for the FAILED replica")
+
+	c, ok := st.RestartCounters.Get("smoke-web-0")
+	if !ok || c.GetConsecutiveFailures() != 1 {
+		t.Errorf("Run did not produce a restart counter increment for the FAILED replica")
+	}
+	cancel()
+	<-done
 }
 
 // TestRun_ContextCancelExits — Run returns ctx.Err() on cancel.

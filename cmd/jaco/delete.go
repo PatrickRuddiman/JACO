@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -26,9 +27,8 @@ func deleteCmd() *cobra.Command {
 	var server, opToken, caCertPath string
 	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
 	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN)")
-	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
+	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
 	_ = c.MarkFlagRequired("server")
-	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, args []string) error {
 		if opToken == "" {
@@ -37,7 +37,11 @@ func deleteCmd() *cobra.Command {
 		if opToken == "" {
 			return fmt.Errorf("--token or JACO_TOKEN env is required")
 		}
-		conn, err := dialServer(server, mustReadFile(caCertPath))
+		caCertPEM, err := readCACert(caCertPath)
+		if err != nil {
+			return err
+		}
+		conn, err := dialServer(server, caCertPEM)
 		if err != nil {
 			return err
 		}
@@ -52,7 +56,7 @@ func deleteCmd() *cobra.Command {
 
 func runDelete(ctx context.Context, client pb.DeployClient, deployment string, out io.Writer) error {
 	if _, err := client.Delete(ctx, &pb.DeleteRequest{Deployment: deployment}); err != nil {
-		return err
+		return cliclient.FormatError(err)
 	}
 	fmt.Fprintf(out, "Deleted deployment: %s\n", deployment)
 	return nil

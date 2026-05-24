@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	hraft "github.com/hashicorp/raft"
+
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/backup"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/bootstrap"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/fsm"
@@ -31,28 +33,61 @@ func freePort(t *testing.T) string {
 	return addr
 }
 
+// pollDeadline clamps a requested timeout to t.Deadline() when the latter is
+// closer, so a stress-loaded test process can't poll past the harness deadline
+// before observing the state it's waiting on.
+func pollDeadline(t *testing.T, timeout time.Duration) time.Time {
+	t.Helper()
+	d := time.Now().Add(timeout)
+	if td, ok := t.Deadline(); ok && td.Before(d) {
+		return td
+	}
+	return d
+}
+
 func waitForLeader(t *testing.T, n *raftnode.Node, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if n.IsLeader() {
+	// LeaderCh fires on leadership transitions; combine it with State() so we
+	// also catch the case where the node is already leader by the time we
+	// subscribe (LeaderCh is transition-only and may have already fired).
+	deadline := pollDeadline(t, timeout)
+	leaderCh := n.Raft.LeaderCh()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if n.Raft.State() == hraft.Leader {
 			return
 		}
-		time.Sleep(50 * time.Millisecond)
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatalf("never became leader; state=%v", n.Raft.State())
+		}
+		select {
+		case <-leaderCh:
+		case <-ticker.C:
+		case <-time.After(remaining):
+		}
 	}
-	t.Fatalf("never became leader")
 }
 
 func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	deadline := pollDeadline(t, timeout)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
 		if cond() {
 			return
 		}
-		time.Sleep(20 * time.Millisecond)
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatalf("waitFor(%s) timed out", what)
+		}
+		select {
+		case <-ticker.C:
+		case <-time.After(remaining):
+		}
 	}
-	t.Fatalf("waitFor(%s) timed out", what)
 }
 
 func TestExportImport_RoundTripPreservesBootstrapToken(t *testing.T) {
@@ -81,16 +116,23 @@ func TestExportImport_RoundTripPreservesBootstrapToken(t *testing.T) {
 		t.Fatalf("reopen A: %v", err)
 	}
 	waitForLeader(t, rA, 10*time.Second)
-	waitFor(t, 5*time.Second, "ClusterMeta populated", func() bool {
-		return stA.Cluster.Get() != nil
+	// Wait on the bootstrap token rather than ClusterMeta: both are written by
+	// the same ClusterInit log entry, but Cluster.Set + Tokens.Apply each
+	// release their own mutex independently, so a Cluster!=nil observation can
+	// occur before Tokens.Apply runs. The token write is the last state mutation
+	// in applyPayload(ClusterInit), so its visibility is the deterministic
+	// "ClusterInit fully applied" signal.
+	waitFor(t, 5*time.Second, "ClusterInit applied", func() bool {
+		if stA.Cluster.Get() == nil {
+			return false
+		}
+		_, ok := stA.Tokens.Get("bootstrap")
+		return ok
 	})
 
 	clusterID := stA.Cluster.Get().GetClusterId()
 	if clusterID == "" {
 		t.Fatalf("empty cluster_id post-replay")
-	}
-	if _, ok := stA.Tokens.Get("bootstrap"); !ok {
-		t.Fatalf("bootstrap token missing pre-export")
 	}
 
 	// 3. Export to a buffer.

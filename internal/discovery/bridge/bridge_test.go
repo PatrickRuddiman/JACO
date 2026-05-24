@@ -6,21 +6,30 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/docker/docker/api/types/container"
 	dnet "github.com/docker/docker/api/types/network"
 
 	"github.com/PatrickRuddiman/jaco/internal/discovery/bridge"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 )
 
-// fakeDocker partial-impl: only NetworkList / NetworkCreate / NetworkRemove.
+// fakeDocker partial-impl: NetworkList / NetworkCreate / NetworkRemove /
+// NetworkInspect, plus the ContainerStop+Remove pair needed by Ensure's
+// subnet-mismatch recreate path.
 type fakeDocker struct {
 	dockerx.Docker
-	mu       sync.Mutex
-	networks map[string]*dnet.Summary
-	idSeq    int
+	mu              sync.Mutex
+	networks        map[string]*dnet.Summary
+	containers      map[string]string // containerID -> networkID it's attached to
+	stopped         []string
+	removed         []string
+	idSeq           int
+	containerIDSeq  int
 }
 
-func newFakeDocker() *fakeDocker { return &fakeDocker{networks: map[string]*dnet.Summary{}} }
+func newFakeDocker() *fakeDocker {
+	return &fakeDocker{networks: map[string]*dnet.Summary{}, containers: map[string]string{}}
+}
 
 func (f *fakeDocker) NetworkList(_ context.Context, opts dnet.ListOptions) ([]dnet.Summary, error) {
 	f.mu.Lock()
@@ -70,8 +79,85 @@ func (f *fakeDocker) NetworkRemove(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.networks, id)
+	for cid, nid := range f.containers {
+		if nid == id {
+			delete(f.containers, cid)
+		}
+	}
 	return nil
 }
+
+func (f *fakeDocker) NetworkInspect(_ context.Context, id string, _ dnet.InspectOptions) (dnet.Inspect, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n, ok := f.networks[id]
+	if !ok {
+		return dnet.Inspect{}, errFakeNotFound
+	}
+	insp := dnet.Inspect{
+		ID:     n.ID,
+		Name:   n.Name,
+		Driver: n.Driver,
+		Labels: n.Labels,
+		IPAM:   dnet.IPAM{Driver: n.IPAM.Driver, Config: n.IPAM.Config},
+	}
+	insp.Containers = map[string]dnet.EndpointResource{}
+	for cid, nid := range f.containers {
+		if nid == id {
+			insp.Containers[cid] = dnet.EndpointResource{Name: cid}
+		}
+	}
+	return insp, nil
+}
+
+func (f *fakeDocker) ContainerStop(_ context.Context, id string, _ container.StopOptions) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped = append(f.stopped, id)
+	return nil
+}
+
+func (f *fakeDocker) ContainerRemove(_ context.Context, id string, _ container.RemoveOptions) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removed = append(f.removed, id)
+	delete(f.containers, id)
+	return nil
+}
+
+// attachContainer records a fake container attachment so NetworkInspect
+// surfaces it on the next call. Returns the assigned container id.
+func (f *fakeDocker) attachContainer(networkID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.containerIDSeq++
+	id := "c-" + networkID + "-" + itoa(f.containerIDSeq)
+	f.containers[id] = networkID
+	return id
+}
+
+// itoa avoids dragging strconv into the imports just for two test calls.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
+}
+
+// errFakeNotFound mirrors a docker engine 404 enough for the bridge package to
+// surface the failure. We don't inspect its type; only that it's non-nil.
+var errFakeNotFound = &fakeError{msg: "network not found"}
+
+type fakeError struct{ msg string }
+
+func (e *fakeError) Error() string { return e.msg }
 
 func TestDockerNetworkName_UsesUnderscoreSeparators(t *testing.T) {
 	if got := bridge.DockerNetworkName("sample", "frontend"); got != "jaco_sample_frontend" {
@@ -161,6 +247,9 @@ func TestEnsure_CreatesNetworkWithLabelsAndIPAM(t *testing.T) {
 		if got := n.Options["com.docker.network.bridge.name"]; got != bridge.LinuxBridgeName("sample", "frontend") {
 			t.Errorf("bridge name option = %q", got)
 		}
+		if got := n.Options["com.docker.network.driver.mtu"]; got != "1420" {
+			t.Errorf("mtu option = %q, want 1420", got)
+		}
 		if len(n.IPAM.Config) != 1 {
 			t.Fatalf("IPAM config len = %d", len(n.IPAM.Config))
 		}
@@ -183,6 +272,117 @@ func TestEnsure_IsIdempotent(t *testing.T) {
 	}
 	if len(d.networks) != 1 {
 		t.Errorf("second Ensure created a new network; want idempotent. count = %d", len(d.networks))
+	}
+}
+
+// TestEnsure_RecreatesOnSubnetMismatch covers issue #42: when raft state is
+// wiped and the cluster is re-formed in place, the freshly-allocated per-host
+// /24 can differ from the existing docker bridge's subnet. Ensure must detect
+// the drift, tear down the stale network (and any containers attached to it),
+// and recreate with the new CIDR.
+func TestEnsure_RecreatesOnSubnetMismatch(t *testing.T) {
+	d := newFakeDocker()
+	ctx := context.Background()
+	// Initial create with the old /24.
+	if _, err := bridge.Ensure(ctx, d, "sample", "frontend", "10.244.0.0/24", "cluster-x"); err != nil {
+		t.Fatalf("first Ensure: %v", err)
+	}
+	var oldID string
+	for id := range d.networks {
+		oldID = id
+	}
+	// Simulate a container attached to the stale bridge (a leftover from
+	// the prior deployment that re-form-in-place doesn't clean up).
+	attached := d.attachContainer(oldID)
+	removeCallsBefore := len(d.removed)
+
+	// Re-form in place: same (deployment, network, cluster_id) but a NEW /24.
+	if _, err := bridge.Ensure(ctx, d, "sample", "frontend", "10.244.5.0/24", "cluster-x"); err != nil {
+		t.Fatalf("second Ensure (mismatched cidr): %v", err)
+	}
+	if len(d.networks) != 1 {
+		t.Fatalf("expected exactly 1 network after recreate, got %d", len(d.networks))
+	}
+	var newNet *dnet.Summary
+	for _, n := range d.networks {
+		newNet = n
+	}
+	// The fake reuses ID-by-name, so the post-recreate ID equals the pre-
+	// recreate ID; what proves the recreate happened is that the IPAM
+	// subnet now matches the new CIDR (and the stale attached container was
+	// removed during teardown).
+	_ = oldID
+	if got := newNet.IPAM.Config[0].Subnet; got == "10.244.0.0/24" {
+		t.Fatalf("network still carries the stale /24 — recreate did not happen")
+	}
+	if got := newNet.IPAM.Config[0].Subnet; got != "10.244.5.0/24" {
+		t.Errorf("recreated network subnet = %q, want 10.244.5.0/24", got)
+	}
+	if got := newNet.Labels["jaco.subnet"]; got != "10.244.5.0/24" {
+		t.Errorf("recreated network jaco.subnet label = %q, want 10.244.5.0/24", got)
+	}
+	// Container attached to the stale bridge must have been stopped+removed.
+	if len(d.stopped) != 1 || d.stopped[0] != attached {
+		t.Errorf("expected attached container %q stopped; got stopped=%v", attached, d.stopped)
+	}
+	if got := len(d.removed) - removeCallsBefore; got != 1 || d.removed[len(d.removed)-1] != attached {
+		t.Errorf("expected attached container %q removed; got removed=%v", attached, d.removed)
+	}
+
+	// Third call with the now-current CIDR is a no-op (idempotency preserved).
+	prevCount := len(d.networks)
+	if _, err := bridge.Ensure(ctx, d, "sample", "frontend", "10.244.5.0/24", "cluster-x"); err != nil {
+		t.Fatalf("third Ensure (matching cidr): %v", err)
+	}
+	if len(d.networks) != prevCount {
+		t.Errorf("third Ensure created a new network; want idempotent. count = %d", len(d.networks))
+	}
+}
+
+// TestEnsure_RecreatesOnClusterIDDrift covers the actual issue #42 trigger:
+// raft state is wiped and the cluster is re-formed in place, so the new
+// clusterID differs from the stale bridge's jaco.cluster_id label. Ensure
+// must still claim the bridge by name (it's JACO-owned per the jaco.*
+// labels) and recreate it under the new cluster_id.
+func TestEnsure_RecreatesOnClusterIDDrift(t *testing.T) {
+	d := newFakeDocker()
+	ctx := context.Background()
+	// First cluster: clusterID="old-cluster", CIDR=10.244.0.0/24.
+	if _, err := bridge.Ensure(ctx, d, "sample", "frontend", "10.244.0.0/24", "old-cluster"); err != nil {
+		t.Fatalf("first Ensure: %v", err)
+	}
+	// Re-form in place: NEW clusterID, SAME (deployment, network), even
+	// SAME CIDR — bridge must still be reclaimed (otherwise NetworkCreate
+	// would later fail with "already exists").
+	if _, err := bridge.Ensure(ctx, d, "sample", "frontend", "10.244.0.0/24", "new-cluster"); err != nil {
+		t.Fatalf("second Ensure (mismatched cluster_id): %v", err)
+	}
+	if len(d.networks) != 1 {
+		t.Fatalf("expected exactly 1 network after recreate, got %d", len(d.networks))
+	}
+	for _, n := range d.networks {
+		if got := n.Labels["jaco.cluster_id"]; got != "new-cluster" {
+			t.Errorf("recreated network cluster_id label = %q, want new-cluster", got)
+		}
+	}
+}
+
+// TestEnsure_RefusesForeignDockerNetwork: if a docker network with our name
+// exists but lacks any jaco.* labels (operator-created collision), bail
+// rather than tear down foreign state.
+func TestEnsure_RefusesForeignDockerNetwork(t *testing.T) {
+	d := newFakeDocker()
+	ctx := context.Background()
+	// Plant a non-JACO network with the same name as we'd create.
+	if _, err := d.NetworkCreate(ctx, "jaco_sample_frontend", dnet.CreateOptions{
+		Driver: "bridge",
+		IPAM:   &dnet.IPAM{Driver: "default", Config: []dnet.IPAMConfig{{Subnet: "10.244.0.0/24", Gateway: "10.244.0.1"}}},
+		Labels: map[string]string{"owner": "someone-else"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bridge.Ensure(ctx, d, "sample", "frontend", "10.244.0.0/24", "cluster-x"); err == nil {
+		t.Errorf("Ensure should refuse a name-collision against a non-JACO network")
 	}
 }
 

@@ -2,7 +2,9 @@ package firewall
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -37,8 +39,32 @@ type Reconciler struct {
 	UpdateStatus IsolationStatusFn
 	Render       func() RuleInput
 
+	// Pool is the IPAM /16; EnsureSNAT re-asserts the intra-pool SNAT
+	// exemption in Docker's nat POSTROUTING each tick (issue #28). Both are
+	// optional — when either is unset the SNAT step is skipped (tests, or
+	// hosts without iptables).
+	Pool       string
+	EnsureSNAT func(ctx context.Context, pool string) error
+
+	// EnsureOverlay re-asserts the intra-pool ACCEPT exemptions that let
+	// cross-host container traffic past Docker's container-isolation drops
+	// (raw PREROUTING direct-routing + FORWARD inter-network isolation, issue
+	// #28). Optional and Pool-gated, same as EnsureSNAT.
+	EnsureOverlay func(ctx context.Context, pool string) error
+
+	// Logger receives per-tick error lines (apply failures, UpdateStatus
+	// failures, Audit failures). Nil-safe: falls back to log.Default().
+	Logger *log.Logger
+
 	// degraded tracks whether the last Tick saw an Apply failure.
 	degraded bool
+}
+
+func (r *Reconciler) logger() *log.Logger {
+	if r.Logger != nil {
+		return r.Logger
+	}
+	return log.Default()
 }
 
 // Tick runs one reconcile pass. Returns nil when the live ruleset matches
@@ -46,11 +72,38 @@ type Reconciler struct {
 // Apply failed (the daemon should already have been marked
 // isolation_unavailable via UpdateStatus).
 func (r *Reconciler) Tick(ctx context.Context) error {
+	// Re-assert the intra-pool SNAT exemption first — it lives in Docker's
+	// nat POSTROUTING (outside table inet jaco / its SelfTest), so it must be
+	// checked every tick. Best-effort: a failure here is independent of the
+	// inet jaco isolation status.
+	if r.EnsureSNAT != nil && r.Pool != "" {
+		if err := r.EnsureSNAT(ctx, r.Pool); err != nil {
+			_ = r.Audit(ctx, "SNAT_EXEMPT_FAILED", map[string]string{"error": err.Error()})
+		}
+	}
+
+	// Re-assert the overlay-isolation exemptions too — same rationale, also in
+	// Docker-owned chains (raw PREROUTING + DOCKER-USER) outside table inet
+	// jaco. Best-effort and independent of the inet jaco isolation status.
+	if r.EnsureOverlay != nil && r.Pool != "" {
+		if err := r.EnsureOverlay(ctx, r.Pool); err != nil {
+			_ = r.Audit(ctx, "OVERLAY_EXEMPT_FAILED", map[string]string{"error": err.Error()})
+		}
+	}
+
 	expected := r.Render()
 	listBytes, err := r.Lister(ctx)
 	if err != nil {
 		// Can't read live state — surface the error but don't flip status yet
 		// (a transient `nft` exec failure shouldn't mark the node down).
+		//
+		// NOTE: `nft -j list table inet jaco` also errors when the table is
+		// absent, so the isolation table does not auto-bootstrap here. That's
+		// intentional for now: the rendered `input` chain (policy drop) does
+		// not yet permit SSH or the Tailscale interface, so applying it on a
+		// remotely-managed host would lock the operator out. Enabling the
+		// table safely (SSH/Tailscale allow + correct WG iface name) is a
+		// separate change tracked outside issue #28.
 		return fmt.Errorf("nft list: %w", err)
 	}
 
@@ -60,11 +113,13 @@ func (r *Reconciler) Tick(ctx context.Context) error {
 		if r.degraded {
 			r.degraded = false
 			if err := r.UpdateStatus(ctx, "ready", "isolation_reload_recovered"); err != nil {
+				r.logger().Printf("firewall.Reconciler: UpdateStatus(ready) failed: %v", err)
 				return err
 			}
 			if err := r.Audit(ctx, "ISOLATION_RULESET_RECONCILED", map[string]string{
 				"action": "recovered",
 			}); err != nil {
+				r.logger().Printf("firewall.Reconciler: Audit(ISOLATION_RULESET_RECONCILED action=recovered) failed: %v", err)
 				return err
 			}
 		}
@@ -75,7 +130,15 @@ func (r *Reconciler) Tick(ctx context.Context) error {
 	ruleset := Render(r.Render())
 	if applyErr := r.Applier(ctx, ruleset); applyErr != nil {
 		r.degraded = true
-		_ = r.UpdateStatus(ctx, "isolation_unavailable", applyErr.Error())
+		// Log the apply error directly — operators reading jacod logs need
+		// to see this even when raft node-status isn't being watched.
+		r.logger().Printf("firewall.Reconciler: apply ruleset failed: %v", applyErr)
+		// Log even if UpdateStatus fails — the previous behavior swallowed
+		// this with `_ =`, masking the real reason `nft list table inet jaco`
+		// stays missing on a live cluster (issue #45).
+		if err := r.UpdateStatus(ctx, "isolation_unavailable", applyErr.Error()); err != nil {
+			r.logger().Printf("firewall.Reconciler: UpdateStatus(isolation_unavailable) failed: %v (apply error: %v)", err, applyErr)
+		}
 		return fmt.Errorf("apply ruleset: %w", applyErr)
 	}
 
@@ -85,11 +148,14 @@ func (r *Reconciler) Tick(ctx context.Context) error {
 		"action":  "applied",
 		"summary": summary,
 	}); err != nil {
+		r.logger().Printf("firewall.Reconciler: Audit(ISOLATION_RULESET_RECONCILED action=applied) failed: %v", err)
 		return err
 	}
 	if r.degraded {
 		r.degraded = false
-		_ = r.UpdateStatus(ctx, "ready", "isolation_reload_recovered")
+		if err := r.UpdateStatus(ctx, "ready", "isolation_reload_recovered"); err != nil {
+			r.logger().Printf("firewall.Reconciler: UpdateStatus(ready) failed after recovery apply: %v", err)
+		}
 	}
 	return nil
 }
@@ -100,7 +166,9 @@ func (r *Reconciler) Loop(ctx context.Context) error {
 	defer t.Stop()
 	for {
 		// Run once at start so drift gets fixed quickly.
-		_ = r.Tick(ctx)
+		if err := r.Tick(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			r.logger().Printf("firewall.Reconciler.Tick: %v", err)
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

@@ -30,6 +30,7 @@ type fakeDocker struct {
 	idSeq      int
 	createErr  error
 	attached   map[string][]string // containerID → list of network names
+	aliases    map[string][]string // containerID → aliases from the last NetworkConnect
 }
 
 type fakeContainer struct {
@@ -107,7 +108,7 @@ func (f *fakeDocker) ContainerRemove(_ context.Context, id string, _ container.R
 	return nil
 }
 
-func (f *fakeDocker) NetworkConnect(_ context.Context, networkID, containerID string, _ *network.EndpointSettings) error {
+func (f *fakeDocker) NetworkConnect(_ context.Context, networkID, containerID string, ep *network.EndpointSettings) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, ok := f.containers[containerID]; !ok {
@@ -119,6 +120,12 @@ func (f *fakeDocker) NetworkConnect(_ context.Context, networkID, containerID st
 		f.attached = map[string][]string{}
 	}
 	f.attached[containerID] = append(f.attached[containerID], networkID)
+	if ep != nil {
+		if f.aliases == nil {
+			f.aliases = map[string][]string{}
+		}
+		f.aliases[containerID] = ep.Aliases
+	}
 	return nil
 }
 
@@ -383,6 +390,12 @@ func TestStart_AttachesEachDeclaredNetwork(t *testing.T) {
 	want := []string{"jaco_sample_frontend", "jaco_sample_backend"}
 	if !equalStrings(got, want) {
 		t.Errorf("attached networks = %v, want %v", got, want)
+	}
+	// The NetworkConnect for the additional network carries the service
+	// aliases for Docker's embedded DNS (issue #28).
+	wantAliases := []string{"web", "web.sample", "web.sample.jaco.internal"}
+	if !equalStrings(d.aliases[id], wantAliases) {
+		t.Errorf("connect aliases = %v, want %v", d.aliases[id], wantAliases)
 	}
 }
 

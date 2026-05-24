@@ -46,6 +46,40 @@ func TestValidate_ValidFixturePasses(t *testing.T) {
 	}
 }
 
+func TestValidate_BuildFieldAcceptedAndIgnored(t *testing.T) {
+	body := []byte(`services:
+  web:
+    image: registry.example.com/web:1.0
+    build: ./web
+`)
+	if err := compose.Validate(body); err != nil {
+		t.Fatalf("Validate should accept build:; got %v", err)
+	}
+
+	project, err := compose.LoadBytes(body, "memory.yml")
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	svc, ok := lookupService(project, "web")
+	if !ok {
+		t.Fatalf("web service missing")
+	}
+	spec := compose.ToContainerSpec(svc, compose.SpecOptions{
+		Deployment: "sample", Service: "web", ReplicaID: "sample-web-0",
+	})
+	if spec.Image != "registry.example.com/web:1.0" {
+		t.Errorf("Image = %q, want registry.example.com/web:1.0", spec.Image)
+	}
+	// The ContainerSpec surface has no Build field — projecting drops it. Sanity-
+	// check the runtime view stayed image-only by confirming nothing leaked into
+	// Labels under a build-ish key.
+	for k := range spec.Labels {
+		if strings.Contains(strings.ToLower(k), "build") {
+			t.Errorf("Labels carries build remnant %q = %q", k, spec.Labels[k])
+		}
+	}
+}
+
 func TestValidate_UnknownFieldRejected(t *testing.T) {
 	body := loadFixture(t, "unknown-field.yml")
 	err := compose.Validate(body)

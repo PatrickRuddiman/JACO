@@ -98,21 +98,25 @@ func TestApplyEmitsWatchEvents(t *testing.T) {
 
 func TestSubnetCompositeKey(t *testing.T) {
 	s, _ := newStore(t)
-	s.Subnets.Apply(&pb.Subnet{Deployment: "front", Network: "_default", Cidr: "10.42.0.0/24"}, 1)
-	s.Subnets.Apply(&pb.Subnet{Deployment: "front", Network: "backend", Cidr: "10.42.1.0/24"}, 2)
-	s.Subnets.Apply(&pb.Subnet{Deployment: "back", Network: "_default", Cidr: "10.42.2.0/24"}, 3)
+	// Same (deployment, network) on two hosts must key distinctly.
+	s.Subnets.Apply(&pb.Subnet{Deployment: "front", Network: "_default", Cidr: "10.42.0.0/24", Host: "host-a"}, 1)
+	s.Subnets.Apply(&pb.Subnet{Deployment: "front", Network: "_default", Cidr: "10.42.1.0/24", Host: "host-b"}, 2)
+	s.Subnets.Apply(&pb.Subnet{Deployment: "back", Network: "_default", Cidr: "10.42.2.0/24", Host: "host-a"}, 3)
 
 	if got := s.Subnets.Len(); got != 3 {
 		t.Errorf("Len() = %d, want 3", got)
 	}
 
-	got, ok := s.Subnets.Get(state.SubnetKey("front", "_default"))
+	got, ok := s.Subnets.Get(state.SubnetKey("front", "_default", "host-a"))
 	if !ok || got.GetCidr() != "10.42.0.0/24" {
-		t.Errorf("front/_default: ok=%v cidr=%q", ok, got.GetCidr())
+		t.Errorf("front/_default/host-a: ok=%v cidr=%q", ok, got.GetCidr())
 	}
-	got, ok = s.Subnets.Get(state.SubnetKey("front", "backend"))
+	got, ok = s.Subnets.Get(state.SubnetKey("front", "_default", "host-b"))
 	if !ok || got.GetCidr() != "10.42.1.0/24" {
-		t.Errorf("front/backend: ok=%v cidr=%q", ok, got.GetCidr())
+		t.Errorf("front/_default/host-b: ok=%v cidr=%q", ok, got.GetCidr())
+	}
+	if _, ok := s.Subnets.Get(state.SubnetKey("front", "_default", "host-c")); ok {
+		t.Errorf("front/_default/host-c should not exist")
 	}
 }
 

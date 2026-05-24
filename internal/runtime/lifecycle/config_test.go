@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/docker/docker/api/types/mount"
@@ -166,14 +167,20 @@ func TestBuildConfig_RespectsEveryFieldOnSpec(t *testing.T) {
 }
 
 // TestBuildConfig_WithSingleNetwork — first declared network attaches
-// at create-time via EndpointsConfig and sets NetworkMode (bug 010).
+// at create-time via EndpointsConfig and sets NetworkMode (bug 010), and
+// carries the service aliases for Docker's embedded DNS (issue #28).
 func TestBuildConfig_WithSingleNetwork(t *testing.T) {
-	spec := compose.ContainerSpec{Image: "x", Networks: []string{"jaco_app_frontend"}}
+	spec := compose.ContainerSpec{Image: "x", Service: "web", Deployment: "app", Networks: []string{"jaco_app_frontend"}}
 	_, hc, net := buildConfig(spec)
 	if string(hc.NetworkMode) != "jaco_app_frontend" {
 		t.Errorf("NetworkMode = %q, want jaco_app_frontend", hc.NetworkMode)
 	}
-	if _, ok := net.EndpointsConfig["jaco_app_frontend"]; !ok {
-		t.Errorf("EndpointsConfig missing jaco_app_frontend; got %v", net.EndpointsConfig)
+	ep, ok := net.EndpointsConfig["jaco_app_frontend"]
+	if !ok {
+		t.Fatalf("EndpointsConfig missing jaco_app_frontend; got %v", net.EndpointsConfig)
+	}
+	want := []string{"web", "web.app", "web.app.jaco.internal"}
+	if !reflect.DeepEqual(ep.Aliases, want) {
+		t.Errorf("aliases = %v, want %v", ep.Aliases, want)
 	}
 }

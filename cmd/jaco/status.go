@@ -31,10 +31,9 @@ func statusCmd() *cobra.Command {
 	var watch bool
 	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
 	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN)")
-	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
+	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
 	c.Flags().BoolVarP(&watch, "watch", "w", false, "re-render on every state change (Ctrl-C to exit)")
 	_ = c.MarkFlagRequired("server")
-	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, args []string) error {
 		if opToken == "" {
@@ -51,7 +50,11 @@ func statusCmd() *cobra.Command {
 				svc = parts[1]
 			}
 		}
-		conn, err := dialServer(server, mustReadFile(caCertPath))
+		caCertPEM, err := readCACert(caCertPath)
+		if err != nil {
+			return err
+		}
+		conn, err := dialServer(server, caCertPEM)
 		if err != nil {
 			return err
 		}
@@ -77,7 +80,7 @@ func runStatus(ctx context.Context, client pb.DeployClient, deployment, service 
 		ServiceFilter:    service,
 	})
 	if err != nil {
-		return err
+		return cliclient.FormatError(err)
 	}
 	return renderStatus(out, resp)
 }
@@ -94,7 +97,7 @@ func runStatusWatch(ctx context.Context, deploy pb.DeployClient, watch pb.WatchC
 		DeploymentFilter: deployment,
 	})
 	if err != nil {
-		return err
+		return cliclient.FormatError(err)
 	}
 	for {
 		_, err := stream.Recv()
@@ -102,7 +105,7 @@ func runStatusWatch(ctx context.Context, deploy pb.DeployClient, watch pb.WatchC
 			return nil
 		}
 		if err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 		// Re-fetch the snapshot on any event. (Resync sends the same trigger
 		// — re-fetch is idempotent.)

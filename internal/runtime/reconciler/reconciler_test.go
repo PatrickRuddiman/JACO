@@ -2,6 +2,7 @@ package reconciler_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -92,6 +93,14 @@ func (f *fakeDocker) NetworkConnect(_ context.Context, _, _ string, _ *network.E
 	return nil
 }
 
+func (f *fakeDocker) NetworkList(_ context.Context, _ network.ListOptions) ([]network.Summary, error) {
+	return nil, nil
+}
+
+func (f *fakeDocker) NetworkCreate(_ context.Context, _ string, _ network.CreateOptions) (network.CreateResponse, error) {
+	return network.CreateResponse{}, nil
+}
+
 func (f *fakeDocker) ContainerInspect(_ context.Context, id string) (types.ContainerJSON, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -161,7 +170,7 @@ func seedAll(t *testing.T, f *fsm.FSM, raftIdx *uint64) {
 	apply(t, f, &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_DeploymentApply{
 		DeploymentApply: &pb.DeploymentApply{
 			Deployment: "smoke", Revision: 1, ComposeYaml: []byte(composeYAML),
-			Services: []*pb.ServiceSpec{{Name: "web", Replicas: 1, ComposeService: "web", Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD}},
+			Services: []*pb.ServiceSpec{{Name: "web", Replicas: 1, Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD}},
 		},
 	}}, *raftIdx)
 }
@@ -183,7 +192,7 @@ func TestReconciler_StartsContainerOnReplicaDesiredAdd(t *testing.T) {
 	var raftIdx uint64
 	seedAll(t, f, &raftIdx)
 
-	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, silentLogger())
+	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, okEnsureSubnet, silentLogger())
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	done := make(chan error, 1)
@@ -217,7 +226,7 @@ func TestReconciler_IgnoresReplicaForDifferentHost(t *testing.T) {
 	var raftIdx uint64
 	seedAll(t, f, &raftIdx)
 
-	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, silentLogger())
+	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, okEnsureSubnet, silentLogger())
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	done := make(chan error, 1)
@@ -246,7 +255,7 @@ func TestReconciler_RemovesContainerOnReplicaDesiredDelete(t *testing.T) {
 	var raftIdx uint64
 	seedAll(t, f, &raftIdx)
 
-	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, silentLogger())
+	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, okEnsureSubnet, silentLogger())
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	done := make(chan error, 1)
@@ -322,7 +331,7 @@ func TestReconciler_OrphanSweepStopsContainerWhenDesiredMovedHosts(t *testing.T)
 	}
 	d.mu.Unlock()
 
-	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, silentLogger())
+	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, okEnsureSubnet, silentLogger())
 	if err := rec.OrphanSweep(context.Background()); err != nil {
 		t.Fatalf("OrphanSweep: %v", err)
 	}
@@ -339,3 +348,119 @@ func silentLogger() *log.Logger { return log.New(io.Discard, "", 0) }
 
 // Ensure the SubmitFn type satisfies health.SubmitFn at compile time.
 var _ health.SubmitFn = noopSubmit
+
+// okEnsureSubnet is the happy-path allocator fake: every network resolves to
+// a fixed /24 so startReplica proceeds to lifecycle.Start.
+func okEnsureSubnet(_ context.Context, _, _, _ string) (string, error) {
+	return "10.244.0.0/24", nil
+}
+
+// recordingSubmit captures every ReplicaObserved the reconciler publishes.
+type recordingSubmit struct {
+	mu  sync.Mutex
+	obs []*pb.ReplicaObserved
+}
+
+func (r *recordingSubmit) fn(_ context.Context, o *pb.ReplicaObserved) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.obs = append(r.obs, o)
+	return nil
+}
+
+func (r *recordingSubmit) failedWithCode(code string) *pb.ReplicaObserved {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, o := range r.obs {
+		if o.GetState() == pb.ReplicaState_REPLICA_STATE_FAILED && o.GetCode() == code {
+			return o
+		}
+	}
+	return nil
+}
+
+// TestReconciler_PoolExhaustionMarksReplicaFailed — when ensureSubnet reports
+// the pool is exhausted, the replica is published FAILED/subnet_pool_exhausted
+// and no container is created.
+func TestReconciler_PoolExhaustionMarksReplicaFailed(t *testing.T) {
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	f := fsm.New(st, brokers)
+	d := newFakeDocker()
+	var raftIdx uint64
+	seedAll(t, f, &raftIdx)
+
+	rec := &recordingSubmit{}
+	exhausted := func(_ context.Context, _, _, _ string) (string, error) {
+		return "", reconciler.ErrSubnetPoolExhausted
+	}
+	r := reconciler.New(d, st, brokers, "host-a", rec.fn, exhausted, silentLogger())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+
+	raftIdx++
+	apply(t, f, &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_ReplicaDesiredUpsert{
+		ReplicaDesiredUpsert: &pb.ReplicaDesiredUpsert{Replica: &pb.ReplicaDesired{
+			Id: "smoke-web-0", Deployment: "smoke", Service: "web", Index: 0, Host: "host-a", Image: "nginx:1.27",
+		}},
+	}}, raftIdx)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if rec.failedWithCode("subnet_pool_exhausted") != nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	if rec.failedWithCode("subnet_pool_exhausted") == nil {
+		t.Fatalf("no FAILED/subnet_pool_exhausted observation was published")
+	}
+	if got := len(d.snapshotByReplicaID()); got != 0 {
+		t.Errorf("created %d containers despite pool exhaustion; want 0", got)
+	}
+}
+
+// TestReconciler_TransientAllocErrorDoesNotFail — a transient ensureSubnet
+// error (e.g. no leader yet) leaves the replica unstarted for the next tick;
+// it must NOT be marked FAILED and must NOT create a container.
+func TestReconciler_TransientAllocErrorDoesNotFail(t *testing.T) {
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	f := fsm.New(st, brokers)
+	d := newFakeDocker()
+	var raftIdx uint64
+	seedAll(t, f, &raftIdx)
+
+	rec := &recordingSubmit{}
+	transient := func(_ context.Context, _, _, _ string) (string, error) {
+		return "", errors.New("no leader gRPC address known")
+	}
+	r := reconciler.New(d, st, brokers, "host-a", rec.fn, transient, silentLogger())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+
+	raftIdx++
+	apply(t, f, &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_ReplicaDesiredUpsert{
+		ReplicaDesiredUpsert: &pb.ReplicaDesiredUpsert{Replica: &pb.ReplicaDesired{
+			Id: "smoke-web-0", Deployment: "smoke", Service: "web", Index: 0, Host: "host-a", Image: "nginx:1.27",
+		}},
+	}}, raftIdx)
+
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+	<-done
+
+	if o := rec.failedWithCode("subnet_pool_exhausted"); o != nil {
+		t.Errorf("transient error was wrongly marked FAILED")
+	}
+	if got := len(d.snapshotByReplicaID()); got != 0 {
+		t.Errorf("created %d containers despite transient alloc error; want 0", got)
+	}
+}

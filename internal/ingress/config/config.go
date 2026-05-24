@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -29,6 +30,10 @@ type Route struct {
 	Service    string
 	Port       int
 	TLSAuto    bool
+	// Path is an optional URL path prefix (e.g. "/api/"). Default "" means
+	// catch-all. Multiple routes for the same domain are emitted into one
+	// Caddy host block ordered longest-prefix-first.
+	Path string
 }
 
 // ReplicaObservedView is the subset of pb.ReplicaObserved BuildCaddyConfig
@@ -71,6 +76,12 @@ type BuildOpts struct {
 // BuildCaddyConfig emits the Caddy JSON for the given (routes, replicas,
 // services). Returned bytes are indented JSON with alphabetically-sorted
 // keys (deterministic for golden-file tests).
+//
+// When multiple routes share the same domain, they are grouped into a single
+// Caddy host block. Within that block the path-specific routes are emitted
+// longest-prefix-first (so Caddy's first-match rule picks the most specific
+// path), followed by the catch-all route (empty path) as the unconditional
+// final handler.
 func BuildCaddyConfig(routes []Route, replicas []ReplicaObservedView, services map[string]ServiceMeta, opts BuildOpts) ([]byte, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -78,12 +89,6 @@ func BuildCaddyConfig(routes []Route, replicas []ReplicaObservedView, services m
 	if opts.ACMECA == "" {
 		opts.ACMECA = "https://acme-v02.api.letsencrypt.org/directory"
 	}
-
-	// Sort routes by domain for deterministic output.
-	sortedRoutes := append([]Route(nil), routes...)
-	sort.Slice(sortedRoutes, func(i, j int) bool {
-		return sortedRoutes[i].Domain < sortedRoutes[j].Domain
-	})
 
 	// Index replicas by (deployment, service).
 	healthyByService := map[string][]ReplicaObservedView{}
@@ -101,34 +106,68 @@ func BuildCaddyConfig(routes []Route, replicas []ReplicaObservedView, services m
 		healthyByService[k] = v
 	}
 
-	cfgRoutes := make([]any, 0, len(sortedRoutes)+1)
-	for _, route := range sortedRoutes {
-		meta, ok := services[MetaKey(route.Deployment, route.Service)]
-		var upstreams []any
-		if ok {
-			for _, r := range healthyByService[MetaKey(route.Deployment, route.Service)] {
-				ip, hasIP := meta.ReplicaIPs[r.ID]
-				if !hasIP {
-					continue
-				}
-				upstreams = append(upstreams, map[string]any{
-					"dial": fmt.Sprintf("%s:%d", ip, route.Port),
-				})
+	// Group routes by domain; collect unique domains in sorted order.
+	domainMap := map[string][]Route{}
+	for _, r := range routes {
+		domainMap[r.Domain] = append(domainMap[r.Domain], r)
+	}
+	domains := make([]string, 0, len(domainMap))
+	for d := range domainMap {
+		domains = append(domains, d)
+	}
+	sort.Strings(domains)
+
+	// sortedRoutes is used for TLS policy building.
+	var sortedRoutes []Route
+	for _, d := range domains {
+		sortedRoutes = append(sortedRoutes, domainMap[d]...)
+	}
+
+	cfgRoutes := make([]any, 0, len(domains)+1)
+	for _, domain := range domains {
+		domRoutes := domainMap[domain]
+
+		// Within this domain: separate path routes from catch-all (empty path).
+		var pathRoutes []Route
+		var catchAll *Route
+		for i := range domRoutes {
+			if domRoutes[i].Path == "" {
+				r := domRoutes[i]
+				catchAll = &r
+			} else {
+				pathRoutes = append(pathRoutes, domRoutes[i])
 			}
 		}
+		// Sort path routes longest-prefix-first for deterministic Caddy ordering.
+		sort.Slice(pathRoutes, func(i, j int) bool {
+			li, lj := len(pathRoutes[i].Path), len(pathRoutes[j].Path)
+			if li != lj {
+				return li > lj // longer first
+			}
+			return pathRoutes[i].Path < pathRoutes[j].Path
+		})
+
+		if len(pathRoutes) == 0 {
+			// Single route for this domain (catch-all or path-only).
+			r := domRoutes[0]
+			cfgRoutes = append(cfgRoutes, buildSingleRoute(domain, r, healthyByService, services))
+			continue
+		}
+
+		// Multiple routes: emit a subroutes block inside a host-matched route.
+		// Caddy v2: outer match=host, handle=[{handler:"subroute", routes:[...]}]
+		var subRoutes []any
+		for _, r := range pathRoutes {
+			subRoutes = append(subRoutes, buildPathRoute(r, healthyByService, services))
+		}
+		if catchAll != nil {
+			subRoutes = append(subRoutes, buildProxyHandle(*catchAll, healthyByService, services))
+		}
 		cfgRoutes = append(cfgRoutes, map[string]any{
-			"match": []any{map[string]any{"host": []any{route.Domain}}},
+			"match": []any{map[string]any{"host": []any{domain}}},
 			"handle": []any{map[string]any{
-				"handler":   "reverse_proxy",
-				"upstreams": upstreams,
-				"load_balancing": map[string]any{
-					"selection_policy": map[string]any{"policy": "random"},
-					"retries":          2,
-					"try_duration":     "0s",
-				},
-				"health_checks": map[string]any{
-					"passive": map[string]any{"fail_duration": "10s"},
-				},
+				"handler": "subroute",
+				"routes":  subRoutes,
 			}},
 		})
 	}
@@ -160,6 +199,101 @@ func BuildCaddyConfig(routes []Route, replicas []ReplicaObservedView, services m
 	return json.MarshalIndent(root, "", "  ")
 }
 
+// buildUpstreams returns the upstream list for a route.
+func buildUpstreams(route Route, healthyByService map[string][]ReplicaObservedView, services map[string]ServiceMeta) []any {
+	meta, ok := services[MetaKey(route.Deployment, route.Service)]
+	var upstreams []any
+	if ok {
+		for _, r := range healthyByService[MetaKey(route.Deployment, route.Service)] {
+			ip, hasIP := meta.ReplicaIPs[r.ID]
+			if !hasIP {
+				continue
+			}
+			upstreams = append(upstreams, map[string]any{
+				"dial": fmt.Sprintf("%s:%d", ip, route.Port),
+			})
+		}
+	}
+	return upstreams
+}
+
+// buildProxyHandle returns a reverse_proxy handler object (no match).
+func buildProxyHandle(route Route, healthyByService map[string][]ReplicaObservedView, services map[string]ServiceMeta) any {
+	return map[string]any{
+		"handle": []any{map[string]any{
+			"handler":   "reverse_proxy",
+			"upstreams": buildUpstreams(route, healthyByService, services),
+			"load_balancing": map[string]any{
+				"selection_policy": map[string]any{"policy": "random"},
+				"retries":          2,
+				"try_duration":     "0s",
+			},
+			"health_checks": map[string]any{
+				"passive": map[string]any{"fail_duration": "10s"},
+			},
+		}},
+	}
+}
+
+// buildSingleRoute emits a top-level Caddy route for a single route entry.
+func buildSingleRoute(domain string, route Route, healthyByService map[string][]ReplicaObservedView, services map[string]ServiceMeta) any {
+	match := map[string]any{"host": []any{domain}}
+	if route.Path != "" {
+		match["path"] = pathMatchers(route.Path)
+	}
+	return map[string]any{
+		"match": []any{match},
+		"handle": []any{map[string]any{
+			"handler":   "reverse_proxy",
+			"upstreams": buildUpstreams(route, healthyByService, services),
+			"load_balancing": map[string]any{
+				"selection_policy": map[string]any{"policy": "random"},
+				"retries":          2,
+				"try_duration":     "0s",
+			},
+			"health_checks": map[string]any{
+				"passive": map[string]any{"fail_duration": "10s"},
+			},
+		}},
+	}
+}
+
+// buildPathRoute emits a subroute entry for a path-prefixed route.
+func buildPathRoute(route Route, healthyByService map[string][]ReplicaObservedView, services map[string]ServiceMeta) any {
+	return map[string]any{
+		"match": []any{map[string]any{"path": pathMatchers(route.Path)}},
+		"handle": []any{map[string]any{
+			"handler":   "reverse_proxy",
+			"upstreams": buildUpstreams(route, healthyByService, services),
+			"load_balancing": map[string]any{
+				"selection_policy": map[string]any{"policy": "random"},
+				"retries":          2,
+				"try_duration":     "0s",
+			},
+			"health_checks": map[string]any{
+				"passive": map[string]any{"fail_duration": "10s"},
+			},
+		}},
+	}
+}
+
+// pathMatchers returns the Caddy path-matcher patterns covering both the
+// exact prefix and everything below it. Caddy's `path` matcher accepts an
+// array of patterns and matches if any one matches. The intent of
+// `path: /api` is "match /api itself plus /api/anything"; a single glob
+// like `/api/*` would silently miss the bare `/api` request.
+//
+// Trailing "*" → use as-is (operator already wrote a glob).
+// Trailing "/" (e.g. "/api/") → ["/api", "/api/*"].
+// Otherwise (e.g. "/api")    → ["/api", "/api/*"].
+func pathMatchers(path string) []any {
+	if strings.HasSuffix(path, "*") {
+		return []any{path}
+	}
+	exact := strings.TrimSuffix(path, "/")
+	return []any{exact, exact + "/*"}
+}
+
 // fallbackRoute matches anything not matched above and returns 404 with the
 // Server: jaco header.
 func fallbackRoute() any {
@@ -177,12 +311,22 @@ func fallbackRoute() any {
 // buildTLSPolicies emits the apps.tls.automation.policies array.
 // One policy per `tls: auto` route; `tls: off` routes are omitted (the
 // HTTP-only listener serves them).
+//
+// A single domain may appear on multiple routes (path-based routing), so
+// the subjects list is deduped — ACME would otherwise be asked to issue
+// the same cert several times.
 func buildTLSPolicies(routes []Route, opts BuildOpts) []any {
+	seen := map[string]bool{}
 	var domains []string
 	for _, r := range routes {
-		if r.TLSAuto {
-			domains = append(domains, r.Domain)
+		if !r.TLSAuto {
+			continue
 		}
+		if seen[r.Domain] {
+			continue
+		}
+		seen[r.Domain] = true
+		domains = append(domains, r.Domain)
 	}
 	if len(domains) == 0 {
 		return nil

@@ -1,0 +1,10 @@
+deployment: badapp
+services:
+  - name: web
+    replicas: 1
+    placement: spread
+routes:
+  - domain: web.example.com
+    service: nonexistent-service
+    port: 80
+    tls: auto
