@@ -28,10 +28,9 @@ func tokenIssueCmd() *cobra.Command {
 	var server, opToken, caCertPath, name string
 	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
 	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN)")
-	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
+	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
 	c.Flags().StringVar(&name, "name", "", "identity for the new token; required")
 	_ = c.MarkFlagRequired("server")
-	// ca-cert no longer required: v0 uses plaintext TCP
 	_ = c.MarkFlagRequired("name")
 
 	c.RunE = func(_ *cobra.Command, _ []string) error {
@@ -41,7 +40,11 @@ func tokenIssueCmd() *cobra.Command {
 		if opToken == "" {
 			return fmt.Errorf("--token or JACO_TOKEN env is required")
 		}
-		conn, err := dialServer(server, mustReadFile(caCertPath))
+		caCertPEM, err := readCACert(caCertPath)
+		if err != nil {
+			return err
+		}
+		conn, err := dialServer(server, caCertPEM)
 		if err != nil {
 			return err
 		}
@@ -68,9 +71,8 @@ func tokenRevokeCmd() *cobra.Command {
 	var server, opToken, caCertPath string
 	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
 	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN)")
-	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
+	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
 	_ = c.MarkFlagRequired("server")
-	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, args []string) error {
 		if opToken == "" {
@@ -79,7 +81,11 @@ func tokenRevokeCmd() *cobra.Command {
 		if opToken == "" {
 			return fmt.Errorf("--token or JACO_TOKEN env is required")
 		}
-		conn, err := dialServer(server, mustReadFile(caCertPath))
+		caCertPEM, err := readCACert(caCertPath)
+		if err != nil {
+			return err
+		}
+		conn, err := dialServer(server, caCertPEM)
 		if err != nil {
 			return err
 		}
@@ -104,15 +110,18 @@ func tokenListCmd() *cobra.Command {
 	var server, opToken, caCertPath string
 	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
 	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN)")
-	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
+	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
 	_ = c.MarkFlagRequired("server")
-	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, _ []string) error {
 		if opToken == "" {
 			opToken = os.Getenv("JACO_TOKEN")
 		}
-		conn, err := dialServer(server, mustReadFile(caCertPath))
+		caCertPEM, err := readCACert(caCertPath)
+		if err != nil {
+			return err
+		}
+		conn, err := dialServer(server, caCertPEM)
 		if err != nil {
 			return err
 		}
