@@ -138,6 +138,16 @@ func classify(ifaceName string, ip net.IP) int {
 		return 0
 	}
 
+	// Container / virtual bridge faces (docker0, docker_gwbridge, br-<id>,
+	// veth*, virbr*) are never the cluster's real LAN or overlay face: they
+	// are local-only and frequently identical across hosts (docker0 is
+	// 172.17.0.1 on every docker host). They carry RFC1918 addresses, so
+	// without this guard the private-LAN-first order would auto-pick docker0
+	// — binding the control/data plane to an address no peer can reach.
+	if isVirtualBridgeName(ifaceName) {
+		return 0
+	}
+
 	// Class 2 — overlay devices, identified by interface name. These are
 	// explicit overlay/VPN/mesh faces (tailscale, tun, tap, wg, jaco), so
 	// they're classified by role regardless of which range their address
@@ -169,6 +179,23 @@ func isOverlayName(ifaceName string) bool {
 	}
 	for _, p := range []string{"tun", "tap", "wg", "jaco"} {
 		if strings.HasPrefix(ifaceName, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isVirtualBridgeName reports whether an interface name denotes a
+// container / virtual bridge that is never a real cluster face: docker0,
+// docker_gwbridge, docker user-defined bridges (br-<id>), veth pairs, and
+// libvirt bridges (virbr*). The "br-" prefix (with hyphen) deliberately
+// does not match an operator's own bridged NIC like "br0".
+func isVirtualBridgeName(name string) bool {
+	if name == "docker0" || name == "docker_gwbridge" {
+		return true
+	}
+	for _, p := range []string{"br-", "veth", "virbr"} {
+		if strings.HasPrefix(name, p) {
 			return true
 		}
 	}

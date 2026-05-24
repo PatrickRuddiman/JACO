@@ -188,6 +188,15 @@ func TestClassify_ExhaustiveTable(t *testing.T) {
 		// Class 0 — public is never auto-picked.
 		{"eth0", "8.8.8.8", 0},
 		{"eth0", "203.0.113.9", 0},
+		// Class 0 — container / virtual bridges, even on RFC1918 ranges.
+		// docker0 is 172.17.0.1 on every host; without this it would beat
+		// eth0 on the alphabetical tiebreak and bind to an unreachable face.
+		{"docker0", "172.17.0.1", 0},
+		{"docker_gwbridge", "172.18.0.1", 0},
+		{"br-3f9a2b1c4d5e", "10.244.0.1", 0}, // docker user-defined bridge
+		{"veth8a1b2c3", "10.244.0.2", 0},
+		{"virbr0", "192.168.122.1", 0},
+		{"br0", "192.168.1.5", 1}, // operator's own bridged NIC is NOT excluded
 		// Class 0 — non-routable / special.
 		{"eth0", "127.0.0.1", 0},   // loopback
 		{"eth0", "169.254.1.1", 0}, // link-local
