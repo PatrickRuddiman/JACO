@@ -91,24 +91,15 @@ func TestHandle_ServiceNotInScopeReturnsNXDOMAIN(t *testing.T) {
 	}
 }
 
-// fakeForwarder echoes a canned response.
-type fakeForwarder struct {
-	respond func(host string) ([]net.IP, error)
-}
-
-func (f *fakeForwarder) LookupHost(host string) ([]net.IP, error) {
-	return f.respond(host)
-}
-
 func TestHandle_ExternalNameForwardedToUpstream(t *testing.T) {
 	called := false
-	fw := &fakeForwarder{respond: func(host string) ([]net.IP, error) {
+	fw := jdns.LookupHostFn(func(host string) ([]net.IP, error) {
 		called = true
 		if host != "example.com" {
 			t.Errorf("forwarded host = %q", host)
 		}
 		return []net.IP{net.IPv4(93, 184, 216, 34)}, nil
-	}}
+	})
 	r := jdns.New(
 		jdns.Scope{Deployment: "sample", Network: "frontend"},
 		jdns.ServiceMap{"web": {net.IPv4(10, 244, 5, 2)}},
@@ -127,9 +118,9 @@ func TestHandle_ExternalNameForwardedToUpstream(t *testing.T) {
 }
 
 func TestHandle_ExternalNameForwarderErrorReturnsNXDOMAIN(t *testing.T) {
-	fw := &fakeForwarder{respond: func(string) ([]net.IP, error) {
+	fw := jdns.LookupHostFn(func(string) ([]net.IP, error) {
 		return nil, errors.New("upstream nope")
-	}}
+	})
 	r := jdns.New(jdns.Scope{Deployment: "x", Network: "y"}, jdns.ServiceMap{}, fw)
 	resp := r.Handle(aQuery("missing.example.com"))
 	if resp.Rcode != mdns.RcodeNameError {

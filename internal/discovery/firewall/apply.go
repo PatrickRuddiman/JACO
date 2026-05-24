@@ -8,21 +8,10 @@ import (
 	"os/exec"
 )
 
-// Applier shells out to the `nft` binary; the production daemon uses
-// `defaultApplier`; tests can inject a stub.
-type Applier interface {
-	Apply(ctx context.Context, ruleset string) error
-}
-
-// DefaultApplier returns the production applier — writes the ruleset to a
-// 0600 temp file and invokes `nft -f <file>`.
-func DefaultApplier() Applier { return &defaultApplier{} }
-
-type defaultApplier struct{}
-
-// Apply writes ruleset to a 0600 temp file and runs `nft -f` against it.
-// The temp file is unlinked on success and on failure.
-func (d *defaultApplier) Apply(ctx context.Context, ruleset string) error {
+// NftApply writes ruleset to a 0600 temp file and runs `nft -f` against it.
+// The temp file is unlinked on success and on failure. The Reconciler wires
+// this to Applier; tests substitute a recording fake.
+func NftApply(ctx context.Context, ruleset string) error {
 	f, err := os.CreateTemp("", "jaco-nft-*.nft")
 	if err != nil {
 		return fmt.Errorf("CreateTemp: %w", err)

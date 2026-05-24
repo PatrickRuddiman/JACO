@@ -260,7 +260,7 @@ func TestReconcile_RolloutAbortsOnStepTimeout(t *testing.T) {
 		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
 		return nil
 	}
-	rollouts := rollout.New(st, applier, clock)
+	rollouts := rollout.New(st, applier, clock.Now)
 	s := scheduler.New(st, brokers, &fakeLeader{leader: true}, applier, rollouts)
 
 	seedNode(t, f, "node-a", &raftIdx)

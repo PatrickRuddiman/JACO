@@ -16,32 +16,23 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/runtime/pull"
 )
 
-// fakeClock auto-advances by the requested delay on every After call, so
+// fakeClock auto-advances by the requested delay on every after call, so
 // Pull's backoff loop progresses immediately without burning wall time.
 // delaysRequested records each requested delay in order so tests can assert
 // the backoff sequence.
 type fakeClock struct {
 	mu              sync.Mutex
-	now             time.Time
 	delaysRequested []time.Duration
 }
 
-func newFakeClock() *fakeClock { return &fakeClock{now: time.Unix(0, 0)} }
-
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
+func newFakeClock() *fakeClock { return &fakeClock{} }
 
 func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 	c.mu.Lock()
 	c.delaysRequested = append(c.delaysRequested, d)
-	c.now = c.now.Add(d)
-	when := c.now
 	c.mu.Unlock()
 	ch := make(chan time.Time, 1)
-	ch <- when
+	ch <- time.Now()
 	return ch
 }
 
@@ -103,7 +94,7 @@ func TestPull_SucceedsAfterTransientFailures(t *testing.T) {
 	}}
 	clock := newFakeClock()
 
-	err := pull.Pull(context.Background(), d, "nginx:1.27", clock, nil)
+	err := pull.Pull(context.Background(), d, "nginx:1.27", clock.After, nil)
 	if err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
@@ -144,7 +135,7 @@ func TestPull_BackoffSequenceCapsAt3600AtAttempt13(t *testing.T) {
 		}
 	}()
 
-	err := pull.Pull(ctx, d, "img", clock, nil)
+	err := pull.Pull(ctx, d, "img", clock.After, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -167,8 +158,9 @@ func TestPull_BackoffSequenceCapsAt3600AtAttempt13(t *testing.T) {
 
 func TestPull_CancellationReturnsContextErr(t *testing.T) {
 	d := &fakePuller{} // always fails
-	// Non-advancing clock — Pull blocks in After until we cancel.
-	clock := &blockingClock{ch: make(chan time.Time)}
+	// Non-advancing after — Pull blocks until we cancel.
+	blocked := make(chan time.Time)
+	after := func(time.Duration) <-chan time.Time { return blocked }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -176,21 +168,14 @@ func TestPull_CancellationReturnsContextErr(t *testing.T) {
 		cancel()
 	}()
 
-	err := pull.Pull(ctx, d, "img", clock, nil)
+	err := pull.Pull(ctx, d, "img", after, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
 	}
 }
 
-type blockingClock struct {
-	ch chan time.Time
-}
-
-func (b *blockingClock) Now() time.Time                         { return time.Time{} }
-func (b *blockingClock) After(_ time.Duration) <-chan time.Time { return b.ch }
-
 func TestPull_EmptyRefRejected(t *testing.T) {
-	err := pull.Pull(context.Background(), &fakePuller{}, "", newFakeClock(), nil)
+	err := pull.Pull(context.Background(), &fakePuller{}, "", newFakeClock().After, nil)
 	if err == nil {
 		t.Fatalf("expected error on empty ref")
 	}
@@ -209,7 +194,7 @@ func TestPull_StateCallbackTransitions(t *testing.T) {
 		attempts = append(attempts, attempt)
 	}
 
-	if err := pull.Pull(context.Background(), d, "img", clock, cb); err != nil {
+	if err := pull.Pull(context.Background(), d, "img", clock.After, cb); err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
 	// Expected sequence: pulling(1), failed(1), pulling(2), failed(2), pulling(3), done(3).
