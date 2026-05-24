@@ -1,9 +1,12 @@
 package firewall_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"strings"
 	"sync"
 	"testing"
 
@@ -43,10 +46,12 @@ func (r *recordingApplier) Count() int {
 	return len(r.calls)
 }
 
-// recordingAudit captures audit events.
+// recordingAudit captures audit events. Setting err makes every invocation
+// return that error (still records the call).
 type recordingAudit struct {
 	mu     sync.Mutex
 	events []auditEntry
+	err    error
 }
 
 type auditEntry struct {
@@ -59,7 +64,7 @@ func (r *recordingAudit) fn() firewall.AuditFn {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		r.events = append(r.events, auditEntry{code: code, details: details})
-		return nil
+		return r.err
 	}
 }
 
@@ -73,10 +78,12 @@ func (r *recordingAudit) Codes() []string {
 	return out
 }
 
-// recordingStatus captures NodeStatusUpdate calls.
+// recordingStatus captures NodeStatusUpdate calls. Setting err makes every
+// invocation return that error (still records the call).
 type recordingStatus struct {
 	mu      sync.Mutex
 	updates []statusUpdate
+	err     error
 }
 
 type statusUpdate struct {
@@ -89,7 +96,7 @@ func (r *recordingStatus) fn() firewall.IsolationStatusFn {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		r.updates = append(r.updates, statusUpdate{status: status, reason: reason})
-		return nil
+		return r.err
 	}
 }
 
@@ -305,6 +312,48 @@ func TestReconcile_ApplyFailureFlipsIsolationUnavailable(t *testing.T) {
 	updates := stat.Updates()
 	if len(updates) != 1 || updates[0].status != "isolation_unavailable" {
 		t.Errorf("status updates = %v, want [isolation_unavailable]", updates)
+	}
+}
+
+func TestReconcile_ApplyFailureLogsStatusUpdateError(t *testing.T) {
+	// Regression for #45: when Apply fails AND UpdateStatus also fails,
+	// the prior code swallowed the UpdateStatus error with `_ =`, masking
+	// the real reason `nft list table inet jaco` stayed missing on a live
+	// cluster. The reconciler must:
+	//   1. log the apply error itself,
+	//   2. log the UpdateStatus error (with apply error context),
+	//   3. still return the wrapped applyErr to Loop.
+	var logBuf bytes.Buffer
+	applyErr := errors.New("nftables: parse error")
+	statusErr := errors.New("raft: not leader")
+	apl := &recordingApplier{err: applyErr}
+	aud := &recordingAudit{}
+	stat := &recordingStatus{err: statusErr}
+	r := &firewall.Reconciler{
+		Lister:       (&fakeLister{body: []byte(driftedJSON)}).List,
+		Applier:      apl.Apply,
+		Audit:        aud.fn(),
+		UpdateStatus: stat.fn(),
+		Render:       goodInput,
+		Logger:       log.New(&logBuf, "", 0),
+	}
+	err := r.Tick(context.Background())
+	if err == nil {
+		t.Fatalf("expected error from Tick")
+	}
+	if !errors.Is(err, applyErr) {
+		t.Errorf("Tick err = %v; want wrapped %v", err, applyErr)
+	}
+	updates := stat.Updates()
+	if len(updates) != 1 || updates[0].status != "isolation_unavailable" {
+		t.Errorf("status updates = %v, want [isolation_unavailable]", updates)
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, "apply ruleset failed") || !strings.Contains(logs, applyErr.Error()) {
+		t.Errorf("expected apply-error log line containing %q, got: %s", applyErr.Error(), logs)
+	}
+	if !strings.Contains(logs, "UpdateStatus(isolation_unavailable) failed") || !strings.Contains(logs, statusErr.Error()) {
+		t.Errorf("expected UpdateStatus-error log line containing %q, got: %s", statusErr.Error(), logs)
 	}
 }
 
