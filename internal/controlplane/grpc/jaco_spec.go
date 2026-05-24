@@ -44,7 +44,9 @@ type JacoRouteDecl struct {
 // happens in validateJacoYAML.
 //
 // It rejects input that contains compose_service keys: the field was removed
-// pre-1.0 and name is now the single source of truth.
+// pre-1.0 and name is now the single source of truth. Yaml unmarshal failures
+// are returned as *ValidationError with Code="parse_failed" so callers can
+// errors.As and surface a stable code without re-parsing the message.
 func ParseJacoYAML(body []byte) (*JacoYAML, error) {
 	// Pre-check: reject compose_service before struct decode so the error
 	// message is clear regardless of struct tag changes. Walk the entire
@@ -60,7 +62,10 @@ func ParseJacoYAML(body []byte) (*JacoYAML, error) {
 
 	var j JacoYAML
 	if err := yaml.Unmarshal(body, &j); err != nil {
-		return nil, fmt.Errorf("parse jaco yaml: %w", err)
+		return nil, &ValidationError{
+			Code:    "parse_failed",
+			Message: fmt.Sprintf("parse jaco yaml: %s", err.Error()),
+		}
 	}
 	for i := range j.Services {
 		if j.Services[i].Placement == "" {
@@ -73,6 +78,21 @@ func ParseJacoYAML(body []byte) (*JacoYAML, error) {
 		}
 	}
 	return &j, nil
+}
+
+// ValidateJacoYAMLBytes parses and validates a jaco YAML manifest from raw
+// bytes. Returns a non-nil error if parsing fails or any intrinsic invariant
+// is violated. This is the CLI-facing surface for local lint; it calls
+// ParseJacoYAML + validateJacoYAML in one step without touching a cluster.
+func ValidateJacoYAMLBytes(data []byte) error {
+	j, err := ParseJacoYAML(data)
+	if err != nil {
+		return err
+	}
+	if code, msg, ok := validateJacoYAML(j); !ok {
+		return &ValidationError{Code: code, Message: msg}
+	}
+	return nil
 }
 
 // validateJacoYAML checks intrinsic invariants (non-empty deployment, services
