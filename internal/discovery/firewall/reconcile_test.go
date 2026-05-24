@@ -172,6 +172,34 @@ func TestReconcile_DriftDetectedReappliesAndAudits(t *testing.T) {
 	}
 }
 
+// TestReconcile_ColdBootEmptyDocAppliesRuleset covers the first-boot path:
+// when the `inet jaco` table doesn't exist yet, NftList returns the empty
+// document `{"nftables":[]}` (instead of a "table not found" error), and
+// the reconciler must treat that as full drift and call Apply to create
+// the table.
+func TestReconcile_ColdBootEmptyDocAppliesRuleset(t *testing.T) {
+	apl := &recordingApplier{}
+	aud := &recordingAudit{}
+	stat := &recordingStatus{}
+	r := &firewall.Reconciler{
+		Lister:       (&fakeLister{body: []byte(`{"nftables":[]}`)}).List,
+		Applier:      apl.Apply,
+		Audit:        aud.fn(),
+		UpdateStatus: stat.fn(),
+		Render:       goodInput,
+	}
+	if err := r.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if apl.Count() != 1 {
+		t.Errorf("Apply called %d times on cold boot; want 1", apl.Count())
+	}
+	codes := aud.Codes()
+	if len(codes) != 1 || codes[0] != "ISOLATION_RULESET_RECONCILED" {
+		t.Errorf("audit codes = %v, want [ISOLATION_RULESET_RECONCILED]", codes)
+	}
+}
+
 func TestReconcile_ApplyFailureFlipsIsolationUnavailable(t *testing.T) {
 	apl := &recordingApplier{err: errors.New("nftables: parse error")}
 	aud := &recordingAudit{}
