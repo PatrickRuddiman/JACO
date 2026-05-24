@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -56,7 +57,7 @@ func rollbackCmd() *cobra.Command {
 func runRollback(ctx context.Context, client pb.DeployClient, deployment string, out io.Writer) error {
 	resp, err := client.Rollback(ctx, &pb.RollbackRequest{Deployment: deployment})
 	if err != nil {
-		return err
+		return cliclient.FormatError(err)
 	}
 	fmt.Fprintf(out, "Rolled back to revision: %d\n", resp.GetRevision())
 	return nil

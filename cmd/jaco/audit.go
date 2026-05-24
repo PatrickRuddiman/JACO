@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	grpcsrv "github.com/PatrickRuddiman/jaco/internal/controlplane/grpc"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -80,7 +81,7 @@ func init() {
 
 		stream, err := pb.NewAuditClient(conn).Query(ctx, req)
 		if err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 
 		enc := json.NewEncoder(os.Stdout)
@@ -138,7 +139,7 @@ func streamAuditJSON(stream pb.Audit_QueryClient, enc *json.Encoder, ndjson bool
 			return nil
 		}
 		if err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 		if ndjson {
 			if err := enc.Encode(eventToJSON(ev)); err != nil {
@@ -156,7 +157,7 @@ func collectAuditJSON(stream pb.Audit_QueryClient, enc *json.Encoder) error {
 			break
 		}
 		if err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 		all = append(all, eventToJSON(ev))
 	}
@@ -171,7 +172,7 @@ func streamAuditTable(stream pb.Audit_QueryClient) error {
 			return nil
 		}
 		if err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 		ts := ""
 		if t := ev.GetTs(); t != nil {

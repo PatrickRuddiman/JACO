@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -54,7 +55,7 @@ func tokenIssueCmd() *cobra.Command {
 		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+opToken)
 		resp, err := pb.NewTokensClient(conn).Issue(ctx, &pb.TokenIssueRequest{Identity: name})
 		if err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 		fmt.Printf("Token for %s (save this; not recoverable): %s\n", resp.GetIdentity(), resp.GetToken())
 		return nil
@@ -94,7 +95,7 @@ func tokenRevokeCmd() *cobra.Command {
 		defer cancel()
 		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+opToken)
 		if _, err := pb.NewTokensClient(conn).Revoke(ctx, &pb.TokenRevokeRequest{Identity: args[0]}); err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 		fmt.Printf("Revoked token for %s\n", args[0])
 		return nil
@@ -131,7 +132,7 @@ func tokenListCmd() *cobra.Command {
 		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+opToken)
 		resp, err := pb.NewTokensClient(conn).List(ctx, &pb.TokenListRequest{})
 		if err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 		fmt.Printf("%-30s %-20s %s\n", "IDENTITY", "ISSUED", "REVOKED")
 		for _, t := range resp.GetTokens() {

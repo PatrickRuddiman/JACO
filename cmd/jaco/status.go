@@ -80,7 +80,7 @@ func runStatus(ctx context.Context, client pb.DeployClient, deployment, service 
 		ServiceFilter:    service,
 	})
 	if err != nil {
-		return err
+		return cliclient.FormatError(err)
 	}
 	return renderStatus(out, resp)
 }
@@ -97,7 +97,7 @@ func runStatusWatch(ctx context.Context, deploy pb.DeployClient, watch pb.WatchC
 		DeploymentFilter: deployment,
 	})
 	if err != nil {
-		return err
+		return cliclient.FormatError(err)
 	}
 	for {
 		_, err := stream.Recv()
@@ -105,7 +105,7 @@ func runStatusWatch(ctx context.Context, deploy pb.DeployClient, watch pb.WatchC
 			return nil
 		}
 		if err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 		// Re-fetch the snapshot on any event. (Resync sends the same trigger
 		// — re-fetch is idempotent.)
