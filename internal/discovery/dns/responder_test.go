@@ -162,14 +162,65 @@ func TestHandle_ExternalNameForwarderErrorReturnsNXDOMAIN(t *testing.T) {
 	}
 }
 
-func TestHandle_NonAQueryReturnsEmptyAnswer(t *testing.T) {
-	// v1 only serves A records (IPv4 mesh per discovery §3).
+func TestHandle_AAAAForExistingNameIsNodataNotNXDOMAIN(t *testing.T) {
+	// The overlay is IPv4-only: an existing service has A but no AAAA. The
+	// AAAA leg MUST be NODATA (NOERROR, empty answer) — NOT NXDOMAIN — or
+	// dual-stack getaddrinfo (Node/musl, glibc, Go) fails the whole lookup
+	// with ENOTFOUND even though A resolves (issue #28).
 	r := jdns.New(jdns.Scope{Deployment: "x", Network: "y"}, jdns.ServiceMap{"web": {net.IPv4(10, 244, 5, 2)}}, nil)
 	q := new(mdns.Msg)
 	q.SetQuestion(mdns.Fqdn("web"), mdns.TypeAAAA)
 	resp := r.Handle(q)
 	if len(resp.Answer) != 0 {
 		t.Errorf("AAAA query produced answers: %v", resp.Answer)
+	}
+	if resp.Rcode != mdns.RcodeSuccess {
+		t.Errorf("AAAA for existing name: rcode = %v, want NOERROR/NODATA", mdns.RcodeToString[resp.Rcode])
+	}
+}
+
+func TestHandle_AAAAForUnknownNameIsNXDOMAIN(t *testing.T) {
+	// A genuinely-unknown in-scope name still gets NXDOMAIN on AAAA.
+	r := jdns.New(jdns.Scope{Deployment: "x", Network: "y"}, jdns.ServiceMap{"web": {net.IPv4(10, 244, 5, 2)}}, nil)
+	q := new(mdns.Msg)
+	q.SetQuestion(mdns.Fqdn("nope"), mdns.TypeAAAA)
+	resp := r.Handle(q)
+	if resp.Rcode != mdns.RcodeNameError {
+		t.Errorf("AAAA for unknown name: rcode = %v, want NXDOMAIN", mdns.RcodeToString[resp.Rcode])
+	}
+}
+
+func TestHandle_AAAAExternalForwardsV6AndReportsExistence(t *testing.T) {
+	// External AAAA is forwarded: IPv6 addresses are returned; an external
+	// name that resolves to IPv4-only is NODATA (NOERROR), not NXDOMAIN.
+	v6 := net.ParseIP("2606:4700:4700::1111")
+	fwd := &fakeForwarder{respond: func(string) ([]net.IP, error) {
+		return []net.IP{net.IPv4(1, 1, 1, 1), v6}, nil
+	}}
+	r := jdns.New(jdns.Scope{Deployment: "x", Network: "y"}, jdns.ServiceMap{}, fwd)
+	q := new(mdns.Msg)
+	q.SetQuestion(mdns.Fqdn("one.example.com"), mdns.TypeAAAA)
+	resp := r.Handle(q)
+	if resp.Rcode != mdns.RcodeSuccess {
+		t.Fatalf("external AAAA rcode = %v, want NOERROR", mdns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("external AAAA answers = %d, want 1 (the v6)", len(resp.Answer))
+	}
+	if aaaa, ok := resp.Answer[0].(*mdns.AAAA); !ok || !aaaa.AAAA.Equal(v6) {
+		t.Errorf("external AAAA answer = %v, want %v", resp.Answer[0], v6)
+	}
+
+	// IPv4-only external name → NODATA on AAAA (NOERROR, no answer).
+	fwd4 := &fakeForwarder{respond: func(string) ([]net.IP, error) {
+		return []net.IP{net.IPv4(1, 1, 1, 1)}, nil
+	}}
+	r4 := jdns.New(jdns.Scope{Deployment: "x", Network: "y"}, jdns.ServiceMap{}, fwd4)
+	q4 := new(mdns.Msg)
+	q4.SetQuestion(mdns.Fqdn("v4only.example.com"), mdns.TypeAAAA)
+	resp4 := r4.Handle(q4)
+	if resp4.Rcode != mdns.RcodeSuccess || len(resp4.Answer) != 0 {
+		t.Errorf("IPv4-only external AAAA: rcode=%v answers=%d, want NOERROR/0", mdns.RcodeToString[resp4.Rcode], len(resp4.Answer))
 	}
 }
 

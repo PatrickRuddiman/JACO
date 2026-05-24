@@ -91,34 +91,53 @@ func (r *Responder) Handle(req *dns.Msg) *dns.Msg {
 	resp.SetReply(req)
 	resp.Authoritative = true
 
+	// nameExists guards the NXDOMAIN fallback. A name that resolves (an
+	// in-scope service with records, or an external name the forwarder knows)
+	// but has no record of the *queried* type must answer NODATA — NOERROR
+	// with an empty answer — NOT NXDOMAIN. The overlay is IPv4-only, so every
+	// in-scope name has A but never AAAA; returning NXDOMAIN on the AAAA leg
+	// makes dual-stack getaddrinfo (Node/musl, glibc, Go) treat the name as
+	// nonexistent and fail with ENOTFOUND even though A resolves — silently
+	// breaking cross-host service discovery for real apps (issue #28).
+	nameExists := false
 	for _, q := range req.Question {
 		name := strings.ToLower(strings.TrimSuffix(q.Name, "."))
 		switch q.Qtype {
 		case dns.TypeA:
-			r.answerA(resp, name, q.Name)
+			if r.answerA(resp, name, q.Name) {
+				nameExists = true
+			}
+		case dns.TypeAAAA:
+			if r.answerAAAA(resp, name, q.Name) {
+				nameExists = true
+			}
 		default:
-			// Only A records v1; AAAA + other types → NOERROR with no answer
-			// (matches the discovery slice §3 — IPv4-only mesh).
+			// Other types (MX, TXT, …): NODATA for existing names, NXDOMAIN
+			// otherwise — never invent records.
+			if r.nameResolvable(name) {
+				nameExists = true
+			}
 		}
 	}
-	if len(resp.Answer) == 0 && resp.Rcode == dns.RcodeSuccess {
-		// Set NXDOMAIN when nothing answered AND no upstream takeover happened.
+	if len(resp.Answer) == 0 && resp.Rcode == dns.RcodeSuccess && !nameExists {
+		// Nothing answered, no upstream takeover happened, and the name does
+		// not exist → NXDOMAIN. (An existing name with no record of the queried
+		// type stays NOERROR-empty, i.e. NODATA — see nameExists above.)
 		resp.Rcode = dns.RcodeNameError
 	}
 	return resp
 }
 
 // answerA appends A records for one in-scope service lookup, OR forwards to
-// the upstream when the name is clearly external (contains a dot), OR
-// leaves the answer empty (which Handle later upgrades to NXDOMAIN).
-func (r *Responder) answerA(resp *dns.Msg, name, originalName string) {
+// the upstream when the name is clearly external (contains a dot). It returns
+// whether the name exists (resolves) — so an existing name with no A answer
+// becomes NODATA rather than NXDOMAIN.
+func (r *Responder) answerA(resp *dns.Msg, name, originalName string) (exists bool) {
 	service, inScope := r.parseInScopeName(name)
 	if inScope {
 		ips := r.lookup(service)
 		if len(ips) == 0 {
-			// In-scope but unknown service → NXDOMAIN (set by caller when
-			// resp.Answer stays empty).
-			return
+			return false // in-scope but unknown service → NXDOMAIN
 		}
 		// Randomize order for poor-man's load balancing.
 		shuffled := append([]net.IP(nil), ips...)
@@ -131,15 +150,15 @@ func (r *Responder) answerA(resp *dns.Msg, name, originalName string) {
 				A:   ip.To4(),
 			})
 		}
-		return
+		return true
 	}
 	// External name — forward.
 	if r.forwarder == nil {
-		return
+		return false
 	}
 	ips, err := r.forwarder.LookupHost(name)
 	if err != nil {
-		return
+		return false
 	}
 	for _, ip := range ips {
 		if v4 := ip.To4(); v4 != nil {
@@ -149,6 +168,51 @@ func (r *Responder) answerA(resp *dns.Msg, name, originalName string) {
 			})
 		}
 	}
+	return len(ips) > 0 // name resolved upstream, even if it had no IPv4
+}
+
+// answerAAAA handles AAAA queries. In-scope names are IPv4-only, so an existing
+// in-scope service yields NODATA (exists=true, no answer). External names are
+// forwarded — any IPv6 addresses are returned, and a resolvable external name
+// reports exists even when it has no AAAA. Returning existence here is what
+// keeps dual-stack getaddrinfo working: the AAAA leg becomes NODATA, not the
+// NXDOMAIN that would otherwise sink the whole lookup (issue #28).
+func (r *Responder) answerAAAA(resp *dns.Msg, name, originalName string) (exists bool) {
+	if _, inScope := r.parseInScopeName(name); inScope {
+		// IPv4-only overlay: the name exists iff it has A records; it never has
+		// AAAA, so report existence (→ NODATA) without adding answers.
+		return r.nameResolvable(name)
+	}
+	if r.forwarder == nil {
+		return false
+	}
+	ips, err := r.forwarder.LookupHost(name)
+	if err != nil {
+		return false
+	}
+	for _, ip := range ips {
+		if ip.To4() == nil { // an IPv6 address
+			resp.Answer = append(resp.Answer, &dns.AAAA{
+				Hdr:  dns.RR_Header{Name: originalName, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 5},
+				AAAA: ip.To16(),
+			})
+		}
+	}
+	return len(ips) > 0
+}
+
+// nameResolvable reports whether name resolves at all (in-scope service with
+// records, or an external name the forwarder knows) — without emitting any
+// records. Used to choose NODATA vs NXDOMAIN for non-A queries.
+func (r *Responder) nameResolvable(name string) bool {
+	if service, inScope := r.parseInScopeName(name); inScope {
+		return len(r.lookup(service)) > 0
+	}
+	if r.forwarder == nil {
+		return false
+	}
+	ips, err := r.forwarder.LookupHost(name)
+	return err == nil && len(ips) > 0
 }
 
 // parseInScopeName returns (service, true) when name resolves a service in
