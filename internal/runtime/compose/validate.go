@@ -37,6 +37,12 @@ var allowedServiceFields = map[string]bool{
 	// validation; the runtime drops it on container create.
 	"restart": true,
 
+	// `build` is parsed but explicitly ignored by JACO — we never build
+	// images; they're pulled from a registry the runtime can reach. Accepting
+	// the field lets a single compose file serve both `docker compose build`
+	// (the developer's workflow) and `jaco apply` without forcing two files.
+	"build": true,
+
 	// `name` is harmless — compose lets you set a container name; JACO
 	// overrides it with the replica id, but accepting it as input is fine.
 	"name": true,
