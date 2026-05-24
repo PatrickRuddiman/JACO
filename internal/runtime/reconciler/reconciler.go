@@ -73,7 +73,7 @@ func New(docker dockerx.Docker, st *state.State, brokers *watch.Registry, hostna
 		state:    st,
 		brokers:  brokers,
 		hostname: hostname,
-		watcher:  health.NewWatcher(docker, submit, nil),
+		watcher:  health.NewWatcher(docker, submit, nil, nil),
 		logger:   logger,
 	}
 }
@@ -214,19 +214,21 @@ func (r *Reconciler) startReplica(ctx context.Context, rep *pb.ReplicaDesired) e
 	if err != nil {
 		return fmt.Errorf("compose parse: %w", err)
 	}
-	// Resolve the service spec → compose service name mapping.
-	var composeService string
+	// name is the single source of truth: the service name equals the compose key.
+	composeService := rep.GetService()
+	// Confirm the service is declared in the deployment.
+	found := false
 	for _, svc := range dep.GetServices() {
-		if svc.GetName() == rep.GetService() {
-			composeService = svc.GetComposeService()
+		if svc.GetName() == composeService {
+			found = true
 			break
 		}
 	}
-	if composeService == "" {
+	if !found {
 		return fmt.Errorf("service %s missing from deployment %s", rep.GetService(), rep.GetDeployment())
 	}
-	svcCfg, found := project.Services[composeService]
-	if !found {
+	svcCfg, ok := project.Services[composeService]
+	if !ok {
 		return fmt.Errorf("compose service %q not in project", composeService)
 	}
 	// Image override: scheduler may have pinned an image differing from

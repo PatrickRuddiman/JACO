@@ -40,31 +40,13 @@ const ChallengePath = "/.well-known/acme-challenge/"
 // Applier wraps raft.Apply.
 type Applier func(cmd []byte) error
 
-// Clock abstracts time.Now so tests can pin expiry.
-type Clock interface {
-	Now() time.Time
-}
-
-type systemClock struct{}
-
-func (systemClock) Now() time.Time { return time.Now() }
-
-// SystemClock returns the production Clock.
-func SystemClock() Clock { return systemClock{} }
-
 // Issuer publishes ChallengeTokens to raft.
 type Issuer struct {
 	apply Applier
-	clock Clock
 }
 
-// NewIssuer constructs an Issuer. clock nil → SystemClock.
-func NewIssuer(apply Applier, clock Clock) *Issuer {
-	if clock == nil {
-		clock = SystemClock()
-	}
-	return &Issuer{apply: apply, clock: clock}
-}
+// NewIssuer constructs an Issuer.
+func NewIssuer(apply Applier) *Issuer { return &Issuer{apply: apply} }
 
 // Issue raft-Applies a ChallengeTokenStore. domain + token + keyAuth come
 // from certmagic's challenge presentation. Audit events for the CertMagic
@@ -76,10 +58,11 @@ func (i *Issuer) Issue(_ context.Context, domain, token, keyAuth string) error {
 	if domain == "" || token == "" || keyAuth == "" {
 		return fmt.Errorf("Issue: domain + token + keyAuth required")
 	}
-	expiresAt := i.clock.Now().Add(TokenTTL)
+	now := time.Now()
+	expiresAt := now.Add(TokenTTL)
 	cmd := &pb.Command{
 		Identity: "ingress",
-		Ts:       timestamppb.New(i.clock.Now()),
+		Ts:       timestamppb.New(now),
 		Payload: &pb.Command_ChallengeTokenStore{ChallengeTokenStore: &pb.ChallengeTokenStore{
 			Token: &pb.ChallengeToken{
 				Token:     token,
@@ -112,7 +95,7 @@ func (i *Issuer) Issue(_ context.Context, domain, token, keyAuth string) error {
 func (i *Issuer) emitAudit(t pb.AuditEventType, payload map[string]string) error {
 	cmd := &pb.Command{
 		Identity: "ingress",
-		Ts:       timestamppb.New(i.clock.Now()),
+		Ts:       timestamppb.New(time.Now()),
 		Payload: &pb.Command_AuditAppend{AuditAppend: &pb.AuditAppend{
 			Event: &pb.AuditEvent{Type: t, Payload: payload},
 		}},
@@ -127,15 +110,6 @@ func (i *Issuer) emitAudit(t pb.AuditEventType, payload map[string]string) error
 // Handler serves HTTP-01 challenge responses from state.ChallengeTokens.
 type Handler struct {
 	state *state.State
-	clock Clock
-}
-
-// NewHandler constructs a Handler. clock nil → SystemClock.
-func NewHandler(st *state.State, clock Clock) *Handler {
-	if clock == nil {
-		clock = SystemClock()
-	}
-	return &Handler{state: st, clock: clock}
 }
 
 // ServeHTTP responds 200 + plain text key_auth when the token matches a
@@ -155,7 +129,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if ct.GetExpiresAt() != nil && h.clock.Now().After(ct.GetExpiresAt().AsTime()) {
+	if ct.GetExpiresAt() != nil && time.Now().After(ct.GetExpiresAt().AsTime()) {
 		http.NotFound(w, r)
 		return
 	}

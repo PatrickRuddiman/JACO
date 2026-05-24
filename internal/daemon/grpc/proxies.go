@@ -4,17 +4,17 @@ import (
 	"context"
 	"sync"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	grpcsrv "github.com/PatrickRuddiman/jaco/internal/controlplane/grpc"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
 // The four delegating proxies below hold a swap-in slot that startSubsystems
 // fills with the real grpcsrv-backed handler once OpenRaft populates state
-// + raft. Pre-OpenRaft (which only happens for tests that flip the gate
-// manually), every method returns Unavailable.
+// + raft. The InitGate admission interceptor blocks every RPC routed through
+// the proxies until MarkInitialized fires, and MarkInitialized only fires
+// after wireControlPlane has filled every target. The proxy methods can
+// therefore assume target != nil — if it isn't, that's a programming error
+// and a nil deref is the appropriate loud failure.
 //
 // Why proxies and not direct registration in startSubsystems: pb.Register*
 // must happen before grpc.Server.Serve starts dispatching. The daemon
@@ -36,27 +36,15 @@ func (p *tokensProxy) get() pb.TokensServer {
 }
 
 func (p *tokensProxy) Issue(ctx context.Context, req *pb.TokenIssueRequest) (*pb.TokenIssueResponse, error) {
-	t := p.get()
-	if t == nil {
-		return nil, errUnavail
-	}
-	return t.Issue(ctx, req)
+	return p.get().Issue(ctx, req)
 }
 
 func (p *tokensProxy) Revoke(ctx context.Context, req *pb.TokenRevokeRequest) (*pb.TokenRevokeResponse, error) {
-	t := p.get()
-	if t == nil {
-		return nil, errUnavail
-	}
-	return t.Revoke(ctx, req)
+	return p.get().Revoke(ctx, req)
 }
 
 func (p *tokensProxy) List(ctx context.Context, req *pb.TokenListRequest) (*pb.TokenListResponse, error) {
-	t := p.get()
-	if t == nil {
-		return nil, errUnavail
-	}
-	return t.List(ctx, req)
+	return p.get().List(ctx, req)
 }
 
 type deployProxy struct {
@@ -74,33 +62,18 @@ func (p *deployProxy) get() pb.DeployServer {
 }
 
 func (p *deployProxy) Apply(ctx context.Context, req *pb.ApplyRequest) (*pb.ApplyResponse, error) {
-	t := p.get()
-	if t == nil {
-		return nil, errUnavail
-	}
-	return t.Apply(ctx, req)
+	return p.get().Apply(ctx, req)
 }
 func (p *deployProxy) Rollback(ctx context.Context, req *pb.RollbackRequest) (*pb.RollbackResponse, error) {
-	t := p.get()
-	if t == nil {
-		return nil, errUnavail
-	}
-	return t.Rollback(ctx, req)
+	return p.get().Rollback(ctx, req)
 }
 func (p *deployProxy) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.DeleteResponse, error) {
-	t := p.get()
-	if t == nil {
-		return nil, errUnavail
-	}
-	return t.Delete(ctx, req)
+	return p.get().Delete(ctx, req)
 }
 func (p *deployProxy) Status(ctx context.Context, req *pb.DeployStatusRequest) (*pb.DeployStatusResponse, error) {
-	t := p.get()
-	if t == nil {
-		return nil, errUnavail
-	}
-	return t.Status(ctx, req)
+	return p.get().Status(ctx, req)
 }
+
 // Logs is implemented locally on the daemon — the controlplane stub
 // returns Unimplemented because it needs a dockerx handle + hostname,
 // which only the daemon has. The handler streams local replicas
@@ -108,9 +81,6 @@ func (p *deployProxy) Status(ctx context.Context, req *pb.DeployStatusRequest) (
 // of the same deployment/service, fanning everything into the operator
 // stream.
 func (p *deployProxy) Logs(req *pb.LogsRequest, stream pb.Deploy_LogsServer) error {
-	if p.server == nil {
-		return errUnavail
-	}
 	return p.server.streamDeploymentLogs(req, stream)
 }
 
@@ -128,11 +98,7 @@ func (p *auditProxy) get() pb.AuditServer {
 }
 
 func (p *auditProxy) Query(req *pb.AuditQueryRequest, stream pb.Audit_QueryServer) error {
-	t := p.get()
-	if t == nil {
-		return errUnavail
-	}
-	return t.Query(req, stream)
+	return p.get().Query(req, stream)
 }
 
 type watchProxy struct {
@@ -149,21 +115,12 @@ func (p *watchProxy) get() pb.WatchServer {
 }
 
 func (p *watchProxy) Subscribe(req *pb.SubscribeRequest, stream pb.Watch_SubscribeServer) error {
-	t := p.get()
-	if t == nil {
-		return errUnavail
-	}
-	return t.Subscribe(req, stream)
+	return p.get().Subscribe(req, stream)
 }
 
-// errUnavail is the placeholder returned by every proxy method while the
-// target hasn't been set yet (i.e. before OpenRaft has populated state +
-// raft). In normal operation the InitGate catches this earlier and returns
-// cluster_uninitialized; the proxies fail-closed defensively.
-var errUnavail = status.Error(codes.Unavailable, "state_unavailable: daemon raft state not populated yet")
-
 // wireControlPlane fills the four proxies once state + raft are populated.
-// Called from Server.startSubsystems.
+// Called from Server.startSubsystems before MarkInitialized flips the
+// InitGate open.
 func (s *Server) wireControlPlane() {
 	if s.tokens != nil {
 		s.tokens.set(grpcsrv.NewTokensServer(s.state, s.raft))
