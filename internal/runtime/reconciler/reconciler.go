@@ -28,18 +28,19 @@ import (
 
 // resolveDNSServers returns one gateway IP per declared network, looked
 // up via state.Subnets + bridge.GatewayIP. Networks the daemon doesn't
-// yet know a CIDR for are silently skipped.
-func resolveDNSServers(st *state.State, deployment string, networks []string) []string {
+// yet know a CIDR for are silently skipped. host is the local node — the
+// per-host subnet whose gateway the local container resolves against.
+func resolveDNSServers(st *state.State, deployment, host string, networks []string) []string {
 	var out []string
 	for _, netname := range networks {
 		// Network names in spec are docker-network names (jaco_<dep>_<net>);
-		// state.Subnets keys by (deployment, network) — pull just the network
-		// suffix from the docker name.
+		// state.Subnets keys by (deployment, network, host) — pull just the
+		// network suffix from the docker name.
 		net := bridge.NetworkNameFromDockerName(netname)
 		if net == "" {
 			continue
 		}
-		sn, ok := st.Subnets.Get(state.SubnetKey(deployment, net))
+		sn, ok := st.Subnets.Get(state.SubnetKey(deployment, net, host))
 		if !ok {
 			continue
 		}
@@ -51,30 +52,48 @@ func resolveDNSServers(st *state.State, deployment string, networks []string) []
 	return out
 }
 
+// ErrSubnetPoolExhausted is the sentinel an EnsureSubnetFn returns when the
+// IPAM pool can't satisfy a per-host /24. The reconciler maps it to a FAILED
+// ReplicaObserved rather than retrying forever. Any other error is treated as
+// transient (e.g. no leader yet) and retried on the next tick.
+var ErrSubnetPoolExhausted = errors.New("subnet pool exhausted")
+
+// EnsureSubnetFn allocates (idempotently) the per-host /24 for
+// (deployment, network, host) and returns its CIDR. The daemon wires this to
+// the leader's ipam allocator directly, or to Internal.EnsureSubnet on a
+// follower; either way it maps pool exhaustion to ErrSubnetPoolExhausted.
+type EnsureSubnetFn func(ctx context.Context, deployment, network, host string) (cidr string, err error)
+
 // Reconciler is the per-host runtime driver.
 type Reconciler struct {
-	docker   dockerx.Docker
-	state    *state.State
-	brokers  *watch.Registry
-	hostname string
-	watcher  *health.Watcher
-	logger   *log.Logger
+	docker       dockerx.Docker
+	state        *state.State
+	brokers      *watch.Registry
+	hostname     string
+	watcher      *health.Watcher
+	submit       health.SubmitFn
+	ensureSubnet EnsureSubnetFn
+	logger       *log.Logger
 }
 
 // New constructs a Reconciler. submit is the function the per-replica
 // health.Watcher uses to publish ReplicaObserved updates back through the
 // control plane (raft.Apply on the leader, Internal.Submit on followers).
-func New(docker dockerx.Docker, st *state.State, brokers *watch.Registry, hostname string, submit health.SubmitFn, logger *log.Logger) *Reconciler {
+// ensureSubnet allocates the per-host /24 for a replica's networks before its
+// bridges are created.
+func New(docker dockerx.Docker, st *state.State, brokers *watch.Registry, hostname string, submit health.SubmitFn, ensureSubnet EnsureSubnetFn, logger *log.Logger) *Reconciler {
 	if logger == nil {
 		logger = log.Default()
 	}
 	return &Reconciler{
-		docker:   docker,
-		state:    st,
-		brokers:  brokers,
-		hostname: hostname,
-		watcher:  health.NewWatcher(docker, submit, nil),
-		logger:   logger,
+		docker:       docker,
+		state:        st,
+		brokers:      brokers,
+		hostname:     hostname,
+		watcher:      health.NewWatcher(docker, submit, nil, nil),
+		submit:       submit,
+		ensureSubnet: ensureSubnet,
+		logger:       logger,
 	}
 }
 
@@ -214,19 +233,21 @@ func (r *Reconciler) startReplica(ctx context.Context, rep *pb.ReplicaDesired) e
 	if err != nil {
 		return fmt.Errorf("compose parse: %w", err)
 	}
-	// Resolve the service spec → compose service name mapping.
-	var composeService string
+	// name is the single source of truth: the service name equals the compose key.
+	composeService := rep.GetService()
+	// Confirm the service is declared in the deployment.
+	found := false
 	for _, svc := range dep.GetServices() {
-		if svc.GetName() == rep.GetService() {
-			composeService = svc.GetComposeService()
+		if svc.GetName() == composeService {
+			found = true
 			break
 		}
 	}
-	if composeService == "" {
+	if !found {
 		return fmt.Errorf("service %s missing from deployment %s", rep.GetService(), rep.GetDeployment())
 	}
-	svcCfg, found := project.Services[composeService]
-	if !found {
+	svcCfg, ok := project.Services[composeService]
+	if !ok {
 		return fmt.Errorf("compose service %q not in project", composeService)
 	}
 	// Image override: scheduler may have pinned an image differing from
@@ -250,11 +271,19 @@ func (r *Reconciler) startReplica(ctx context.Context, rep *pb.ReplicaDesired) e
 		if netSuffix == "" {
 			continue
 		}
-		sn, ok := r.state.Subnets.Get(state.SubnetKey(rep.GetDeployment(), netSuffix))
-		if !ok {
-			continue
+		// Allocate this host's /24 for the network before creating the
+		// bridge. The leader computes it; a follower forwards to the leader.
+		cidr, err := r.ensureSubnet(ctx, rep.GetDeployment(), netSuffix, r.hostname)
+		if err != nil {
+			if errors.Is(err, ErrSubnetPoolExhausted) {
+				r.failReplica(ctx, rep, netSuffix, "subnet_pool_exhausted")
+				return nil
+			}
+			// Transient (e.g. no leader yet) — leave the replica unstarted;
+			// the watch / 30s safety tick retries.
+			return fmt.Errorf("ensureSubnet %s/%s on %s: %w", rep.GetDeployment(), netSuffix, r.hostname, err)
 		}
-		if _, err := bridge.Ensure(ctx, r.docker, rep.GetDeployment(), netSuffix, sn.GetCidr(), clusterID); err != nil {
+		if _, err := bridge.Ensure(ctx, r.docker, rep.GetDeployment(), netSuffix, cidr, clusterID); err != nil {
 			r.logger.Printf("bridge.Ensure %s/%s: %v", rep.GetDeployment(), netSuffix, err)
 		}
 	}
@@ -262,7 +291,7 @@ func (r *Reconciler) startReplica(ctx context.Context, rep *pb.ReplicaDesired) e
 	// Per-bridge DNS resolvers (task 27 deferral). For each declared
 	// network, look up the subnet CIDR in state.Subnets and compute the
 	// gateway IP; that's where the daemon's discovery/dns Manager binds.
-	spec.DNSServers = resolveDNSServers(r.state, rep.GetDeployment(), spec.Networks)
+	spec.DNSServers = resolveDNSServers(r.state, rep.GetDeployment(), r.hostname, spec.Networks)
 	containerID, err := lifecycle.Start(ctx, r.docker, spec, lifecycle.IsolationGate{
 		State:        r.state,
 		SelfHostname: r.hostname,
@@ -272,6 +301,29 @@ func (r *Reconciler) startReplica(ctx context.Context, rep *pb.ReplicaDesired) e
 	}
 	r.watcher.Start(ctx, rep.GetId(), containerID, spec.Healthcheck != nil)
 	return nil
+}
+
+// failReplica publishes a FAILED ReplicaObserved with the given code so the
+// operator sees the offending replica (and the scheduler stops retrying it
+// forever). Used when subnet allocation can't be satisfied.
+func (r *Reconciler) failReplica(ctx context.Context, rep *pb.ReplicaDesired, network, code string) {
+	r.logger.Printf("startReplica %s: %s on %s/%s — marking FAILED", rep.GetId(), code, rep.GetDeployment(), network)
+	if r.submit == nil {
+		return
+	}
+	if err := r.submit(ctx, &pb.ReplicaObserved{
+		Id:    rep.GetId(),
+		State: pb.ReplicaState_REPLICA_STATE_FAILED,
+		Code:  code,
+		Host:  r.hostname,
+		Details: map[string]string{
+			"deployment": rep.GetDeployment(),
+			"network":    network,
+			"host":       r.hostname,
+		},
+	}); err != nil {
+		r.logger.Printf("failReplica submit %s: %v", rep.GetId(), err)
+	}
 }
 
 // stopReplica is the symmetric teardown — stops the health watcher then

@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	grpcsrv "github.com/PatrickRuddiman/jaco/internal/controlplane/grpc"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -31,12 +32,11 @@ func init() {
 	)
 	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
 	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN)")
-	c.Flags().StringVar(&caCertPath, "ca-cert", "", "path to cluster CA cert PEM; required")
+	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
 	c.Flags().StringVar(&since, "since", "", "only events newer than this duration (e.g. 1h, 30m)")
 	c.Flags().StringVar(&typesFlag, "type", "", "comma list of audit types to include (e.g. apply,token_revoke)")
 	c.Flags().BoolVarP(&follow, "follow", "f", false, "stream new events as they arrive")
 	_ = c.MarkFlagRequired("server")
-	// ca-cert no longer required: v0 uses plaintext TCP
 
 	c.RunE = func(_ *cobra.Command, _ []string) error {
 		if opToken == "" {
@@ -66,7 +66,11 @@ func init() {
 			req.Types = append(req.Types, t)
 		}
 
-		conn, err := dialServer(server, mustReadFile(caCertPath))
+		caCertPEM, err := readCACert(caCertPath)
+		if err != nil {
+			return err
+		}
+		conn, err := dialServer(server, caCertPEM)
 		if err != nil {
 			return err
 		}
@@ -77,7 +81,7 @@ func init() {
 
 		stream, err := pb.NewAuditClient(conn).Query(ctx, req)
 		if err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 
 		enc := json.NewEncoder(os.Stdout)
@@ -135,7 +139,7 @@ func streamAuditJSON(stream pb.Audit_QueryClient, enc *json.Encoder, ndjson bool
 			return nil
 		}
 		if err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 		if ndjson {
 			if err := enc.Encode(eventToJSON(ev)); err != nil {
@@ -153,7 +157,7 @@ func collectAuditJSON(stream pb.Audit_QueryClient, enc *json.Encoder) error {
 			break
 		}
 		if err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 		all = append(all, eventToJSON(ev))
 	}
@@ -168,7 +172,7 @@ func streamAuditTable(stream pb.Audit_QueryClient) error {
 			return nil
 		}
 		if err != nil {
-			return err
+			return cliclient.FormatError(err)
 		}
 		ts := ""
 		if t := ev.GetTs(); t != nil {

@@ -46,6 +46,62 @@ func TestRender_GoldenTwoDepsTwoNets(t *testing.T) {
 
 func regenGolden() bool { return os.Getenv("REGEN_GOLDEN") == "1" }
 
+// TestRender_GroupsPerHostCIDRsIntoOneSet — per-host /24s (issue #28) for the
+// same (deployment, network) collapse into a single nftables set with all
+// elements and exactly one forward accept rule, so cross-host intra-deployment
+// traffic is accepted (saddr in one host's /24, daddr in another's).
+func TestRender_GroupsPerHostCIDRsIntoOneSet(t *testing.T) {
+	out := firewall.Render(firewall.RuleInput{
+		Subnets: []firewall.Subnet{
+			{Deployment: "app", Network: "frontend", CIDR: "10.244.6.0/24"},
+			{Deployment: "app", Network: "frontend", CIDR: "10.244.5.0/24"},
+		},
+	})
+	setName := firewall.SetName("app", "frontend")
+	if c := strings.Count(out, "set "+setName+" {"); c != 1 {
+		t.Errorf("set %s defined %d times, want 1", setName, c)
+	}
+	// Elements are sorted, so 5 precedes 6 regardless of input order.
+	if !strings.Contains(out, "elements = { 10.244.5.0/24, 10.244.6.0/24 }") {
+		t.Errorf("per-host CIDRs not grouped into one set:\n%s", out)
+	}
+	rule := fmt.Sprintf("ip saddr @%s ip daddr @%s accept", setName, setName)
+	if c := strings.Count(out, rule); c != 1 {
+		t.Errorf("forward rule for %s appears %d times, want 1", setName, c)
+	}
+}
+
+// TestRender_GoldenPerHostSubnets pins the multi-element-set output.
+func TestRender_GoldenPerHostSubnets(t *testing.T) {
+	in := firewall.RuleInput{
+		Subnets: []firewall.Subnet{
+			{Deployment: "app", Network: "frontend", CIDR: "10.244.5.0/24"},
+			{Deployment: "app", Network: "frontend", CIDR: "10.244.6.0/24"},
+			{Deployment: "app", Network: "backend", CIDR: "10.244.7.0/24"},
+		},
+		WGPort:       51820,
+		GrpcPort:     7000,
+		IngressPorts: []int{80, 443},
+	}
+	got := firewall.Render(in)
+	goldenPath := filepath.Join("testdata", "perhost.nft")
+	if regenGolden() {
+		if err := os.WriteFile(goldenPath, []byte(got), 0o644); err != nil {
+			t.Fatalf("write golden: %v", err)
+		}
+		t.Logf("regenerated %s", goldenPath)
+		return
+	}
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	if got != string(want) {
+		t.Errorf("Render output diverges from golden (run with REGEN_GOLDEN=1 to refresh)")
+		t.Logf("=== got:\n%s\n=== want:\n%s", got, string(want))
+	}
+}
+
 func TestRender_SortsSubnetsDeterministically(t *testing.T) {
 	a := firewall.Render(firewall.RuleInput{
 		Subnets: []firewall.Subnet{
@@ -126,30 +182,41 @@ func TestRender_RulesetContainsExpectedChainsAndElements(t *testing.T) {
 		"table inet jaco {",
 		"set dep_net_sample_frontend {",
 		"elements = { 10.244.0.0/24 }",
+		"set jaco_pool {",
+		// forward: isolate JACO's own pool, accept everything else.
 		"chain forward {",
-		"policy drop;",
 		"ct state established,related accept",
 		"ip saddr @dep_net_sample_frontend ip daddr @dep_net_sample_frontend accept",
+		"ip saddr @jaco_pool ip daddr @jaco_pool drop",
+		// both base chains are policy accept — JACO never blanket-drops host
+		// ingress or non-JACO forwarded traffic.
+		"type filter hook forward priority 0; policy accept;",
 		"chain input {",
-		"iif lo accept",
-		"udp dport 51820 accept",
-		"iifname \"wg-jaco\" accept",
-		"iifname \"jaco-*\" udp dport 53 accept",
-		"tcp dport 7000 accept",
-		"tcp dport { 80, 443 } accept",
+		"type filter hook input priority 0; policy accept;",
 		"chain output {",
-		"policy accept;",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("ruleset missing %q in:\n%s", want, got)
 		}
 	}
+	// JACO must NOT police host ingress — no policy-drop, no management-plane
+	// allowlist (the operator's SSH port / VPN / VNet / Tailscale are unknown).
+	for _, forbidden := range []string{"policy drop;", "tcp dport 22", "tailscale0", "iif lo accept"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("ruleset must not contain %q (disrupts operator host choices):\n%s", forbidden, got)
+		}
+	}
 }
 
-func TestRender_SinglePortNoBraces(t *testing.T) {
-	got := firewall.Render(firewall.RuleInput{IngressPorts: []int{443}})
-	if !strings.Contains(got, "tcp dport 443 accept") {
-		t.Errorf("single ingress port should render without braces; got:\n%s", got)
+func TestRender_DoesNotDropWhenNoSubnets(t *testing.T) {
+	// With no JACO subnets there is nothing to isolate, so the forward chain
+	// carries no pool drop — and still never a policy-drop.
+	got := firewall.Render(firewall.RuleInput{})
+	if strings.Contains(got, "policy drop;") {
+		t.Errorf("empty input must not produce a policy-drop chain:\n%s", got)
+	}
+	if strings.Contains(got, "jaco_pool") {
+		t.Errorf("no subnets should mean no jaco_pool set:\n%s", got)
 	}
 }
 
@@ -222,7 +289,7 @@ func TestApply_FailsWhenNftMissing(t *testing.T) {
 	if err := firewall.IsAvailable(); err == nil {
 		t.Skip("nft is available on PATH; this test asserts the missing-binary path")
 	}
-	err := firewall.DefaultApplier().Apply(context.Background(), "table inet test {}\n")
+	err := firewall.NftApply(context.Background(), "table inet test {}\n")
 	if err == nil {
 		t.Errorf("expected error when nft not on PATH")
 	}

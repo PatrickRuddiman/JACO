@@ -220,11 +220,13 @@ message SubnetAllocate {
   string deployment = 1;
   string network = 2;
   string cidr = 3;
+  string host = 4;
 }
 
 message SubnetFree {
   string deployment = 1;
   string network = 2;
+  string host = 3;
 }
 
 // ----- Token mutations -----

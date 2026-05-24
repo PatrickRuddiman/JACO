@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"sort"
 	"strings"
 	"sync"
@@ -36,18 +37,6 @@ var ErrLockHeld = errors.New("lock_held: cert lock owned by another lessee")
 
 // Applier wraps raft.Apply.
 type Applier func(cmd []byte) error
-
-// Clock abstracts time.Now so lock-expiry tests can pin time.
-type Clock interface {
-	Now() time.Time
-}
-
-type systemClock struct{}
-
-func (systemClock) Now() time.Time { return time.Now() }
-
-// SystemClock returns the production Clock.
-func SystemClock() Clock { return systemClock{} }
 
 // KeyInfo mirrors certmagic.KeyInfo / caddy.KeyInfo.
 type KeyInfo struct {
@@ -77,7 +66,7 @@ type Storage interface {
 type JacoStorage struct {
 	state  *state.State
 	apply  Applier
-	clock  Clock
+	now    func() time.Time
 	lessee string
 
 	// renewers tracks active auto-renew goroutines keyed by lock name.
@@ -86,15 +75,15 @@ type JacoStorage struct {
 }
 
 // New constructs a JacoStorage. lessee is the local node's hostname (used
-// as the lock identity in raft); clock may be nil for SystemClock.
-func New(st *state.State, apply Applier, lessee string, clock Clock) *JacoStorage {
-	if clock == nil {
-		clock = SystemClock()
+// as the lock identity in raft); now may be nil to use time.Now.
+func New(st *state.State, apply Applier, lessee string, now func() time.Time) *JacoStorage {
+	if now == nil {
+		now = time.Now
 	}
 	return &JacoStorage{
 		state:    st,
 		apply:    apply,
-		clock:    clock,
+		now:      now,
 		lessee:   lessee,
 		renewers: map[string]context.CancelFunc{},
 	}
@@ -125,7 +114,7 @@ func (s *JacoStorage) Unlock(_ context.Context, name string) error {
 	s.stopRenewer(name)
 	cmd := &pb.Command{
 		Identity: "ingress",
-		Ts:       timestamppb.New(s.clock.Now()),
+		Ts:       timestamppb.New(s.now()),
 		Payload: &pb.Command_CertUnlock{CertUnlock: &pb.CertUnlock{Name: name}},
 	}
 	data, err := proto.Marshal(cmd)
@@ -136,7 +125,7 @@ func (s *JacoStorage) Unlock(_ context.Context, name string) error {
 }
 
 func (s *JacoStorage) applyLock(name string) error {
-	now := s.clock.Now()
+	now := s.now()
 	cmd := &pb.Command{
 		Identity: "ingress",
 		Ts:       timestamppb.New(now),
@@ -200,12 +189,12 @@ func (s *JacoStorage) Store(_ context.Context, key string, value []byte) error {
 	copy(cp, value)
 	cmd := &pb.Command{
 		Identity: "ingress",
-		Ts:       timestamppb.New(s.clock.Now()),
+		Ts:       timestamppb.New(s.now()),
 		Payload: &pb.Command_CertBlobUpsert{CertBlobUpsert: &pb.CertBlobUpsert{
 			Blob: &pb.CertBlob{
 				Key:       key,
 				Value:     cp,
-				UpdatedAt: timestamppb.New(s.clock.Now()),
+				UpdatedAt: timestamppb.New(s.now()),
 			},
 		}},
 	}
@@ -233,7 +222,7 @@ func (s *JacoStorage) Load(_ context.Context, key string) ([]byte, error) {
 func (s *JacoStorage) Delete(_ context.Context, key string) error {
 	cmd := &pb.Command{
 		Identity: "ingress",
-		Ts:       timestamppb.New(s.clock.Now()),
+		Ts:       timestamppb.New(s.now()),
 		Payload:  &pb.Command_CertBlobRemove{CertBlobRemove: &pb.CertBlobRemove{Key: key}},
 	}
 	data, err := proto.Marshal(cmd)
@@ -303,8 +292,9 @@ func (s *JacoStorage) Stat(_ context.Context, key string) (KeyInfo, error) {
 	}, nil
 }
 
-// ErrNotExist matches certmagic's expected sentinel for missing keys.
-// certmagic uses errors.Is(err, fs.ErrNotExist); the os/fs package's
-// ErrNotExist is the right wrap target, but we name our sentinel
-// independently so consumers can match either.
-var ErrNotExist = errors.New("key does not exist")
+// ErrNotExist is the sentinel Load/Stat return for missing keys. certmagic
+// decides "no such cert/key yet" via errors.Is(err, fs.ErrNotExist), so it
+// MUST wrap fs.ErrNotExist — otherwise certmagic treats a missing blob as a
+// hard error and ACME issuance/loading breaks. errors.New (no wrap) was the
+// latent bug; %w fixes matching while keeping a JACO-specific message.
+var ErrNotExist = fmt.Errorf("key does not exist: %w", fs.ErrNotExist)

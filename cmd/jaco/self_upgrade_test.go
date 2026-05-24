@@ -17,17 +17,15 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/packaging"
 )
 
-// inMemoryFetcher returns canned bytes per URL.
-type inMemoryFetcher struct {
-	files map[string][]byte
-}
-
-func (f *inMemoryFetcher) fetch(_ context.Context, url, dst string) error {
-	body, ok := f.files[url]
-	if !ok {
-		return errors.New("not found: " + url)
+// inMemoryFetch returns a fetch func that writes canned bytes per URL.
+func inMemoryFetch(files map[string][]byte) func(context.Context, string, string) error {
+	return func(_ context.Context, url, dst string) error {
+		body, ok := files[url]
+		if !ok {
+			return errors.New("not found: " + url)
+		}
+		return os.WriteFile(dst, body, 0o600)
 	}
-	return os.WriteFile(dst, body, 0o600)
 }
 
 // buildTarball builds a deterministic tarball with dir/jaco and
@@ -90,11 +88,11 @@ func TestRunSelfUpgrade_CorruptedTarballDoesNotModifyBinaries(t *testing.T) {
 	corruptedTarball := append([]byte(nil), realTarball...)
 	corruptedTarball[len(corruptedTarball)-1] ^= 0xFF
 
-	fetcher := &inMemoryFetcher{files: map[string][]byte{
+	fetcher := inMemoryFetch(map[string][]byte{
 		tarballURL:   corruptedTarball,
 		checksumsURL: checksums,
 		sigURL:       []byte("untrusted comment: x\nbogus\n"),
-	}}
+	})
 	err := runSelfUpgrade(context.Background(), tarballURL, prefix, "", fetcher)
 	if err == nil {
 		t.Fatalf("expected verification failure on corrupted tarball")
@@ -122,7 +120,7 @@ func TestRunSelfUpgrade_CorruptedTarballDoesNotModifyBinaries(t *testing.T) {
 }
 
 func TestRunSelfUpgrade_MissingURLRejected(t *testing.T) {
-	err := runSelfUpgrade(context.Background(), "", "/tmp/jaco", "", &inMemoryFetcher{})
+	err := runSelfUpgrade(context.Background(), "", "/tmp/jaco", "", inMemoryFetch(nil))
 	if err == nil || !strings.Contains(err.Error(), "--url is required") {
 		t.Errorf("err = %v; want missing-url error", err)
 	}
@@ -135,7 +133,7 @@ func TestRunSelfUpgrade_FetchErrorAbortsBeforeTouchingBinaries(t *testing.T) {
 	if err := os.WriteFile(jacoPath, original, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	err := runSelfUpgrade(context.Background(), "https://example.com/jaco.tar.gz", prefix, "", &inMemoryFetcher{})
+	err := runSelfUpgrade(context.Background(), "https://example.com/jaco.tar.gz", prefix, "", inMemoryFetch(nil))
 	if err == nil {
 		t.Fatalf("expected fetch error")
 	}

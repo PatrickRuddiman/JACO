@@ -3,6 +3,7 @@ package storage_test
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"sync"
 	"testing"
 	"time"
@@ -34,7 +35,7 @@ func (c *fakeClock) Advance(d time.Duration) {
 
 // newHarness builds state+FSM+applier so the storage's raft writes land in
 // state.Certs. lessee is the node identity baked into Lock calls.
-func newHarness(t *testing.T, lessee string, clock storage.Clock) (*storage.JacoStorage, *state.State) {
+func newHarness(t *testing.T, lessee string, clock *fakeClock) (*storage.JacoStorage, *state.State) {
 	t.Helper()
 	brokers := watch.NewRegistry()
 	st := state.New(brokers)
@@ -45,7 +46,7 @@ func newHarness(t *testing.T, lessee string, clock storage.Clock) (*storage.Jaco
 		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
 		return nil
 	}
-	return storage.New(st, apply, lessee, clock), st
+	return storage.New(st, apply, lessee, clock.Now), st
 }
 
 func TestLock_FirstLesseeAcquires(t *testing.T) {
@@ -79,8 +80,8 @@ func TestLock_ContentionResolvedWithSingleWinner(t *testing.T) {
 		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
 		return nil
 	}
-	sA := storage.New(st, apply, "node-a", clock)
-	sB := storage.New(st, apply, "node-b", clock)
+	sA := storage.New(st, apply, "node-a", clock.Now)
+	sB := storage.New(st, apply, "node-b", clock.Now)
 
 	if err := sA.Lock(context.Background(), "issue_cert_example.com"); err != nil {
 		t.Fatalf("node-a Lock: %v", err)
@@ -109,8 +110,8 @@ func TestLock_ExpiredLockAcquirableByNewLessee(t *testing.T) {
 		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
 		return nil
 	}
-	sA := storage.New(st, apply, "node-a", clock)
-	sB := storage.New(st, apply, "node-b", clock)
+	sA := storage.New(st, apply, "node-a", clock.Now)
+	sB := storage.New(st, apply, "node-b", clock.Now)
 
 	if err := sA.Lock(context.Background(), "issue_cert_example.com"); err != nil {
 		t.Fatalf("Lock: %v", err)
@@ -154,8 +155,8 @@ func TestUnlock_ReleasesAndAllowsImmediateReacquire(t *testing.T) {
 		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
 		return nil
 	}
-	sA := storage.New(st, apply, "node-a", clock)
-	sB := storage.New(st, apply, "node-b", clock)
+	sA := storage.New(st, apply, "node-a", clock.Now)
+	sB := storage.New(st, apply, "node-b", clock.Now)
 
 	if err := sA.Lock(context.Background(), "issue_cert_example.com"); err != nil {
 		t.Fatalf("Lock A: %v", err)
@@ -207,6 +208,39 @@ func TestLoad_MissingKeyReturnsNotExist(t *testing.T) {
 	_, err := s.Load(context.Background(), "no/such/key")
 	if !errors.Is(err, storage.ErrNotExist) {
 		t.Errorf("Load err = %v; want ErrNotExist", err)
+	}
+	// certmagic decides "no cert yet" via errors.Is(err, fs.ErrNotExist), so the
+	// missing-key error MUST also match fs.ErrNotExist or ACME issuance breaks.
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Load err = %v; must match fs.ErrNotExist for certmagic", err)
+	}
+}
+
+func TestCertMagicStorage_ConvertsStatAndIsUsable(t *testing.T) {
+	// caddy.StorageConverter: the registered module must hand back a working
+	// certmagic.Storage whose Stat returns certmagic.KeyInfo (the missing
+	// method that panicked the TLS automation policy, issue #28).
+	s, _ := newHarness(t, "node-a", newFakeClock(time.Now()))
+	cm, err := s.CertMagicStorage()
+	if err != nil {
+		t.Fatalf("CertMagicStorage: %v", err)
+	}
+	if cm == nil {
+		t.Fatal("CertMagicStorage returned nil certmagic.Storage")
+	}
+	ctx := context.Background()
+	if err := s.Store(ctx, "acme/site.crt", []byte("hello")); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	ki, err := cm.Stat(ctx, "acme/site.crt")
+	if err != nil {
+		t.Fatalf("certmagic Stat: %v", err)
+	}
+	if ki.Key != "acme/site.crt" || ki.Size != 5 || !ki.IsTerminal {
+		t.Errorf("certmagic.KeyInfo = %+v, want {Key:acme/site.crt Size:5 IsTerminal:true}", ki)
+	}
+	if _, err := cm.Stat(ctx, "missing"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("certmagic Stat missing err = %v; want fs.ErrNotExist", err)
 	}
 }
 

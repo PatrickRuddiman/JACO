@@ -92,7 +92,7 @@ func seedDeployment(t *testing.T, f *fsm.FSM, name string, replicas int32, compo
 		DeploymentApply: &pb.DeploymentApply{
 			Deployment: name, Revision: 1, ComposeYaml: []byte(composeYAML),
 			Services: []*pb.ServiceSpec{{
-				Name: "web", Replicas: replicas, ComposeService: "web",
+				Name: "web", Replicas: replicas,
 				Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD,
 			}},
 		},
@@ -210,7 +210,7 @@ func TestReconcile_ImageChangeRollsOneAtATime(t *testing.T) {
 		DeploymentApply: &pb.DeploymentApply{
 			Deployment: "sample", Revision: 2, ComposeYaml: []byte(newCompose),
 			Services: []*pb.ServiceSpec{{
-				Name: "web", Replicas: 3, ComposeService: "web",
+				Name: "web", Replicas: 3,
 				Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD,
 			}},
 		},
@@ -260,7 +260,7 @@ func TestReconcile_RolloutAbortsOnStepTimeout(t *testing.T) {
 		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
 		return nil
 	}
-	rollouts := rollout.New(st, applier, clock)
+	rollouts := rollout.New(st, applier, clock.Now)
 	s := scheduler.New(st, brokers, &fakeLeader{leader: true}, applier, rollouts)
 
 	seedNode(t, f, "node-a", &raftIdx)
@@ -281,7 +281,7 @@ func TestReconcile_RolloutAbortsOnStepTimeout(t *testing.T) {
 			Deployment: "sample", Revision: 2,
 			ComposeYaml: []byte("services:\n  web:\n    image: nginx:1.28\n  api:\n    image: api:1.0\n"),
 			Services: []*pb.ServiceSpec{{
-				Name: "web", Replicas: 3, ComposeService: "web",
+				Name: "web", Replicas: 3,
 				Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD,
 			}},
 		},
@@ -340,7 +340,7 @@ func TestReconcile_RemovesReplicasWhenScalingDown(t *testing.T) {
 		DeploymentApply: &pb.DeploymentApply{
 			Deployment: "sample", Revision: 2, ComposeYaml: []byte(sampleCompose),
 			Services: []*pb.ServiceSpec{{
-				Name: "web", Replicas: 1, ComposeService: "web",
+				Name: "web", Replicas: 1,
 				Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD,
 			}},
 		},
@@ -375,7 +375,7 @@ func TestReconcile_PinnedHostFailureMarksDeploymentPending(t *testing.T) {
 		DeploymentApply: &pb.DeploymentApply{
 			Deployment: "pinned", Revision: 1, ComposeYaml: []byte(sampleCompose),
 			Services: []*pb.ServiceSpec{{
-				Name: "web", Replicas: 1, ComposeService: "web",
+				Name: "web", Replicas: 1,
 				Placement: pb.ServiceSpec_PLACEMENT_MODE_HOSTS,
 				Hosts:     []string{"node-z"},
 			}},
@@ -402,13 +402,13 @@ func TestReconcile_UnknownComposeServiceMarksPending(t *testing.T) {
 	s, st, f, _ := newScheduler(t, true)
 	var raftIdx uint64
 	seedNode(t, f, "node-a", &raftIdx)
-	// Deployment references compose_service "ghost" which isn't in compose.
+	// Service name "ghost" isn't a key in sampleCompose → marks deployment PENDING.
 	raftIdx++
 	cmd := &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_DeploymentApply{
 		DeploymentApply: &pb.DeploymentApply{
 			Deployment: "sample", Revision: 1, ComposeYaml: []byte(sampleCompose),
 			Services: []*pb.ServiceSpec{{
-				Name: "web", Replicas: 1, ComposeService: "ghost",
+				Name: "ghost", Replicas: 1,
 				Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD,
 			}},
 		},

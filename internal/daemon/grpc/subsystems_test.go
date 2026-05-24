@@ -65,10 +65,9 @@ func TestSubsystems_SchedulerMaterializesReplicaDesired(t *testing.T) {
 				Revision:    1,
 				ComposeYaml: []byte(subsystemsTestCompose),
 				Services: []*pb.ServiceSpec{{
-					Name:           "web",
-					Replicas:       1,
-					ComposeService: "web",
-					Placement:      pb.ServiceSpec_PLACEMENT_MODE_SPREAD,
+					Name:      "web",
+					Replicas:  1,
+					Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD,
 				}},
 			},
 		},
@@ -152,7 +151,7 @@ func TestSubsystems_RuntimeReconcilerCreatesContainerEndToEnd(t *testing.T) {
 				Revision:    1,
 				ComposeYaml: []byte(subsystemsTestCompose),
 				Services: []*pb.ServiceSpec{{
-					Name: "web", Replicas: 1, ComposeService: "web",
+					Name: "web", Replicas: 1,
 					Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD,
 				}},
 			},
@@ -272,6 +271,14 @@ func (f *fakeDocker) ContainerRemove(_ context.Context, id string, _ container.R
 
 func (f *fakeDocker) NetworkConnect(_ context.Context, _, _ string, _ *network.EndpointSettings) error {
 	return nil
+}
+
+func (f *fakeDocker) NetworkList(_ context.Context, _ network.ListOptions) ([]network.Summary, error) {
+	return nil, nil
+}
+
+func (f *fakeDocker) NetworkCreate(_ context.Context, _ string, _ network.CreateOptions) (network.CreateResponse, error) {
+	return network.CreateResponse{}, nil
 }
 
 func (f *fakeDocker) ContainerInspect(_ context.Context, id string) (types.ContainerJSON, error) {

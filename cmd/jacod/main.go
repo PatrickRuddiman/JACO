@@ -85,6 +85,7 @@ func run(ctx context.Context, configPath string, logOut io.Writer) error {
 		ClusterAddr:          cfg.ClusterAddr,
 		ClusterAdvertiseAddr: clusterAdvertise,
 		Docker:               docker,
+		IPAMPool:             cfg.IPAMPool,
 	})
 	if err != nil {
 		return fmt.Errorf("gRPC server: %w", err)

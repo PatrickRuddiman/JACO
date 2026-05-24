@@ -51,62 +51,78 @@ func Render(in RuleInput) string {
 		return subnets[i].Network < subnets[j].Network
 	})
 
+	// Group CIDRs by nftables set name: with per-host /24s (issue #28),
+	// several CIDRs share one (deployment, network) set, so cross-host
+	// intra-deployment traffic (saddr in host-A's /24, daddr in host-B's)
+	// matches @set on both sides.
+	var setOrder []string
+	cidrsBySet := map[string][]string{}
+	for _, s := range subnets {
+		name := SetName(s.Deployment, s.Network)
+		if _, ok := cidrsBySet[name]; !ok {
+			setOrder = append(setOrder, name)
+		}
+		cidrsBySet[name] = append(cidrsBySet[name], s.CIDR)
+	}
+	for name := range cidrsBySet {
+		sort.Strings(cidrsBySet[name])
+	}
+
+	// allCIDRs is the union of every JACO subnet — the "pool". It scopes the
+	// cross-network isolation drop so JACO never touches traffic outside its
+	// own subnets (the operator's other networks/routing are left alone).
+	var allCIDRs []string
+	for _, name := range setOrder {
+		allCIDRs = append(allCIDRs, cidrsBySet[name]...)
+	}
+	sort.Strings(allCIDRs)
+
 	var b strings.Builder
 	fmt.Fprintln(&b, "table inet jaco {")
 
-	// Named sets — one per Subnet.
-	for _, s := range subnets {
-		setName := SetName(s.Deployment, s.Network)
-		fmt.Fprintf(&b, "    set %s {\n", setName)
+	// Named sets — one per (deployment, network), holding every host's /24.
+	for _, name := range setOrder {
+		fmt.Fprintf(&b, "    set %s {\n", name)
 		fmt.Fprintf(&b, "        type ipv4_addr\n")
 		fmt.Fprintf(&b, "        flags interval\n")
-		fmt.Fprintf(&b, "        elements = { %s }\n", s.CIDR)
+		fmt.Fprintf(&b, "        elements = { %s }\n", strings.Join(cidrsBySet[name], ", "))
+		fmt.Fprintf(&b, "    }\n\n")
+	}
+	// jaco_pool — union of all JACO subnets; the isolation drop is scoped to it.
+	if len(allCIDRs) > 0 {
+		fmt.Fprintf(&b, "    set jaco_pool {\n")
+		fmt.Fprintf(&b, "        type ipv4_addr\n")
+		fmt.Fprintf(&b, "        flags interval\n")
+		fmt.Fprintf(&b, "        elements = { %s }\n", strings.Join(allCIDRs, ", "))
 		fmt.Fprintf(&b, "    }\n\n")
 	}
 
-	// forward chain — east-west isolation.
+	// forward chain — east-west isolation of JACO's OWN container subnets.
+	// Policy ACCEPT: JACO must never drop traffic it doesn't own (the
+	// operator's other docker networks, host routing, VPN/VNet forwarding,
+	// etc.). The ONLY thing dropped is traffic BETWEEN two JACO subnets in
+	// DIFFERENT (deployment, network) scopes — same-scope is allowed (incl.
+	// cross-host, via the per-scope set), and anything outside jaco_pool is
+	// untouched by the accept policy.
 	fmt.Fprintln(&b, "    chain forward {")
-	fmt.Fprintln(&b, "        type filter hook forward priority 0; policy drop;")
+	fmt.Fprintln(&b, "        type filter hook forward priority 0; policy accept;")
 	fmt.Fprintln(&b, "        ct state established,related accept")
-	for _, s := range subnets {
-		setName := SetName(s.Deployment, s.Network)
-		fmt.Fprintf(&b, "        ip saddr @%s ip daddr @%s accept\n", setName, setName)
+	for _, name := range setOrder {
+		fmt.Fprintf(&b, "        ip saddr @%s ip daddr @%s accept\n", name, name)
 	}
-	fmt.Fprintln(&b, "        drop")
+	if len(allCIDRs) > 0 {
+		fmt.Fprintln(&b, "        ip saddr @jaco_pool ip daddr @jaco_pool drop")
+	}
 	fmt.Fprintln(&b, "    }")
 	fmt.Fprintln(&b, "")
 
-	// input chain — north-south admission.
+	// input chain — JACO does NOT police host ingress. The operator's access
+	// (SSH on whatever port, a VPN, a VNet, Tailscale, their own host firewall)
+	// is their domain; a policy-drop input chain would silently lock them out
+	// and trespass on choices JACO can't know. Policy ACCEPT, no rules — the
+	// chain exists only so the table's shape is stable for drift detection.
 	fmt.Fprintln(&b, "    chain input {")
-	fmt.Fprintln(&b, "        type filter hook input priority 0; policy drop;")
-	fmt.Fprintln(&b, "        iif lo accept")
-	fmt.Fprintln(&b, "        ct state established,related accept")
-	wgPort := in.WGPort
-	if wgPort == 0 {
-		wgPort = 51820
-	}
-	fmt.Fprintf(&b, "        udp dport %d accept\n", wgPort)
-	fmt.Fprintln(&b, "        iifname \"wg-jaco\" accept")
-	fmt.Fprintln(&b, "        iifname \"jaco-*\" udp dport 53 accept")
-	grpcPort := in.GrpcPort
-	if grpcPort == 0 {
-		grpcPort = 7000
-	}
-	fmt.Fprintf(&b, "        tcp dport %d accept\n", grpcPort)
-	if len(in.IngressPorts) > 0 {
-		ports := append([]int(nil), in.IngressPorts...)
-		sort.Ints(ports)
-		ps := make([]string, 0, len(ports))
-		for _, p := range ports {
-			ps = append(ps, fmt.Sprintf("%d", p))
-		}
-		if len(ports) == 1 {
-			fmt.Fprintf(&b, "        tcp dport %s accept\n", ps[0])
-		} else {
-			fmt.Fprintf(&b, "        tcp dport { %s } accept\n", strings.Join(ps, ", "))
-		}
-	}
-	fmt.Fprintln(&b, "        drop")
+	fmt.Fprintln(&b, "        type filter hook input priority 0; policy accept;")
 	fmt.Fprintln(&b, "    }")
 	fmt.Fprintln(&b, "")
 

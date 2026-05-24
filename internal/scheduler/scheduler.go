@@ -179,10 +179,10 @@ func (s *Scheduler) Reconcile(_ context.Context) {
 // ReplicaDesired for one service. Returns the Command list (may be empty
 // when current already matches desired).
 func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, nodes []*pb.Node, project *composeProject) []*pb.Command {
-	image := lookupImage(project, svc.GetComposeService())
+	image := lookupImage(project, svc.GetName())
 	if image == "" {
 		return []*pb.Command{deploymentStatusPending(dep.GetName(),
-			fmt.Sprintf("service %q references unknown compose_service %q", svc.GetName(), svc.GetComposeService()))}
+			fmt.Sprintf("service %q not found in compose project", svc.GetName()))}
 	}
 
 	eligible := placement.EligibleHosts(svc, nodes)

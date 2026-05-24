@@ -46,18 +46,43 @@ func TestHandle_BareServiceReturnsHealthyReplicaIPs(t *testing.T) {
 	}
 }
 
-func TestHandle_FQDNAliasReturnsSameAnswers(t *testing.T) {
+func TestHandle_InScopeNameFormsReturnSameAnswers(t *testing.T) {
 	r := jdns.New(
 		jdns.Scope{Deployment: "sample", Network: "frontend"},
 		jdns.ServiceMap{"web": {net.IPv4(10, 244, 5, 2)}},
 		nil,
 	)
-	resp := r.Handle(aQuery("web.jaco.local"))
-	if len(resp.Answer) != 1 {
-		t.Fatalf("answers = %d, want 1", len(resp.Answer))
+	// All four in-scope forms must resolve to the same service IP.
+	for _, name := range []string{
+		"web",
+		"web.sample",
+		"web.jaco.internal",
+		"web.sample.jaco.internal",
+	} {
+		resp := r.Handle(aQuery(name))
+		if len(resp.Answer) != 1 {
+			t.Fatalf("%s: answers = %d, want 1", name, len(resp.Answer))
+		}
+		if a, ok := resp.Answer[0].(*mdns.A); !ok || a.A.String() != "10.244.5.2" {
+			t.Errorf("%s: answer = %v, want 10.244.5.2", name, resp.Answer[0])
+		}
 	}
-	if a, ok := resp.Answer[0].(*mdns.A); !ok || a.A.String() != "10.244.5.2" {
-		t.Errorf("FQDN answer = %v", resp.Answer[0])
+}
+
+// A deployment-qualified name for a DIFFERENT deployment is not in-scope and
+// (with no forwarder) returns NXDOMAIN rather than this scope's IPs.
+func TestHandle_WrongDeploymentQualifierNotInScope(t *testing.T) {
+	r := jdns.New(
+		jdns.Scope{Deployment: "sample", Network: "frontend"},
+		jdns.ServiceMap{"web": {net.IPv4(10, 244, 5, 2)}},
+		nil,
+	)
+	resp := r.Handle(aQuery("web.other"))
+	if resp.Rcode != mdns.RcodeNameError {
+		t.Errorf("rcode = %v, want NXDOMAIN for foreign-deployment qualifier", mdns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 0 {
+		t.Errorf("unexpected answers for web.other: %v", resp.Answer)
 	}
 }
 
@@ -91,24 +116,15 @@ func TestHandle_ServiceNotInScopeReturnsNXDOMAIN(t *testing.T) {
 	}
 }
 
-// fakeForwarder echoes a canned response.
-type fakeForwarder struct {
-	respond func(host string) ([]net.IP, error)
-}
-
-func (f *fakeForwarder) LookupHost(host string) ([]net.IP, error) {
-	return f.respond(host)
-}
-
 func TestHandle_ExternalNameForwardedToUpstream(t *testing.T) {
 	called := false
-	fw := &fakeForwarder{respond: func(host string) ([]net.IP, error) {
+	fw := jdns.LookupHostFn(func(host string) ([]net.IP, error) {
 		called = true
 		if host != "example.com" {
 			t.Errorf("forwarded host = %q", host)
 		}
 		return []net.IP{net.IPv4(93, 184, 216, 34)}, nil
-	}}
+	})
 	r := jdns.New(
 		jdns.Scope{Deployment: "sample", Network: "frontend"},
 		jdns.ServiceMap{"web": {net.IPv4(10, 244, 5, 2)}},
@@ -127,9 +143,9 @@ func TestHandle_ExternalNameForwardedToUpstream(t *testing.T) {
 }
 
 func TestHandle_ExternalNameForwarderErrorReturnsNXDOMAIN(t *testing.T) {
-	fw := &fakeForwarder{respond: func(string) ([]net.IP, error) {
+	fw := jdns.LookupHostFn(func(string) ([]net.IP, error) {
 		return nil, errors.New("upstream nope")
-	}}
+	})
 	r := jdns.New(jdns.Scope{Deployment: "x", Network: "y"}, jdns.ServiceMap{}, fw)
 	resp := r.Handle(aQuery("missing.example.com"))
 	if resp.Rcode != mdns.RcodeNameError {
@@ -137,14 +153,65 @@ func TestHandle_ExternalNameForwarderErrorReturnsNXDOMAIN(t *testing.T) {
 	}
 }
 
-func TestHandle_NonAQueryReturnsEmptyAnswer(t *testing.T) {
-	// v1 only serves A records (IPv4 mesh per discovery §3).
+func TestHandle_AAAAForExistingNameIsNodataNotNXDOMAIN(t *testing.T) {
+	// The overlay is IPv4-only: an existing service has A but no AAAA. The
+	// AAAA leg MUST be NODATA (NOERROR, empty answer) — NOT NXDOMAIN — or
+	// dual-stack getaddrinfo (Node/musl, glibc, Go) fails the whole lookup
+	// with ENOTFOUND even though A resolves (issue #28).
 	r := jdns.New(jdns.Scope{Deployment: "x", Network: "y"}, jdns.ServiceMap{"web": {net.IPv4(10, 244, 5, 2)}}, nil)
 	q := new(mdns.Msg)
 	q.SetQuestion(mdns.Fqdn("web"), mdns.TypeAAAA)
 	resp := r.Handle(q)
 	if len(resp.Answer) != 0 {
 		t.Errorf("AAAA query produced answers: %v", resp.Answer)
+	}
+	if resp.Rcode != mdns.RcodeSuccess {
+		t.Errorf("AAAA for existing name: rcode = %v, want NOERROR/NODATA", mdns.RcodeToString[resp.Rcode])
+	}
+}
+
+func TestHandle_AAAAForUnknownNameIsNXDOMAIN(t *testing.T) {
+	// A genuinely-unknown in-scope name still gets NXDOMAIN on AAAA.
+	r := jdns.New(jdns.Scope{Deployment: "x", Network: "y"}, jdns.ServiceMap{"web": {net.IPv4(10, 244, 5, 2)}}, nil)
+	q := new(mdns.Msg)
+	q.SetQuestion(mdns.Fqdn("nope"), mdns.TypeAAAA)
+	resp := r.Handle(q)
+	if resp.Rcode != mdns.RcodeNameError {
+		t.Errorf("AAAA for unknown name: rcode = %v, want NXDOMAIN", mdns.RcodeToString[resp.Rcode])
+	}
+}
+
+func TestHandle_AAAAExternalForwardsV6AndReportsExistence(t *testing.T) {
+	// External AAAA is forwarded: IPv6 addresses are returned; an external
+	// name that resolves to IPv4-only is NODATA (NOERROR), not NXDOMAIN.
+	v6 := net.ParseIP("2606:4700:4700::1111")
+	fwd := jdns.LookupHostFn(func(string) ([]net.IP, error) {
+		return []net.IP{net.IPv4(1, 1, 1, 1), v6}, nil
+	})
+	r := jdns.New(jdns.Scope{Deployment: "x", Network: "y"}, jdns.ServiceMap{}, fwd)
+	q := new(mdns.Msg)
+	q.SetQuestion(mdns.Fqdn("one.example.com"), mdns.TypeAAAA)
+	resp := r.Handle(q)
+	if resp.Rcode != mdns.RcodeSuccess {
+		t.Fatalf("external AAAA rcode = %v, want NOERROR", mdns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("external AAAA answers = %d, want 1 (the v6)", len(resp.Answer))
+	}
+	if aaaa, ok := resp.Answer[0].(*mdns.AAAA); !ok || !aaaa.AAAA.Equal(v6) {
+		t.Errorf("external AAAA answer = %v, want %v", resp.Answer[0], v6)
+	}
+
+	// IPv4-only external name → NODATA on AAAA (NOERROR, no answer).
+	fwd4 := jdns.LookupHostFn(func(string) ([]net.IP, error) {
+		return []net.IP{net.IPv4(1, 1, 1, 1)}, nil
+	})
+	r4 := jdns.New(jdns.Scope{Deployment: "x", Network: "y"}, jdns.ServiceMap{}, fwd4)
+	q4 := new(mdns.Msg)
+	q4.SetQuestion(mdns.Fqdn("v4only.example.com"), mdns.TypeAAAA)
+	resp4 := r4.Handle(q4)
+	if resp4.Rcode != mdns.RcodeSuccess || len(resp4.Answer) != 0 {
+		t.Errorf("IPv4-only external AAAA: rcode=%v answers=%d, want NOERROR/0", mdns.RcodeToString[resp4.Rcode], len(resp4.Answer))
 	}
 }
 

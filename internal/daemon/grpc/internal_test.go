@@ -2,6 +2,8 @@ package grpc_test
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,5 +80,123 @@ func TestInternalSubmit_RejectsEmptyBody(t *testing.T) {
 	st, _ := status.FromError(err)
 	if st.Code() != codes.InvalidArgument {
 		t.Errorf("code = %v, want InvalidArgument", st.Code())
+	}
+}
+
+// TestInternalEnsureSubnet_ReturnsCIDROnLeader — the leader allocates a
+// per-host /24 and the second call for the same tuple is idempotent.
+func TestInternalEnsureSubnet_ReturnsCIDROnLeader(t *testing.T) {
+	conn, s := startServerWithDataDir(t, t.TempDir())
+	defer conn.Close()
+	c := pb.NewClusterClient(conn)
+	if _, err := c.Init(context.Background(), &pb.ClusterInitRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.Raft() != nil && s.Raft().IsLeader() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	internal := pb.NewInternalClient(conn)
+	req := &pb.EnsureSubnetRequest{Deployment: "sample", Network: "frontend", Host: "host-a"}
+	first, err := internal.EnsureSubnet(context.Background(), req)
+	if err != nil {
+		t.Fatalf("EnsureSubnet: %v", err)
+	}
+	if first.GetCidr() == "" {
+		t.Fatalf("EnsureSubnet returned empty cidr")
+	}
+	second, err := internal.EnsureSubnet(context.Background(), req)
+	if err != nil {
+		t.Fatalf("EnsureSubnet (idempotent): %v", err)
+	}
+	if first.GetCidr() != second.GetCidr() {
+		t.Errorf("not idempotent: %s vs %s", first.GetCidr(), second.GetCidr())
+	}
+}
+
+// TestInternalEnsureSubnet_RejectsEmptyFields — every tuple field is required.
+func TestInternalEnsureSubnet_RejectsEmptyFields(t *testing.T) {
+	conn, s := startServerWithDataDir(t, t.TempDir())
+	defer conn.Close()
+	c := pb.NewClusterClient(conn)
+	if _, err := c.Init(context.Background(), &pb.ClusterInitRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.Raft() != nil && s.Raft().IsLeader() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	internal := pb.NewInternalClient(conn)
+	_, err := internal.EnsureSubnet(context.Background(), &pb.EnsureSubnetRequest{Deployment: "sample", Network: "frontend"})
+	if err == nil {
+		t.Fatalf("EnsureSubnet with empty host succeeded")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.InvalidArgument {
+		t.Errorf("code = %v, want InvalidArgument", st.Code())
+	}
+}
+
+// TestInternalEnsureSubnet_UnavailableBeforeInit — before OpenRaft the
+// handler has no raft handle and must report Unavailable (the same class a
+// follower returns as no_leader), never a panic.
+func TestInternalEnsureSubnet_UnavailableBeforeInit(t *testing.T) {
+	conn, _ := startServerWithDataDir(t, t.TempDir())
+	defer conn.Close()
+	internal := pb.NewInternalClient(conn)
+	_, err := internal.EnsureSubnet(context.Background(), &pb.EnsureSubnetRequest{
+		Deployment: "sample", Network: "frontend", Host: "host-a",
+	})
+	if err == nil {
+		t.Fatalf("EnsureSubnet before Init succeeded")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.Unavailable {
+		t.Errorf("code = %v, want Unavailable", st.Code())
+	}
+}
+
+// TestInternalEnsureSubnet_PoolExhaustion — once all 256 /24s are taken the
+// next request surfaces ResourceExhausted carrying subnet_pool_exhausted.
+func TestInternalEnsureSubnet_PoolExhaustion(t *testing.T) {
+	conn, s := startServerWithDataDir(t, t.TempDir())
+	defer conn.Close()
+	c := pb.NewClusterClient(conn)
+	if _, err := c.Init(context.Background(), &pb.ClusterInitRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.Raft() != nil && s.Raft().IsLeader() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	internal := pb.NewInternalClient(conn)
+	for n := 0; n < 256; n++ {
+		_, err := internal.EnsureSubnet(context.Background(), &pb.EnsureSubnetRequest{
+			Deployment: fmt.Sprintf("dep-%d", n), Network: "default", Host: "host-a",
+		})
+		if err != nil {
+			t.Fatalf("alloc %d: %v", n, err)
+		}
+	}
+	_, err := internal.EnsureSubnet(context.Background(), &pb.EnsureSubnetRequest{
+		Deployment: "overflow", Network: "default", Host: "host-a",
+	})
+	if err == nil {
+		t.Fatal("expected pool exhaustion error")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.ResourceExhausted {
+		t.Errorf("code = %v, want ResourceExhausted", st.Code())
+	}
+	if !strings.Contains(st.Message(), "subnet_pool_exhausted") {
+		t.Errorf("message %q lacks subnet_pool_exhausted", st.Message())
 	}
 }
