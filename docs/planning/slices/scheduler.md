@@ -102,6 +102,6 @@ Pinned-host failure mode:
 - DNS / WireGuard reactions to placement changes (lives in discovery slice).
 - Cross-cluster replica placement (spec §3 Out: no federation).
 - Auto-scaling (spec §3 Out).
-- Resource quotas beyond compose `ulimits`/`tmpfs` (spec §3 Out).
+- Capacity-aware scheduling. Per-replica CPU/memory limits are enforced by the runtime (compose `deploy.resources` + legacy keys), but the scheduler does not model node capacity or resource requests, so it cannot prevent overcommitting a node. IO/block-device limits also remain out of scope (spec §3 Out).
 
 > If the parent spec is ambiguous on anything this slice depends on, stop and update the spec. Do not invent behavior here.

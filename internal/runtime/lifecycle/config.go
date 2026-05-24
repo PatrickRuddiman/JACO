@@ -45,6 +45,15 @@ func buildConfig(spec compose.ContainerSpec) (*container.Config, *container.Host
 		DNS:            spec.DNSServers,
 		Resources: container.Resources{
 			Ulimits: toUlimitsList(spec.Ulimits),
+			// Per-replica CPU/memory cgroup limits (issue #49). The compose
+			// loader already resolved these from either deploy.resources or
+			// the legacy top-level keys; zero values are docker's "unset".
+			NanoCPUs:          spec.NanoCPUs,
+			Memory:            spec.MemoryBytes,
+			MemoryReservation: spec.MemoryReservationBytes,
+			CPUShares:         spec.CPUShares,
+			CpusetCpus:        spec.CpusetCpus,
+			PidsLimit:         spec.PidsLimit,
 		},
 	}
 
