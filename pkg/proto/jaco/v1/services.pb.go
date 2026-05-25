@@ -2125,6 +2125,7 @@ type SubscribeEvent struct {
 	//	*SubscribeEvent_RolloutPlan
 	//	*SubscribeEvent_ReplicaCounter
 	//	*SubscribeEvent_RestartCounter
+	//	*SubscribeEvent_TcpRoute
 	Payload       isSubscribeEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2293,6 +2294,15 @@ func (x *SubscribeEvent) GetRestartCounter() *RestartCounterEvent {
 	return nil
 }
 
+func (x *SubscribeEvent) GetTcpRoute() *TCPRouteEvent {
+	if x != nil {
+		if x, ok := x.Payload.(*SubscribeEvent_TcpRoute); ok {
+			return x.TcpRoute
+		}
+	}
+	return nil
+}
+
 type isSubscribeEvent_Payload interface {
 	isSubscribeEvent_Payload()
 }
@@ -2353,6 +2363,10 @@ type SubscribeEvent_RestartCounter struct {
 	RestartCounter *RestartCounterEvent `protobuf:"bytes,14,opt,name=restart_counter,json=restartCounter,proto3,oneof"`
 }
 
+type SubscribeEvent_TcpRoute struct {
+	TcpRoute *TCPRouteEvent `protobuf:"bytes,15,opt,name=tcp_route,json=tcpRoute,proto3,oneof"`
+}
+
 func (*SubscribeEvent_Node) isSubscribeEvent_Payload() {}
 
 func (*SubscribeEvent_Deployment) isSubscribeEvent_Payload() {}
@@ -2380,6 +2394,8 @@ func (*SubscribeEvent_RolloutPlan) isSubscribeEvent_Payload() {}
 func (*SubscribeEvent_ReplicaCounter) isSubscribeEvent_Payload() {}
 
 func (*SubscribeEvent_RestartCounter) isSubscribeEvent_Payload() {}
+
+func (*SubscribeEvent_TcpRoute) isSubscribeEvent_Payload() {}
 
 type SubmitRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -2811,7 +2827,7 @@ const file_jaco_v1_services_proto_rawDesc = "" +
 	"\x10SubscribeRequest\x12!\n" +
 	"\fentity_types\x18\x01 \x03(\tR\ventityTypes\x12%\n" +
 	"\x0esince_revision\x18\x02 \x01(\x04R\rsinceRevision\x12+\n" +
-	"\x11deployment_filter\x18\x03 \x01(\tR\x10deploymentFilter\"\xcf\x06\n" +
+	"\x11deployment_filter\x18\x03 \x01(\tR\x10deploymentFilter\"\x86\a\n" +
 	"\x0eSubscribeEvent\x12(\n" +
 	"\x04node\x18\x01 \x01(\v2\x12.jaco.v1.NodeEventH\x00R\x04node\x12:\n" +
 	"\n" +
@@ -2830,7 +2846,8 @@ const file_jaco_v1_services_proto_rawDesc = "" +
 	"\x06subnet\x18\v \x01(\v2\x14.jaco.v1.SubnetEventH\x00R\x06subnet\x12>\n" +
 	"\frollout_plan\x18\f \x01(\v2\x19.jaco.v1.RolloutPlanEventH\x00R\vrolloutPlan\x12G\n" +
 	"\x0freplica_counter\x18\r \x01(\v2\x1c.jaco.v1.ReplicaCounterEventH\x00R\x0ereplicaCounter\x12G\n" +
-	"\x0frestart_counter\x18\x0e \x01(\v2\x1c.jaco.v1.RestartCounterEventH\x00R\x0erestartCounterB\t\n" +
+	"\x0frestart_counter\x18\x0e \x01(\v2\x1c.jaco.v1.RestartCounterEventH\x00R\x0erestartCounter\x125\n" +
+	"\ttcp_route\x18\x0f \x01(\v2\x16.jaco.v1.TCPRouteEventH\x00R\btcpRouteB\t\n" +
 	"\apayload\"4\n" +
 	"\rSubmitRequest\x12#\n" +
 	"\rcommand_bytes\x18\x01 \x01(\fR\fcommandBytes\"/\n" +
@@ -2964,7 +2981,8 @@ var file_jaco_v1_services_proto_goTypes = []any{
 	(*RolloutPlanEvent)(nil),       // 64: jaco.v1.RolloutPlanEvent
 	(*ReplicaCounterEvent)(nil),    // 65: jaco.v1.ReplicaCounterEvent
 	(*RestartCounterEvent)(nil),    // 66: jaco.v1.RestartCounterEvent
-	(*AuditEvent)(nil),             // 67: jaco.v1.AuditEvent
+	(*TCPRouteEvent)(nil),          // 67: jaco.v1.TCPRouteEvent
+	(*AuditEvent)(nil),             // 68: jaco.v1.AuditEvent
 }
 var file_jaco_v1_services_proto_depIdxs = []int32{
 	47, // 0: jaco.v1.NodeListResponse.nodes:type_name -> jaco.v1.Node
@@ -2998,59 +3016,60 @@ var file_jaco_v1_services_proto_depIdxs = []int32{
 	64, // 28: jaco.v1.SubscribeEvent.rollout_plan:type_name -> jaco.v1.RolloutPlanEvent
 	65, // 29: jaco.v1.SubscribeEvent.replica_counter:type_name -> jaco.v1.ReplicaCounterEvent
 	66, // 30: jaco.v1.SubscribeEvent.restart_counter:type_name -> jaco.v1.RestartCounterEvent
-	0,  // 31: jaco.v1.Cluster.Init:input_type -> jaco.v1.ClusterInitRequest
-	2,  // 32: jaco.v1.Cluster.Join:input_type -> jaco.v1.ClusterJoinRequest
-	4,  // 33: jaco.v1.Cluster.Bootstrap:input_type -> jaco.v1.BootstrapRequest
-	6,  // 34: jaco.v1.Cluster.IssueJoinToken:input_type -> jaco.v1.IssueJoinTokenRequest
-	8,  // 35: jaco.v1.Cluster.NodeJoin:input_type -> jaco.v1.NodeJoinRequest
-	10, // 36: jaco.v1.Cluster.NodeRemove:input_type -> jaco.v1.NodeRemoveRequest
-	12, // 37: jaco.v1.Cluster.NodeList:input_type -> jaco.v1.NodeListRequest
-	14, // 38: jaco.v1.Cluster.Backup:input_type -> jaco.v1.BackupRequest
-	15, // 39: jaco.v1.Cluster.Restore:input_type -> jaco.v1.BackupChunk
-	17, // 40: jaco.v1.Cluster.Status:input_type -> jaco.v1.ClusterStatusRequest
-	19, // 41: jaco.v1.Deploy.Apply:input_type -> jaco.v1.ApplyRequest
-	22, // 42: jaco.v1.Deploy.Rollback:input_type -> jaco.v1.RollbackRequest
-	24, // 43: jaco.v1.Deploy.Delete:input_type -> jaco.v1.DeleteRequest
-	26, // 44: jaco.v1.Deploy.Status:input_type -> jaco.v1.DeployStatusRequest
-	29, // 45: jaco.v1.Deploy.Logs:input_type -> jaco.v1.LogsRequest
-	31, // 46: jaco.v1.Tokens.Issue:input_type -> jaco.v1.TokenIssueRequest
-	33, // 47: jaco.v1.Tokens.Revoke:input_type -> jaco.v1.TokenRevokeRequest
-	35, // 48: jaco.v1.Tokens.List:input_type -> jaco.v1.TokenListRequest
-	38, // 49: jaco.v1.Audit.Query:input_type -> jaco.v1.AuditQueryRequest
-	39, // 50: jaco.v1.Watch.Subscribe:input_type -> jaco.v1.SubscribeRequest
-	41, // 51: jaco.v1.Internal.Submit:input_type -> jaco.v1.SubmitRequest
-	45, // 52: jaco.v1.Internal.SignNodeCert:input_type -> jaco.v1.SignNodeCertRequest
-	29, // 53: jaco.v1.Internal.Logs:input_type -> jaco.v1.LogsRequest
-	43, // 54: jaco.v1.Internal.EnsureSubnet:input_type -> jaco.v1.EnsureSubnetRequest
-	1,  // 55: jaco.v1.Cluster.Init:output_type -> jaco.v1.ClusterInitResponse
-	3,  // 56: jaco.v1.Cluster.Join:output_type -> jaco.v1.ClusterJoinResponse
-	5,  // 57: jaco.v1.Cluster.Bootstrap:output_type -> jaco.v1.BootstrapResponse
-	7,  // 58: jaco.v1.Cluster.IssueJoinToken:output_type -> jaco.v1.IssueJoinTokenResponse
-	9,  // 59: jaco.v1.Cluster.NodeJoin:output_type -> jaco.v1.NodeJoinResponse
-	11, // 60: jaco.v1.Cluster.NodeRemove:output_type -> jaco.v1.NodeRemoveResponse
-	13, // 61: jaco.v1.Cluster.NodeList:output_type -> jaco.v1.NodeListResponse
-	15, // 62: jaco.v1.Cluster.Backup:output_type -> jaco.v1.BackupChunk
-	16, // 63: jaco.v1.Cluster.Restore:output_type -> jaco.v1.RestoreResponse
-	18, // 64: jaco.v1.Cluster.Status:output_type -> jaco.v1.ClusterStatusResponse
-	20, // 65: jaco.v1.Deploy.Apply:output_type -> jaco.v1.ApplyResponse
-	23, // 66: jaco.v1.Deploy.Rollback:output_type -> jaco.v1.RollbackResponse
-	25, // 67: jaco.v1.Deploy.Delete:output_type -> jaco.v1.DeleteResponse
-	27, // 68: jaco.v1.Deploy.Status:output_type -> jaco.v1.DeployStatusResponse
-	30, // 69: jaco.v1.Deploy.Logs:output_type -> jaco.v1.LogLine
-	32, // 70: jaco.v1.Tokens.Issue:output_type -> jaco.v1.TokenIssueResponse
-	34, // 71: jaco.v1.Tokens.Revoke:output_type -> jaco.v1.TokenRevokeResponse
-	36, // 72: jaco.v1.Tokens.List:output_type -> jaco.v1.TokenListResponse
-	67, // 73: jaco.v1.Audit.Query:output_type -> jaco.v1.AuditEvent
-	40, // 74: jaco.v1.Watch.Subscribe:output_type -> jaco.v1.SubscribeEvent
-	42, // 75: jaco.v1.Internal.Submit:output_type -> jaco.v1.SubmitResponse
-	46, // 76: jaco.v1.Internal.SignNodeCert:output_type -> jaco.v1.SignNodeCertResponse
-	30, // 77: jaco.v1.Internal.Logs:output_type -> jaco.v1.LogLine
-	44, // 78: jaco.v1.Internal.EnsureSubnet:output_type -> jaco.v1.EnsureSubnetResponse
-	55, // [55:79] is the sub-list for method output_type
-	31, // [31:55] is the sub-list for method input_type
-	31, // [31:31] is the sub-list for extension type_name
-	31, // [31:31] is the sub-list for extension extendee
-	0,  // [0:31] is the sub-list for field type_name
+	67, // 31: jaco.v1.SubscribeEvent.tcp_route:type_name -> jaco.v1.TCPRouteEvent
+	0,  // 32: jaco.v1.Cluster.Init:input_type -> jaco.v1.ClusterInitRequest
+	2,  // 33: jaco.v1.Cluster.Join:input_type -> jaco.v1.ClusterJoinRequest
+	4,  // 34: jaco.v1.Cluster.Bootstrap:input_type -> jaco.v1.BootstrapRequest
+	6,  // 35: jaco.v1.Cluster.IssueJoinToken:input_type -> jaco.v1.IssueJoinTokenRequest
+	8,  // 36: jaco.v1.Cluster.NodeJoin:input_type -> jaco.v1.NodeJoinRequest
+	10, // 37: jaco.v1.Cluster.NodeRemove:input_type -> jaco.v1.NodeRemoveRequest
+	12, // 38: jaco.v1.Cluster.NodeList:input_type -> jaco.v1.NodeListRequest
+	14, // 39: jaco.v1.Cluster.Backup:input_type -> jaco.v1.BackupRequest
+	15, // 40: jaco.v1.Cluster.Restore:input_type -> jaco.v1.BackupChunk
+	17, // 41: jaco.v1.Cluster.Status:input_type -> jaco.v1.ClusterStatusRequest
+	19, // 42: jaco.v1.Deploy.Apply:input_type -> jaco.v1.ApplyRequest
+	22, // 43: jaco.v1.Deploy.Rollback:input_type -> jaco.v1.RollbackRequest
+	24, // 44: jaco.v1.Deploy.Delete:input_type -> jaco.v1.DeleteRequest
+	26, // 45: jaco.v1.Deploy.Status:input_type -> jaco.v1.DeployStatusRequest
+	29, // 46: jaco.v1.Deploy.Logs:input_type -> jaco.v1.LogsRequest
+	31, // 47: jaco.v1.Tokens.Issue:input_type -> jaco.v1.TokenIssueRequest
+	33, // 48: jaco.v1.Tokens.Revoke:input_type -> jaco.v1.TokenRevokeRequest
+	35, // 49: jaco.v1.Tokens.List:input_type -> jaco.v1.TokenListRequest
+	38, // 50: jaco.v1.Audit.Query:input_type -> jaco.v1.AuditQueryRequest
+	39, // 51: jaco.v1.Watch.Subscribe:input_type -> jaco.v1.SubscribeRequest
+	41, // 52: jaco.v1.Internal.Submit:input_type -> jaco.v1.SubmitRequest
+	45, // 53: jaco.v1.Internal.SignNodeCert:input_type -> jaco.v1.SignNodeCertRequest
+	29, // 54: jaco.v1.Internal.Logs:input_type -> jaco.v1.LogsRequest
+	43, // 55: jaco.v1.Internal.EnsureSubnet:input_type -> jaco.v1.EnsureSubnetRequest
+	1,  // 56: jaco.v1.Cluster.Init:output_type -> jaco.v1.ClusterInitResponse
+	3,  // 57: jaco.v1.Cluster.Join:output_type -> jaco.v1.ClusterJoinResponse
+	5,  // 58: jaco.v1.Cluster.Bootstrap:output_type -> jaco.v1.BootstrapResponse
+	7,  // 59: jaco.v1.Cluster.IssueJoinToken:output_type -> jaco.v1.IssueJoinTokenResponse
+	9,  // 60: jaco.v1.Cluster.NodeJoin:output_type -> jaco.v1.NodeJoinResponse
+	11, // 61: jaco.v1.Cluster.NodeRemove:output_type -> jaco.v1.NodeRemoveResponse
+	13, // 62: jaco.v1.Cluster.NodeList:output_type -> jaco.v1.NodeListResponse
+	15, // 63: jaco.v1.Cluster.Backup:output_type -> jaco.v1.BackupChunk
+	16, // 64: jaco.v1.Cluster.Restore:output_type -> jaco.v1.RestoreResponse
+	18, // 65: jaco.v1.Cluster.Status:output_type -> jaco.v1.ClusterStatusResponse
+	20, // 66: jaco.v1.Deploy.Apply:output_type -> jaco.v1.ApplyResponse
+	23, // 67: jaco.v1.Deploy.Rollback:output_type -> jaco.v1.RollbackResponse
+	25, // 68: jaco.v1.Deploy.Delete:output_type -> jaco.v1.DeleteResponse
+	27, // 69: jaco.v1.Deploy.Status:output_type -> jaco.v1.DeployStatusResponse
+	30, // 70: jaco.v1.Deploy.Logs:output_type -> jaco.v1.LogLine
+	32, // 71: jaco.v1.Tokens.Issue:output_type -> jaco.v1.TokenIssueResponse
+	34, // 72: jaco.v1.Tokens.Revoke:output_type -> jaco.v1.TokenRevokeResponse
+	36, // 73: jaco.v1.Tokens.List:output_type -> jaco.v1.TokenListResponse
+	68, // 74: jaco.v1.Audit.Query:output_type -> jaco.v1.AuditEvent
+	40, // 75: jaco.v1.Watch.Subscribe:output_type -> jaco.v1.SubscribeEvent
+	42, // 76: jaco.v1.Internal.Submit:output_type -> jaco.v1.SubmitResponse
+	46, // 77: jaco.v1.Internal.SignNodeCert:output_type -> jaco.v1.SignNodeCertResponse
+	30, // 78: jaco.v1.Internal.Logs:output_type -> jaco.v1.LogLine
+	44, // 79: jaco.v1.Internal.EnsureSubnet:output_type -> jaco.v1.EnsureSubnetResponse
+	56, // [56:80] is the sub-list for method output_type
+	32, // [32:56] is the sub-list for method input_type
+	32, // [32:32] is the sub-list for extension type_name
+	32, // [32:32] is the sub-list for extension extendee
+	0,  // [0:32] is the sub-list for field type_name
 }
 
 func init() { file_jaco_v1_services_proto_init() }
@@ -3075,6 +3094,7 @@ func file_jaco_v1_services_proto_init() {
 		(*SubscribeEvent_RolloutPlan)(nil),
 		(*SubscribeEvent_ReplicaCounter)(nil),
 		(*SubscribeEvent_RestartCounter)(nil),
+		(*SubscribeEvent_TcpRoute)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

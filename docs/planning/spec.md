@@ -13,6 +13,7 @@ Top-level promises (each measurable):
 - The same docker compose file that runs under `docker compose up` runs under JACO without modification, for every compose v3+ service field listed in §3 In.
 - TLS certificates for declared domains are obtained, installed, and renewed without operator action after initial DNS ownership is established.
 - Any node in the cluster accepts ingress traffic for any domain declared in any jaco.yaml; no client-side load balancer or external L4 router is required for the cluster to be reachable.
+- Any node in the cluster accepts raw-TCP traffic on a service's published host ports and forwards it to a healthy replica wherever that replica runs; failover to a surviving replica occurs within the same window as HTTP ingress.
 
 ## §2 Behavior
 
@@ -120,12 +121,12 @@ In:
 
 - Multi-node clusters formed via raft consensus, with any odd number of nodes ≥ 1.
 - Cluster bootstrap, node join, graceful node remove, automatic leader election, manual leader-step-down.
-- Consumption of unmodified docker compose schema-v3+ files. The supported compose service-level fields are: `image`, `command`, `entrypoint`, `environment`, `env_file`, `volumes` (named volumes and host bind mounts), `ports` (documentation only — ingress is controlled by the jaco routes block), `depends_on` (ordering only), `healthcheck`, `labels`, `user`, `working_dir`, `tmpfs`, `cap_add`, `cap_drop`, `sysctls`, `ulimits`, `read_only`, `networks`. The top-level compose `networks:` block (for declaring networks) is also honored.
+- Consumption of unmodified docker compose schema-v3+ files. The supported compose service-level fields are: `image`, `command`, `entrypoint`, `environment`, `env_file`, `volumes` (named volumes and host bind mounts), `ports` (a published host port declares a cluster-wide TCP ingress listener for that service — see "Ingress on every node" below; HTTP/S ingress for declared domains remains controlled by the jaco routes block, and publishing host port 80 or 443 is rejected), `depends_on` (ordering only), `healthcheck`, `labels`, `user`, `working_dir`, `tmpfs`, `cap_add`, `cap_drop`, `sysctls`, `ulimits`, `read_only`, `networks`. The top-level compose `networks:` block (for declaring networks) is also honored.
 - Cross-deployment network isolation: containers in two different deployments cannot reach each other at the network layer. Enforced cluster-wide.
 - Within a deployment, compose `networks:` semantics are honored cluster-wide: a service is reachable from another service only when they share at least one declared network. Services that declare no networks attach to a per-deployment default network.
 - The supported jaco.yaml fields are: `deployment` (deployment name), `services` (list of `{name, replicas: int ≥ 0, hosts: [hostname, …], placement: spread | pack | hosts, compose_service, networks: [name, …]}`; `placement: hosts` requires a non-empty `hosts`; the other placements ignore it; if `placement` is omitted it defaults to `spread`; if `compose_service` is omitted it defaults to `name`), `routes` (list of `{domain, service, port, tls: auto | off, path: optional URL path prefix}`; `path` defaults to `""` (catch-all); multiple routes for the same domain are permitted when their paths differ — longer prefixes take priority). The matching docker compose file is supplied alongside the jaco.yaml (auto-discovered as `compose.yml`/`compose.yaml` next to the manifest, or passed explicitly to the CLI), not embedded as a jaco.yaml field.
 - Service discovery: replicas of services in the same deployment resolve each other by service name from any node.
-- Ingress on every node: any node accepts HTTP and HTTPS traffic for any declared domain and forwards to a healthy replica anywhere in the cluster.
+- Ingress on every node: any node accepts HTTP and HTTPS traffic for any declared domain, and raw TCP on any service's published host port (80 and 443 are reserved for HTTP/S ingress and rejected if published), and forwards to a healthy replica anywhere in the cluster.
 - Automatic TLS certificate provisioning and renewal for declared domains from a public CA via the ACME protocol when `tls: auto`.
 - Rolling updates: replicas are replaced one at a time; at most one replica per service is down during the roll.
 - Rollback to the previously applied jaco.yaml for a given deployment name.

@@ -159,6 +159,46 @@ func TestAuditEventsAppendAndList(t *testing.T) {
 	}
 }
 
+func TestTCPRouteKeyedByPublishedPort(t *testing.T) {
+	s, _ := newStore(t)
+
+	s.TCPRoutes.Apply(&pb.TCPRoute{PublishedPort: 5432, Deployment: "db", Service: "pg", ContainerPort: 5432}, 1)
+	s.TCPRoutes.Apply(&pb.TCPRoute{PublishedPort: 6379, Deployment: "cache", Service: "redis", ContainerPort: 6379}, 2)
+
+	if got := s.TCPRoutes.Len(); got != 2 {
+		t.Fatalf("Len() = %d, want 2", got)
+	}
+
+	got, ok := s.TCPRoutes.Get(state.TCPRouteKey(5432))
+	if !ok || got.GetDeployment() != "db" || got.GetContainerPort() != 5432 {
+		t.Errorf("Get(5432): ok=%v deployment=%q container=%d", ok, got.GetDeployment(), got.GetContainerPort())
+	}
+
+	if ok := s.TCPRoutes.Remove(state.TCPRouteKey(5432), 3); !ok {
+		t.Errorf("Remove(5432) returned false")
+	}
+	if _, ok := s.TCPRoutes.Get(state.TCPRouteKey(5432)); ok {
+		t.Errorf("Get after Remove returned ok=true")
+	}
+}
+
+func TestTCPRouteEmitsWatchEvents(t *testing.T) {
+	s, brokers := newStore(t)
+	sub := brokers.TCPRoutes.Subscribe()
+	t.Cleanup(sub.Cancel)
+
+	s.TCPRoutes.Apply(&pb.TCPRoute{PublishedPort: 5432, Deployment: "db"}, 1)
+	s.TCPRoutes.Apply(&pb.TCPRoute{PublishedPort: 5432, Deployment: "db", ContainerPort: 5433}, 2)
+	s.TCPRoutes.Remove(state.TCPRouteKey(5432), 3)
+
+	for i, want := range []watch.Kind{watch.KindAdded, watch.KindUpdated, watch.KindRemoved} {
+		ev := <-sub.Events()
+		if ev.Kind != want {
+			t.Errorf("event %d: kind=%v, want %v", i, ev.Kind, want)
+		}
+	}
+}
+
 func TestClusterSingleton(t *testing.T) {
 	s, brokers := newStore(t)
 	sub := brokers.Cluster.Subscribe()

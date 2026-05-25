@@ -18,6 +18,11 @@ import (
 	// caddy.Load rejects every real config with "unknown module: http/tls".
 	// Without this the embedded ingress never binds :80/:443 (issue #28).
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
+	// caddy-l4 registers the `layer4` app + `layer4.handlers.proxy` (and its
+	// round-robin selection policy) so caddy.Load resolves the apps.layer4
+	// block BuildCaddyConfig emits for TCP ingress (issue #37).
+	_ "github.com/mholt/caddy-l4/layer4"
+	_ "github.com/mholt/caddy-l4/modules/l4proxy"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
@@ -236,11 +241,28 @@ func ingressBuilder(st *state.State, acme ingressACMEOpts, logger *slog.Logger) 
 			}
 		}
 
+		// TCP ingress listeners derived from state.TCPRoutes. Upstream IPs come
+		// from the same `services` map as HTTP; BuildCaddyConfig dials each
+		// replica's overlay IP on the container port over the WG mesh. caddy-l4
+		// owns the listeners — re-loading a config with a port caddy already
+		// binds is an idempotent graceful swap, so we emit every route and let
+		// caddy manage the sockets (a pre-bind probe would always see caddy's
+		// own listener as "in use" and drop the route on every rebuild).
+		var tcpRoutes []config.TCPRoute
+		for _, r := range st.TCPRoutes.List() {
+			tcpRoutes = append(tcpRoutes, config.TCPRoute{
+				PublishedPort: int(r.GetPublishedPort()),
+				Deployment:    r.GetDeployment(),
+				Service:       r.GetService(),
+				ContainerPort: int(r.GetContainerPort()),
+			})
+		}
+
 		var stagingDomains map[string]bool
 		if acme.StagingDomains != nil {
 			stagingDomains = acme.StagingDomains()
 		}
-		cfg, err := config.BuildCaddyConfig(routes, replicas, services, config.BuildOpts{
+		cfg, err := config.BuildCaddyConfig(routes, tcpRoutes, replicas, services, config.BuildOpts{
 			ACMEEmail:      acme.Email,
 			ACMECA:         acme.CA,
 			ACMEEnabled:    acme.Enabled,
@@ -249,10 +271,10 @@ func ingressBuilder(st *state.State, acme ingressACMEOpts, logger *slog.Logger) 
 		})
 		if err != nil {
 			logger.Error("build caddy config failed",
-				"routes", len(routes), "observed_replicas", len(replicas), "error", err)
+				"routes", len(routes), "tcp_routes", len(tcpRoutes), "observed_replicas", len(replicas), "error", err)
 		} else {
 			logger.Debug("built caddy config",
-				"routes", len(routes), "observed_replicas", len(replicas), "bytes", len(cfg))
+				"routes", len(routes), "tcp_routes", len(tcpRoutes), "observed_replicas", len(replicas), "bytes", len(cfg))
 		}
 		return cfg, err
 	}
@@ -270,17 +292,35 @@ func ingressLoader(logger *slog.Logger) func(ctx context.Context, cfg []byte) er
 	return ingressLoaderEmbedded(logger)
 }
 
-// ingressLoaderEmbedded calls caddy.Load on configs that carry at least
-// one reverse_proxy route. With zero routes the rendered config is just
-// the fallback 404 + ACME stub — equivalent to "caddy not running" —
-// so we skip Load entirely to avoid the bug-009 once-per-second admin
-// restart loop. Once a Route lands in state.Routes, subsequent loads
-// fire normally.
+// configHasLoadableRoute reports whether the rendered config carries a real
+// forwarding route — an HTTP reverse_proxy or a layer4 (TCP) server. With
+// neither, the config is just the fallback 404 + ACME stub, equivalent to
+// "caddy not running", so the embedded loader skips caddy.Load to avoid the
+// bug-009 once-per-second admin restart loop. The apps.layer4 key is only
+// present when a TCP server has upstreams, so its presence alone is loadable.
+func configHasLoadableRoute(cfg []byte) bool {
+	return bytes.Contains(cfg, []byte("reverse_proxy")) || bytes.Contains(cfg, []byte(`"layer4"`))
+}
+
+// shouldLoad decides whether to push cfg to caddy. Before caddy has ever
+// loaded a route-bearing config we skip route-less configs so the daemon
+// doesn't stand up a bare 404 stub at startup (bug-009). But once caddy is
+// running we MUST load even a route-less config — otherwise deleting the last
+// route never tears its listeners down and stale TCP listeners linger
+// cluster-wide. The Reloader's byte-equality short-circuit keeps this to a
+// single teardown load.
+func shouldLoad(started bool, cfg []byte) bool {
+	return started || configHasLoadableRoute(cfg)
+}
+
+// ingressLoaderEmbedded calls caddy.Load on configs that carry at least one
+// forwarding route (HTTP reverse_proxy or TCP layer4), and on route-less
+// configs once caddy is already running (to drain removed listeners).
 func ingressLoaderEmbedded(logger *slog.Logger) func(ctx context.Context, cfg []byte) error {
 	var started atomic.Bool
 	return func(_ context.Context, cfg []byte) error {
-		if !bytes.Contains(cfg, []byte("reverse_proxy")) {
-			logger.Debug("skipping caddy.Load (no reverse_proxy route yet)")
+		if !shouldLoad(started.Load(), cfg) {
+			logger.Debug("skipping caddy.Load (no reverse_proxy or layer4 route yet)")
 			return nil
 		}
 		if err := caddy.Load(cfg, false); err != nil {

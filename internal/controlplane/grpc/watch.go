@@ -48,6 +48,11 @@ func (w *watchServer) Subscribe(req *pb.SubscribeRequest, stream pb.Watch_Subscr
 		defer sub.Cancel()
 		go forwardRoutes(sub, merged, done, depFilter)
 	}
+	if requested["tcp_routes"] {
+		sub := w.brokers.TCPRoutes.Subscribe()
+		defer sub.Cancel()
+		go forwardTCPRoutes(sub, merged, done, depFilter)
+	}
 
 	for {
 		select {
@@ -133,6 +138,33 @@ func forwardRoutes(sub *watch.Subscription[*pb.Route], out chan<- *pb.SubscribeE
 			}
 		}
 		out <- &pb.SubscribeEvent{Payload: &pb.SubscribeEvent_Route{Route: &pb.RouteEvent{
+			Kind:      kindToProto(ev.Kind),
+			Before:    ev.Before,
+			After:     ev.After,
+			RaftIndex: ev.RaftIndex,
+		}}}
+		select {
+		case <-done:
+			return
+		default:
+		}
+	}
+}
+
+func forwardTCPRoutes(sub *watch.Subscription[*pb.TCPRoute], out chan<- *pb.SubscribeEvent, done <-chan struct{}, depFilter string) {
+	for ev := range sub.Events() {
+		if depFilter != "" {
+			dep := ""
+			if ev.After != nil {
+				dep = ev.After.GetDeployment()
+			} else if ev.Before != nil {
+				dep = ev.Before.GetDeployment()
+			}
+			if dep != depFilter {
+				continue
+			}
+		}
+		out <- &pb.SubscribeEvent{Payload: &pb.SubscribeEvent_TcpRoute{TcpRoute: &pb.TCPRouteEvent{
 			Kind:      kindToProto(ev.Kind),
 			Before:    ev.Before,
 			After:     ev.After,

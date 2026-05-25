@@ -101,6 +101,8 @@ func (r *Reloader) Rebuild(ctx context.Context) error {
 func (r *Reloader) Run(ctx context.Context) error {
 	routes := r.brokers.Routes.Subscribe()
 	defer routes.Cancel()
+	tcpRoutes := r.brokers.TCPRoutes.Subscribe()
+	defer tcpRoutes.Cancel()
 	obs := r.brokers.ReplicasObserved.Subscribe()
 	defer obs.Cancel()
 	certs := r.brokers.Certs.Subscribe()
@@ -119,6 +121,9 @@ func (r *Reloader) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-routes.Events():
+			pending = true
+			resetTimer(debounce, DebounceWindow)
+		case <-tcpRoutes.Events():
 			pending = true
 			resetTimer(debounce, DebounceWindow)
 		case <-obs.Events():

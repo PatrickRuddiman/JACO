@@ -2,6 +2,8 @@ package grpcsrv
 
 import (
 	"testing"
+
+	"github.com/PatrickRuddiman/jaco/internal/runtime/compose"
 )
 
 // TestValidateJacoYAML_RejectsEveryBranch — drives the validation
@@ -278,6 +280,33 @@ routes:
 	}
 	if pbs[1].Path != "" {
 		t.Errorf("pb.Route[1].Path = %q, want empty", pbs[1].Path)
+	}
+}
+
+// TestToTCPRoutes verifies only explicit published TCP ports become routes:
+// bare/ephemeral, UDP, and host-IP-scoped entries produce no listener.
+func TestToTCPRoutes(t *testing.T) {
+	project, err := compose.LoadBytes([]byte(`services:
+  db:
+    image: postgres:16
+    ports:
+      - "5432:5432"
+      - "9999"
+      - "53:53/udp"
+      - "127.0.0.1:6443:6443"
+`), "x.yml")
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+
+	got := toTCPRoutes("data", project)
+	if len(got) != 1 {
+		t.Fatalf("toTCPRoutes len = %d, want 1: %+v", len(got), got)
+	}
+	r := got[0]
+	if r.GetPublishedPort() != 5432 || r.GetContainerPort() != 5432 ||
+		r.GetService() != "db" || r.GetDeployment() != "data" {
+		t.Errorf("unexpected route: %+v", r)
 	}
 }
 

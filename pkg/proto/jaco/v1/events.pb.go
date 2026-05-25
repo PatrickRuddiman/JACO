@@ -416,6 +416,74 @@ func (x *RouteEvent) GetRaftIndex() uint64 {
 	return 0
 }
 
+type TCPRouteEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Kind          EventKind              `protobuf:"varint,1,opt,name=kind,proto3,enum=jaco.v1.EventKind" json:"kind,omitempty"`
+	Before        *TCPRoute              `protobuf:"bytes,2,opt,name=before,proto3" json:"before,omitempty"`
+	After         *TCPRoute              `protobuf:"bytes,3,opt,name=after,proto3" json:"after,omitempty"`
+	RaftIndex     uint64                 `protobuf:"varint,4,opt,name=raft_index,json=raftIndex,proto3" json:"raft_index,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TCPRouteEvent) Reset() {
+	*x = TCPRouteEvent{}
+	mi := &file_jaco_v1_events_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TCPRouteEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TCPRouteEvent) ProtoMessage() {}
+
+func (x *TCPRouteEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_jaco_v1_events_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TCPRouteEvent.ProtoReflect.Descriptor instead.
+func (*TCPRouteEvent) Descriptor() ([]byte, []int) {
+	return file_jaco_v1_events_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *TCPRouteEvent) GetKind() EventKind {
+	if x != nil {
+		return x.Kind
+	}
+	return EventKind_EVENT_KIND_UNSPECIFIED
+}
+
+func (x *TCPRouteEvent) GetBefore() *TCPRoute {
+	if x != nil {
+		return x.Before
+	}
+	return nil
+}
+
+func (x *TCPRouteEvent) GetAfter() *TCPRoute {
+	if x != nil {
+		return x.After
+	}
+	return nil
+}
+
+func (x *TCPRouteEvent) GetRaftIndex() uint64 {
+	if x != nil {
+		return x.RaftIndex
+	}
+	return 0
+}
+
 type CertEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Kind          EventKind              `protobuf:"varint,1,opt,name=kind,proto3,enum=jaco.v1.EventKind" json:"kind,omitempty"`
@@ -428,7 +496,7 @@ type CertEvent struct {
 
 func (x *CertEvent) Reset() {
 	*x = CertEvent{}
-	mi := &file_jaco_v1_events_proto_msgTypes[5]
+	mi := &file_jaco_v1_events_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -440,7 +508,7 @@ func (x *CertEvent) String() string {
 func (*CertEvent) ProtoMessage() {}
 
 func (x *CertEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_jaco_v1_events_proto_msgTypes[5]
+	mi := &file_jaco_v1_events_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -453,7 +521,7 @@ func (x *CertEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CertEvent.ProtoReflect.Descriptor instead.
 func (*CertEvent) Descriptor() ([]byte, []int) {
-	return file_jaco_v1_events_proto_rawDescGZIP(), []int{5}
+	return file_jaco_v1_events_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *CertEvent) GetKind() EventKind {
@@ -496,7 +564,7 @@ type ChallengeTokenEvent struct {
 
 func (x *ChallengeTokenEvent) Reset() {
 	*x = ChallengeTokenEvent{}
-	mi := &file_jaco_v1_events_proto_msgTypes[6]
+	mi := &file_jaco_v1_events_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -508,7 +576,7 @@ func (x *ChallengeTokenEvent) String() string {
 func (*ChallengeTokenEvent) ProtoMessage() {}
 
 func (x *ChallengeTokenEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_jaco_v1_events_proto_msgTypes[6]
+	mi := &file_jaco_v1_events_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -521,7 +589,7 @@ func (x *ChallengeTokenEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChallengeTokenEvent.ProtoReflect.Descriptor instead.
 func (*ChallengeTokenEvent) Descriptor() ([]byte, []int) {
-	return file_jaco_v1_events_proto_rawDescGZIP(), []int{6}
+	return file_jaco_v1_events_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ChallengeTokenEvent) GetKind() EventKind {
@@ -564,7 +632,7 @@ type TokenEvent struct {
 
 func (x *TokenEvent) Reset() {
 	*x = TokenEvent{}
-	mi := &file_jaco_v1_events_proto_msgTypes[7]
+	mi := &file_jaco_v1_events_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -576,7 +644,7 @@ func (x *TokenEvent) String() string {
 func (*TokenEvent) ProtoMessage() {}
 
 func (x *TokenEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_jaco_v1_events_proto_msgTypes[7]
+	mi := &file_jaco_v1_events_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -589,7 +657,7 @@ func (x *TokenEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TokenEvent.ProtoReflect.Descriptor instead.
 func (*TokenEvent) Descriptor() ([]byte, []int) {
-	return file_jaco_v1_events_proto_rawDescGZIP(), []int{7}
+	return file_jaco_v1_events_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *TokenEvent) GetKind() EventKind {
@@ -632,7 +700,7 @@ type JoinTokenEvent struct {
 
 func (x *JoinTokenEvent) Reset() {
 	*x = JoinTokenEvent{}
-	mi := &file_jaco_v1_events_proto_msgTypes[8]
+	mi := &file_jaco_v1_events_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -644,7 +712,7 @@ func (x *JoinTokenEvent) String() string {
 func (*JoinTokenEvent) ProtoMessage() {}
 
 func (x *JoinTokenEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_jaco_v1_events_proto_msgTypes[8]
+	mi := &file_jaco_v1_events_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -657,7 +725,7 @@ func (x *JoinTokenEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinTokenEvent.ProtoReflect.Descriptor instead.
 func (*JoinTokenEvent) Descriptor() ([]byte, []int) {
-	return file_jaco_v1_events_proto_rawDescGZIP(), []int{8}
+	return file_jaco_v1_events_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *JoinTokenEvent) GetKind() EventKind {
@@ -700,7 +768,7 @@ type AuditLogEvent struct {
 
 func (x *AuditLogEvent) Reset() {
 	*x = AuditLogEvent{}
-	mi := &file_jaco_v1_events_proto_msgTypes[9]
+	mi := &file_jaco_v1_events_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -712,7 +780,7 @@ func (x *AuditLogEvent) String() string {
 func (*AuditLogEvent) ProtoMessage() {}
 
 func (x *AuditLogEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_jaco_v1_events_proto_msgTypes[9]
+	mi := &file_jaco_v1_events_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -725,7 +793,7 @@ func (x *AuditLogEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuditLogEvent.ProtoReflect.Descriptor instead.
 func (*AuditLogEvent) Descriptor() ([]byte, []int) {
-	return file_jaco_v1_events_proto_rawDescGZIP(), []int{9}
+	return file_jaco_v1_events_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *AuditLogEvent) GetKind() EventKind {
@@ -768,7 +836,7 @@ type SubnetEvent struct {
 
 func (x *SubnetEvent) Reset() {
 	*x = SubnetEvent{}
-	mi := &file_jaco_v1_events_proto_msgTypes[10]
+	mi := &file_jaco_v1_events_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -780,7 +848,7 @@ func (x *SubnetEvent) String() string {
 func (*SubnetEvent) ProtoMessage() {}
 
 func (x *SubnetEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_jaco_v1_events_proto_msgTypes[10]
+	mi := &file_jaco_v1_events_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -793,7 +861,7 @@ func (x *SubnetEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubnetEvent.ProtoReflect.Descriptor instead.
 func (*SubnetEvent) Descriptor() ([]byte, []int) {
-	return file_jaco_v1_events_proto_rawDescGZIP(), []int{10}
+	return file_jaco_v1_events_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *SubnetEvent) GetKind() EventKind {
@@ -836,7 +904,7 @@ type RolloutPlanEvent struct {
 
 func (x *RolloutPlanEvent) Reset() {
 	*x = RolloutPlanEvent{}
-	mi := &file_jaco_v1_events_proto_msgTypes[11]
+	mi := &file_jaco_v1_events_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -848,7 +916,7 @@ func (x *RolloutPlanEvent) String() string {
 func (*RolloutPlanEvent) ProtoMessage() {}
 
 func (x *RolloutPlanEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_jaco_v1_events_proto_msgTypes[11]
+	mi := &file_jaco_v1_events_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -861,7 +929,7 @@ func (x *RolloutPlanEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RolloutPlanEvent.ProtoReflect.Descriptor instead.
 func (*RolloutPlanEvent) Descriptor() ([]byte, []int) {
-	return file_jaco_v1_events_proto_rawDescGZIP(), []int{11}
+	return file_jaco_v1_events_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *RolloutPlanEvent) GetKind() EventKind {
@@ -904,7 +972,7 @@ type ReplicaCounterEvent struct {
 
 func (x *ReplicaCounterEvent) Reset() {
 	*x = ReplicaCounterEvent{}
-	mi := &file_jaco_v1_events_proto_msgTypes[12]
+	mi := &file_jaco_v1_events_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -916,7 +984,7 @@ func (x *ReplicaCounterEvent) String() string {
 func (*ReplicaCounterEvent) ProtoMessage() {}
 
 func (x *ReplicaCounterEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_jaco_v1_events_proto_msgTypes[12]
+	mi := &file_jaco_v1_events_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -929,7 +997,7 @@ func (x *ReplicaCounterEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplicaCounterEvent.ProtoReflect.Descriptor instead.
 func (*ReplicaCounterEvent) Descriptor() ([]byte, []int) {
-	return file_jaco_v1_events_proto_rawDescGZIP(), []int{12}
+	return file_jaco_v1_events_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ReplicaCounterEvent) GetKind() EventKind {
@@ -972,7 +1040,7 @@ type RestartCounterEvent struct {
 
 func (x *RestartCounterEvent) Reset() {
 	*x = RestartCounterEvent{}
-	mi := &file_jaco_v1_events_proto_msgTypes[13]
+	mi := &file_jaco_v1_events_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -984,7 +1052,7 @@ func (x *RestartCounterEvent) String() string {
 func (*RestartCounterEvent) ProtoMessage() {}
 
 func (x *RestartCounterEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_jaco_v1_events_proto_msgTypes[13]
+	mi := &file_jaco_v1_events_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -997,7 +1065,7 @@ func (x *RestartCounterEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestartCounterEvent.ProtoReflect.Descriptor instead.
 func (*RestartCounterEvent) Descriptor() ([]byte, []int) {
-	return file_jaco_v1_events_proto_rawDescGZIP(), []int{13}
+	return file_jaco_v1_events_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *RestartCounterEvent) GetKind() EventKind {
@@ -1062,6 +1130,12 @@ const file_jaco_v1_events_proto_rawDesc = "" +
 	"\x04kind\x18\x01 \x01(\x0e2\x12.jaco.v1.EventKindR\x04kind\x12&\n" +
 	"\x06before\x18\x02 \x01(\v2\x0e.jaco.v1.RouteR\x06before\x12$\n" +
 	"\x05after\x18\x03 \x01(\v2\x0e.jaco.v1.RouteR\x05after\x12\x1d\n" +
+	"\n" +
+	"raft_index\x18\x04 \x01(\x04R\traftIndex\"\xaa\x01\n" +
+	"\rTCPRouteEvent\x12&\n" +
+	"\x04kind\x18\x01 \x01(\x0e2\x12.jaco.v1.EventKindR\x04kind\x12)\n" +
+	"\x06before\x18\x02 \x01(\v2\x11.jaco.v1.TCPRouteR\x06before\x12'\n" +
+	"\x05after\x18\x03 \x01(\v2\x11.jaco.v1.TCPRouteR\x05after\x12\x1d\n" +
 	"\n" +
 	"raft_index\x18\x04 \x01(\x04R\traftIndex\"\x9e\x01\n" +
 	"\tCertEvent\x12&\n" +
@@ -1139,7 +1213,7 @@ func file_jaco_v1_events_proto_rawDescGZIP() []byte {
 }
 
 var file_jaco_v1_events_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_jaco_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_jaco_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_jaco_v1_events_proto_goTypes = []any{
 	(EventKind)(0),               // 0: jaco.v1.EventKind
 	(*NodeEvent)(nil),            // 1: jaco.v1.NodeEvent
@@ -1147,78 +1221,83 @@ var file_jaco_v1_events_proto_goTypes = []any{
 	(*ReplicaDesiredEvent)(nil),  // 3: jaco.v1.ReplicaDesiredEvent
 	(*ReplicaObservedEvent)(nil), // 4: jaco.v1.ReplicaObservedEvent
 	(*RouteEvent)(nil),           // 5: jaco.v1.RouteEvent
-	(*CertEvent)(nil),            // 6: jaco.v1.CertEvent
-	(*ChallengeTokenEvent)(nil),  // 7: jaco.v1.ChallengeTokenEvent
-	(*TokenEvent)(nil),           // 8: jaco.v1.TokenEvent
-	(*JoinTokenEvent)(nil),       // 9: jaco.v1.JoinTokenEvent
-	(*AuditLogEvent)(nil),        // 10: jaco.v1.AuditLogEvent
-	(*SubnetEvent)(nil),          // 11: jaco.v1.SubnetEvent
-	(*RolloutPlanEvent)(nil),     // 12: jaco.v1.RolloutPlanEvent
-	(*ReplicaCounterEvent)(nil),  // 13: jaco.v1.ReplicaCounterEvent
-	(*RestartCounterEvent)(nil),  // 14: jaco.v1.RestartCounterEvent
-	(*Node)(nil),                 // 15: jaco.v1.Node
-	(*Deployment)(nil),           // 16: jaco.v1.Deployment
-	(*ReplicaDesired)(nil),       // 17: jaco.v1.ReplicaDesired
-	(*ReplicaObserved)(nil),      // 18: jaco.v1.ReplicaObserved
-	(*Route)(nil),                // 19: jaco.v1.Route
-	(*Cert)(nil),                 // 20: jaco.v1.Cert
-	(*ChallengeToken)(nil),       // 21: jaco.v1.ChallengeToken
-	(*Token)(nil),                // 22: jaco.v1.Token
-	(*JoinToken)(nil),            // 23: jaco.v1.JoinToken
-	(*AuditEvent)(nil),           // 24: jaco.v1.AuditEvent
-	(*Subnet)(nil),               // 25: jaco.v1.Subnet
-	(*RolloutPlan)(nil),          // 26: jaco.v1.RolloutPlan
-	(*ReplicaCounter)(nil),       // 27: jaco.v1.ReplicaCounter
-	(*RestartCounter)(nil),       // 28: jaco.v1.RestartCounter
+	(*TCPRouteEvent)(nil),        // 6: jaco.v1.TCPRouteEvent
+	(*CertEvent)(nil),            // 7: jaco.v1.CertEvent
+	(*ChallengeTokenEvent)(nil),  // 8: jaco.v1.ChallengeTokenEvent
+	(*TokenEvent)(nil),           // 9: jaco.v1.TokenEvent
+	(*JoinTokenEvent)(nil),       // 10: jaco.v1.JoinTokenEvent
+	(*AuditLogEvent)(nil),        // 11: jaco.v1.AuditLogEvent
+	(*SubnetEvent)(nil),          // 12: jaco.v1.SubnetEvent
+	(*RolloutPlanEvent)(nil),     // 13: jaco.v1.RolloutPlanEvent
+	(*ReplicaCounterEvent)(nil),  // 14: jaco.v1.ReplicaCounterEvent
+	(*RestartCounterEvent)(nil),  // 15: jaco.v1.RestartCounterEvent
+	(*Node)(nil),                 // 16: jaco.v1.Node
+	(*Deployment)(nil),           // 17: jaco.v1.Deployment
+	(*ReplicaDesired)(nil),       // 18: jaco.v1.ReplicaDesired
+	(*ReplicaObserved)(nil),      // 19: jaco.v1.ReplicaObserved
+	(*Route)(nil),                // 20: jaco.v1.Route
+	(*TCPRoute)(nil),             // 21: jaco.v1.TCPRoute
+	(*Cert)(nil),                 // 22: jaco.v1.Cert
+	(*ChallengeToken)(nil),       // 23: jaco.v1.ChallengeToken
+	(*Token)(nil),                // 24: jaco.v1.Token
+	(*JoinToken)(nil),            // 25: jaco.v1.JoinToken
+	(*AuditEvent)(nil),           // 26: jaco.v1.AuditEvent
+	(*Subnet)(nil),               // 27: jaco.v1.Subnet
+	(*RolloutPlan)(nil),          // 28: jaco.v1.RolloutPlan
+	(*ReplicaCounter)(nil),       // 29: jaco.v1.ReplicaCounter
+	(*RestartCounter)(nil),       // 30: jaco.v1.RestartCounter
 }
 var file_jaco_v1_events_proto_depIdxs = []int32{
 	0,  // 0: jaco.v1.NodeEvent.kind:type_name -> jaco.v1.EventKind
-	15, // 1: jaco.v1.NodeEvent.before:type_name -> jaco.v1.Node
-	15, // 2: jaco.v1.NodeEvent.after:type_name -> jaco.v1.Node
+	16, // 1: jaco.v1.NodeEvent.before:type_name -> jaco.v1.Node
+	16, // 2: jaco.v1.NodeEvent.after:type_name -> jaco.v1.Node
 	0,  // 3: jaco.v1.DeploymentEvent.kind:type_name -> jaco.v1.EventKind
-	16, // 4: jaco.v1.DeploymentEvent.before:type_name -> jaco.v1.Deployment
-	16, // 5: jaco.v1.DeploymentEvent.after:type_name -> jaco.v1.Deployment
+	17, // 4: jaco.v1.DeploymentEvent.before:type_name -> jaco.v1.Deployment
+	17, // 5: jaco.v1.DeploymentEvent.after:type_name -> jaco.v1.Deployment
 	0,  // 6: jaco.v1.ReplicaDesiredEvent.kind:type_name -> jaco.v1.EventKind
-	17, // 7: jaco.v1.ReplicaDesiredEvent.before:type_name -> jaco.v1.ReplicaDesired
-	17, // 8: jaco.v1.ReplicaDesiredEvent.after:type_name -> jaco.v1.ReplicaDesired
+	18, // 7: jaco.v1.ReplicaDesiredEvent.before:type_name -> jaco.v1.ReplicaDesired
+	18, // 8: jaco.v1.ReplicaDesiredEvent.after:type_name -> jaco.v1.ReplicaDesired
 	0,  // 9: jaco.v1.ReplicaObservedEvent.kind:type_name -> jaco.v1.EventKind
-	18, // 10: jaco.v1.ReplicaObservedEvent.before:type_name -> jaco.v1.ReplicaObserved
-	18, // 11: jaco.v1.ReplicaObservedEvent.after:type_name -> jaco.v1.ReplicaObserved
+	19, // 10: jaco.v1.ReplicaObservedEvent.before:type_name -> jaco.v1.ReplicaObserved
+	19, // 11: jaco.v1.ReplicaObservedEvent.after:type_name -> jaco.v1.ReplicaObserved
 	0,  // 12: jaco.v1.RouteEvent.kind:type_name -> jaco.v1.EventKind
-	19, // 13: jaco.v1.RouteEvent.before:type_name -> jaco.v1.Route
-	19, // 14: jaco.v1.RouteEvent.after:type_name -> jaco.v1.Route
-	0,  // 15: jaco.v1.CertEvent.kind:type_name -> jaco.v1.EventKind
-	20, // 16: jaco.v1.CertEvent.before:type_name -> jaco.v1.Cert
-	20, // 17: jaco.v1.CertEvent.after:type_name -> jaco.v1.Cert
-	0,  // 18: jaco.v1.ChallengeTokenEvent.kind:type_name -> jaco.v1.EventKind
-	21, // 19: jaco.v1.ChallengeTokenEvent.before:type_name -> jaco.v1.ChallengeToken
-	21, // 20: jaco.v1.ChallengeTokenEvent.after:type_name -> jaco.v1.ChallengeToken
-	0,  // 21: jaco.v1.TokenEvent.kind:type_name -> jaco.v1.EventKind
-	22, // 22: jaco.v1.TokenEvent.before:type_name -> jaco.v1.Token
-	22, // 23: jaco.v1.TokenEvent.after:type_name -> jaco.v1.Token
-	0,  // 24: jaco.v1.JoinTokenEvent.kind:type_name -> jaco.v1.EventKind
-	23, // 25: jaco.v1.JoinTokenEvent.before:type_name -> jaco.v1.JoinToken
-	23, // 26: jaco.v1.JoinTokenEvent.after:type_name -> jaco.v1.JoinToken
-	0,  // 27: jaco.v1.AuditLogEvent.kind:type_name -> jaco.v1.EventKind
-	24, // 28: jaco.v1.AuditLogEvent.before:type_name -> jaco.v1.AuditEvent
-	24, // 29: jaco.v1.AuditLogEvent.after:type_name -> jaco.v1.AuditEvent
-	0,  // 30: jaco.v1.SubnetEvent.kind:type_name -> jaco.v1.EventKind
-	25, // 31: jaco.v1.SubnetEvent.before:type_name -> jaco.v1.Subnet
-	25, // 32: jaco.v1.SubnetEvent.after:type_name -> jaco.v1.Subnet
-	0,  // 33: jaco.v1.RolloutPlanEvent.kind:type_name -> jaco.v1.EventKind
-	26, // 34: jaco.v1.RolloutPlanEvent.before:type_name -> jaco.v1.RolloutPlan
-	26, // 35: jaco.v1.RolloutPlanEvent.after:type_name -> jaco.v1.RolloutPlan
-	0,  // 36: jaco.v1.ReplicaCounterEvent.kind:type_name -> jaco.v1.EventKind
-	27, // 37: jaco.v1.ReplicaCounterEvent.before:type_name -> jaco.v1.ReplicaCounter
-	27, // 38: jaco.v1.ReplicaCounterEvent.after:type_name -> jaco.v1.ReplicaCounter
-	0,  // 39: jaco.v1.RestartCounterEvent.kind:type_name -> jaco.v1.EventKind
-	28, // 40: jaco.v1.RestartCounterEvent.before:type_name -> jaco.v1.RestartCounter
-	28, // 41: jaco.v1.RestartCounterEvent.after:type_name -> jaco.v1.RestartCounter
-	42, // [42:42] is the sub-list for method output_type
-	42, // [42:42] is the sub-list for method input_type
-	42, // [42:42] is the sub-list for extension type_name
-	42, // [42:42] is the sub-list for extension extendee
-	0,  // [0:42] is the sub-list for field type_name
+	20, // 13: jaco.v1.RouteEvent.before:type_name -> jaco.v1.Route
+	20, // 14: jaco.v1.RouteEvent.after:type_name -> jaco.v1.Route
+	0,  // 15: jaco.v1.TCPRouteEvent.kind:type_name -> jaco.v1.EventKind
+	21, // 16: jaco.v1.TCPRouteEvent.before:type_name -> jaco.v1.TCPRoute
+	21, // 17: jaco.v1.TCPRouteEvent.after:type_name -> jaco.v1.TCPRoute
+	0,  // 18: jaco.v1.CertEvent.kind:type_name -> jaco.v1.EventKind
+	22, // 19: jaco.v1.CertEvent.before:type_name -> jaco.v1.Cert
+	22, // 20: jaco.v1.CertEvent.after:type_name -> jaco.v1.Cert
+	0,  // 21: jaco.v1.ChallengeTokenEvent.kind:type_name -> jaco.v1.EventKind
+	23, // 22: jaco.v1.ChallengeTokenEvent.before:type_name -> jaco.v1.ChallengeToken
+	23, // 23: jaco.v1.ChallengeTokenEvent.after:type_name -> jaco.v1.ChallengeToken
+	0,  // 24: jaco.v1.TokenEvent.kind:type_name -> jaco.v1.EventKind
+	24, // 25: jaco.v1.TokenEvent.before:type_name -> jaco.v1.Token
+	24, // 26: jaco.v1.TokenEvent.after:type_name -> jaco.v1.Token
+	0,  // 27: jaco.v1.JoinTokenEvent.kind:type_name -> jaco.v1.EventKind
+	25, // 28: jaco.v1.JoinTokenEvent.before:type_name -> jaco.v1.JoinToken
+	25, // 29: jaco.v1.JoinTokenEvent.after:type_name -> jaco.v1.JoinToken
+	0,  // 30: jaco.v1.AuditLogEvent.kind:type_name -> jaco.v1.EventKind
+	26, // 31: jaco.v1.AuditLogEvent.before:type_name -> jaco.v1.AuditEvent
+	26, // 32: jaco.v1.AuditLogEvent.after:type_name -> jaco.v1.AuditEvent
+	0,  // 33: jaco.v1.SubnetEvent.kind:type_name -> jaco.v1.EventKind
+	27, // 34: jaco.v1.SubnetEvent.before:type_name -> jaco.v1.Subnet
+	27, // 35: jaco.v1.SubnetEvent.after:type_name -> jaco.v1.Subnet
+	0,  // 36: jaco.v1.RolloutPlanEvent.kind:type_name -> jaco.v1.EventKind
+	28, // 37: jaco.v1.RolloutPlanEvent.before:type_name -> jaco.v1.RolloutPlan
+	28, // 38: jaco.v1.RolloutPlanEvent.after:type_name -> jaco.v1.RolloutPlan
+	0,  // 39: jaco.v1.ReplicaCounterEvent.kind:type_name -> jaco.v1.EventKind
+	29, // 40: jaco.v1.ReplicaCounterEvent.before:type_name -> jaco.v1.ReplicaCounter
+	29, // 41: jaco.v1.ReplicaCounterEvent.after:type_name -> jaco.v1.ReplicaCounter
+	0,  // 42: jaco.v1.RestartCounterEvent.kind:type_name -> jaco.v1.EventKind
+	30, // 43: jaco.v1.RestartCounterEvent.before:type_name -> jaco.v1.RestartCounter
+	30, // 44: jaco.v1.RestartCounterEvent.after:type_name -> jaco.v1.RestartCounter
+	45, // [45:45] is the sub-list for method output_type
+	45, // [45:45] is the sub-list for method input_type
+	45, // [45:45] is the sub-list for extension type_name
+	45, // [45:45] is the sub-list for extension extendee
+	0,  // [0:45] is the sub-list for field type_name
 }
 
 func init() { file_jaco_v1_events_proto_init() }
@@ -1233,7 +1312,7 @@ func file_jaco_v1_events_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_jaco_v1_events_proto_rawDesc), len(file_jaco_v1_events_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   14,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

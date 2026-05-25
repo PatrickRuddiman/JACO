@@ -114,6 +114,7 @@ message DeploymentApply {
   bytes compose_yaml = 4;
   repeated ServiceSpec services = 5;
   repeated Route routes = 6;
+  repeated TCPRoute tcp_routes = 7;
 }
 
 message DeploymentRollback {

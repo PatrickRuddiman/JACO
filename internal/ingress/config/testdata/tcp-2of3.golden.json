@@ -1,0 +1,89 @@
+{
+  "apps": {
+    "http": {
+      "servers": {
+        "jaco_http": {
+          "automatic_https": {
+            "disable": true
+          },
+          "listen": [
+            ":80"
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Server": [
+                      "jaco"
+                    ]
+                  },
+                  "status_code": 404
+                }
+              ]
+            }
+          ]
+        },
+        "jaco_https": {
+          "automatic_https": {
+            "disable": true
+          },
+          "listen": [
+            ":443"
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Server": [
+                      "jaco"
+                    ]
+                  },
+                  "status_code": 404
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "layer4": {
+      "servers": {
+        "tcp_5432": {
+          "listen": [
+            ":5432"
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "proxy",
+                  "load_balancing": {
+                    "selection": {
+                      "policy": "round_robin"
+                    }
+                  },
+                  "upstreams": [
+                    {
+                      "dial": [
+                        "10.244.7.2:5432"
+                      ]
+                    },
+                    {
+                      "dial": [
+                        "10.244.7.3:5432"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}

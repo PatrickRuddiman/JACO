@@ -270,6 +270,88 @@ func TestDeploy_ApplyRejectsUnknownComposeField(t *testing.T) {
 	}
 }
 
+// TCP-ingress fixtures: deployment "data" (service db) and "cache" (service
+// redis) both want host port 5432 — used by the collision tests.
+const dbJacoYAML = `deployment: data
+services:
+  - name: db
+    replicas: 1
+`
+
+const dbComposeYAML = `services:
+  db:
+    image: postgres:16
+    ports:
+      - "5432:5432"
+`
+
+const cacheJacoYAML = `deployment: cache
+services:
+  - name: redis
+    replicas: 1
+`
+
+const cacheComposeYAML = `services:
+  redis:
+    image: redis:7
+    ports:
+      - "5432:5432"
+`
+
+func TestDeploy_ApplyDerivesTCPRoutes(t *testing.T) {
+	c := setupTwoNodeCluster(t)
+	deploy := newDeployClient(t, c)
+	ctx := authContext(c.OperatorToken)
+
+	if _, err := deploy.Apply(ctx, &pb.ApplyRequest{JacoYaml: []byte(dbJacoYAML), ComposeYaml: []byte(dbComposeYAML)}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	r, ok := c.A.State.TCPRoutes.Get(state.TCPRouteKey(5432))
+	if !ok {
+		t.Fatalf("TCPRoute 5432 missing after apply")
+	}
+	if r.GetDeployment() != "data" || r.GetService() != "db" || r.GetContainerPort() != 5432 {
+		t.Errorf("unexpected TCPRoute: %+v", r)
+	}
+}
+
+func TestDeploy_ApplyRejectsTCPPortConflict(t *testing.T) {
+	c := setupTwoNodeCluster(t)
+	deploy := newDeployClient(t, c)
+	ctx := authContext(c.OperatorToken)
+
+	if _, err := deploy.Apply(ctx, &pb.ApplyRequest{JacoYaml: []byte(dbJacoYAML), ComposeYaml: []byte(dbComposeYAML)}); err != nil {
+		t.Fatalf("first Apply: %v", err)
+	}
+	// A different deployment publishing the same host port must be rejected.
+	_, err := deploy.Apply(ctx, &pb.ApplyRequest{JacoYaml: []byte(cacheJacoYAML), ComposeYaml: []byte(cacheComposeYAML)})
+	if err == nil {
+		t.Fatalf("expected port_conflict, got nil")
+	}
+	sErr, _ := status.FromError(err)
+	if sErr.Code() != codes.InvalidArgument || !strings.Contains(sErr.Message(), "port_conflict") {
+		t.Errorf("err = %v (code %v); want InvalidArgument/port_conflict", sErr.Message(), sErr.Code())
+	}
+	// The conflicting deployment must not have been created.
+	if _, ok := c.A.State.Deployments.Get("cache"); ok {
+		t.Errorf("conflicting deployment cache was created despite port_conflict")
+	}
+}
+
+func TestDeploy_ReapplySamePortNoConflict(t *testing.T) {
+	c := setupTwoNodeCluster(t)
+	deploy := newDeployClient(t, c)
+	ctx := authContext(c.OperatorToken)
+
+	if _, err := deploy.Apply(ctx, &pb.ApplyRequest{JacoYaml: []byte(dbJacoYAML), ComposeYaml: []byte(dbComposeYAML)}); err != nil {
+		t.Fatalf("first Apply: %v", err)
+	}
+	// Re-applying the same deployment reclaiming its own port is not a conflict.
+	if _, err := deploy.Apply(ctx, &pb.ApplyRequest{JacoYaml: []byte(dbJacoYAML), ComposeYaml: []byte(dbComposeYAML)}); err != nil {
+		t.Fatalf("re-apply same deployment: unexpected error: %v", err)
+	}
+}
+
 // --- helpers -----------------------------------------------------------------
 
 func newDeployClient(t *testing.T, c *twoNodeCluster) pb.DeployClient {

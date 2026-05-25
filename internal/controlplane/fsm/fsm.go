@@ -174,8 +174,39 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 			Services:         da.GetServices(),
 			UpdatedAt:        cmd.GetTs(),
 		}, idx)
+		// Replace-set the deployment's routes: prune any the new revision no
+		// longer declares, then apply the desired set. Upsert-only would leave a
+		// route (and its listener) serving after it was dropped from the manifest.
+		desiredRoutes := make(map[string]bool, len(da.GetRoutes()))
+		for _, r := range da.GetRoutes() {
+			desiredRoutes[state.RouteKey(r.GetDomain(), r.GetPath())] = true
+		}
+		for _, r := range f.State.Routes.List() {
+			if r.GetDeployment() != da.GetDeployment() {
+				continue
+			}
+			if k := state.RouteKey(r.GetDomain(), r.GetPath()); !desiredRoutes[k] {
+				f.State.Routes.Remove(k, idx)
+			}
+		}
 		for _, r := range da.GetRoutes() {
 			f.State.Routes.Apply(r, idx)
+		}
+		// Same replace-set for TCP routes (derived from compose ports).
+		desiredTCP := make(map[string]bool, len(da.GetTcpRoutes()))
+		for _, r := range da.GetTcpRoutes() {
+			desiredTCP[state.TCPRouteKey(r.GetPublishedPort())] = true
+		}
+		for _, r := range f.State.TCPRoutes.List() {
+			if r.GetDeployment() != da.GetDeployment() {
+				continue
+			}
+			if k := state.TCPRouteKey(r.GetPublishedPort()); !desiredTCP[k] {
+				f.State.TCPRoutes.Remove(k, idx)
+			}
+		}
+		for _, r := range da.GetTcpRoutes() {
+			f.State.TCPRoutes.Apply(r, idx)
 		}
 		return pb.AuditEventType_AUDIT_EVENT_TYPE_APPLY, map[string]string{
 			"deployment": da.GetDeployment(),
@@ -206,6 +237,11 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 		for _, r := range f.State.Routes.List() {
 			if r.GetDeployment() == name {
 				f.State.Routes.Remove(state.RouteKey(r.GetDomain(), r.GetPath()), idx)
+			}
+		}
+		for _, r := range f.State.TCPRoutes.List() {
+			if r.GetDeployment() == name {
+				f.State.TCPRoutes.Remove(state.TCPRouteKey(r.GetPublishedPort()), idx)
 			}
 		}
 		for _, rd := range f.State.ReplicasDesired.List() {
