@@ -137,7 +137,7 @@ func (s *JacoStorage) Unlock(_ context.Context, name string) error {
 	cmd := &pb.Command{
 		Identity: "ingress",
 		Ts:       timestamppb.New(s.now()),
-		Payload: &pb.Command_CertUnlock{CertUnlock: &pb.CertUnlock{Name: name}},
+		Payload:  &pb.Command_CertUnlock{CertUnlock: &pb.CertUnlock{Name: name}},
 	}
 	data, err := proto.Marshal(cmd)
 	if err != nil {
@@ -209,13 +209,23 @@ func (s *JacoStorage) Store(_ context.Context, key string, value []byte) error {
 	}
 	cp := make([]byte, len(value))
 	copy(cp, value)
+	if err := s.applyBlobUpsert(key, cp); err != nil {
+		return err
+	}
+	// Write-through to the disk fallback (best-effort; raft is authoritative).
+	s.cacheWrite(key, cp)
+	return nil
+}
+
+// applyBlobUpsert raft-Applies a CertBlobUpsert for key=value.
+func (s *JacoStorage) applyBlobUpsert(key string, value []byte) error {
 	cmd := &pb.Command{
 		Identity: "ingress",
 		Ts:       timestamppb.New(s.now()),
 		Payload: &pb.Command_CertBlobUpsert{CertBlobUpsert: &pb.CertBlobUpsert{
 			Blob: &pb.CertBlob{
 				Key:       key,
-				Value:     cp,
+				Value:     value,
 				UpdatedAt: timestamppb.New(s.now()),
 			},
 		}},
@@ -224,12 +234,7 @@ func (s *JacoStorage) Store(_ context.Context, key string, value []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := s.apply(data); err != nil {
-		return err
-	}
-	// Write-through to the disk fallback (best-effort; raft is authoritative).
-	s.cacheWrite(key, cp)
-	return nil
+	return s.apply(data)
 }
 
 // Load reads the value for key from state.CertBlobs. Falls back to the disk
@@ -244,6 +249,15 @@ func (s *JacoStorage) Load(_ context.Context, key string) ([]byte, error) {
 		return cp, nil
 	}
 	if v, ok := s.cacheRead(key); ok {
+		// Read-repair (issue #65): raft has no copy but the local disk fallback
+		// does — e.g. raft state was wiped/reinstalled while the cert cache
+		// survived. Re-seed raft so PEERS can serve it too: a follower can only
+		// read replicated CertBlobs (it can't write raft), never this node's
+		// local disk cache, so without this the leader would serve from disk
+		// while every follower fails TLS. Best-effort: on a follower the Apply
+		// is a no-op (not leader); the leader's Load repairs it, and once raft
+		// has the blob this branch isn't taken again.
+		_ = s.applyBlobUpsert(key, v)
 		return v, nil
 	}
 	return nil, fmt.Errorf("Load %s: %w", key, ErrNotExist)
