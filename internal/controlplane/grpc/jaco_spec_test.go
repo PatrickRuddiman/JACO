@@ -420,6 +420,43 @@ func TestValidateJacoYAML_RouteConflict(t *testing.T) {
 	})
 }
 
+// TestValidateJacoYAML_MixedTLSRejected — a domain mixing tls:auto and tls:off
+// routes is rejected with code route_tls_mixed (issue #46): Caddy can't
+// half-redirect a domain. Same-mode routes on a domain stay valid.
+func TestValidateJacoYAML_MixedTLSRejected(t *testing.T) {
+	mixed := &JacoYAML{
+		Deployment: "d",
+		Services: []JacoServiceDecl{
+			{Name: "web", Placement: "spread"},
+			{Name: "api", Placement: "spread"},
+		},
+		Routes: []JacoRouteDecl{
+			{Domain: "jaco.sh", Path: "/", Service: "web", Port: 80, TLS: "auto"},
+			{Domain: "jaco.sh", Path: "/api/", Service: "api", Port: 80, TLS: "off"},
+		},
+	}
+	code, msg, ok := validateJacoYAML(mixed)
+	if ok {
+		t.Fatal("validation passed; expected route_tls_mixed rejection")
+	}
+	if code != "route_tls_mixed" {
+		t.Errorf("code = %q, want route_tls_mixed (msg=%q)", code, msg)
+	}
+
+	// Both routes tls:auto on one domain is fine (the common case).
+	same := &JacoYAML{
+		Deployment: "d",
+		Services:   []JacoServiceDecl{{Name: "web", Placement: "spread"}, {Name: "api", Placement: "spread"}},
+		Routes: []JacoRouteDecl{
+			{Domain: "jaco.sh", Path: "/", Service: "web", Port: 80, TLS: "auto"},
+			{Domain: "jaco.sh", Path: "/api/", Service: "api", Port: 80, TLS: "auto"},
+		},
+	}
+	if _, msg, ok := validateJacoYAML(same); !ok {
+		t.Errorf("same-mode routes rejected: %q", msg)
+	}
+}
+
 // TestParseJacoYAML_DeploymentACMEOff — a top-level `acme: off` (issue #41)
 // implicitly disables TLS on every route that didn't set tls explicitly, but
 // a route may still opt back in with tls: auto.
