@@ -36,6 +36,16 @@ type Route struct {
 	Path string
 }
 
+// TCPRoute is a published-port L4 listener the caller pulls from
+// state.TCPRoutes. Upstreams resolve to replica overlay IPs the same way the
+// HTTP path does, dialing ContainerPort.
+type TCPRoute struct {
+	PublishedPort int
+	Deployment    string
+	Service       string
+	ContainerPort int
+}
+
 // ReplicaObservedView is the subset of pb.ReplicaObserved BuildCaddyConfig
 // needs. ID matches the corresponding ReplicaDesired.Id.
 type ReplicaObservedView struct {
@@ -82,7 +92,7 @@ type BuildOpts struct {
 // longest-prefix-first (so Caddy's first-match rule picks the most specific
 // path), followed by the catch-all route (empty path) as the unconditional
 // final handler.
-func BuildCaddyConfig(routes []Route, replicas []ReplicaObservedView, services map[string]ServiceMeta, opts BuildOpts) ([]byte, error) {
+func BuildCaddyConfig(routes []Route, tcpRoutes []TCPRoute, replicas []ReplicaObservedView, services map[string]ServiceMeta, opts BuildOpts) ([]byte, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -195,8 +205,64 @@ func BuildCaddyConfig(routes []Route, replicas []ReplicaObservedView, services m
 			},
 		}
 	}
+	if servers := buildLayer4Servers(tcpRoutes, healthyByService, services); len(servers) > 0 {
+		root["apps"].(map[string]any)["layer4"] = map[string]any{"servers": servers}
+	}
 
 	return json.MarshalIndent(root, "", "  ")
+}
+
+// buildLayer4Servers emits the caddy-l4 `layer4.servers` map — one TCP proxy
+// server per published port. A route with no eligible upstream is omitted
+// (caddy-l4's proxy rejects "no upstreams defined", which would fail the whole
+// caddy.Load); the listener reappears once a replica becomes eligible. Returns
+// an empty map when no server has upstreams, so the caller omits apps.layer4.
+func buildLayer4Servers(tcpRoutes []TCPRoute, healthyByService map[string][]ReplicaObservedView, services map[string]ServiceMeta) map[string]any {
+	if len(tcpRoutes) == 0 {
+		return nil
+	}
+	sorted := append([]TCPRoute(nil), tcpRoutes...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].PublishedPort < sorted[j].PublishedPort })
+
+	servers := map[string]any{}
+	for _, tr := range sorted {
+		upstreams := buildTCPUpstreams(tr, healthyByService, services)
+		if len(upstreams) == 0 {
+			continue
+		}
+		servers[fmt.Sprintf("tcp_%d", tr.PublishedPort)] = map[string]any{
+			"listen": []any{fmt.Sprintf(":%d", tr.PublishedPort)},
+			"routes": []any{map[string]any{
+				"handle": []any{map[string]any{
+					"handler":        "proxy",
+					"upstreams":      upstreams,
+					"load_balancing": map[string]any{"selection": map[string]any{"policy": "round_robin"}},
+				}},
+			}},
+		}
+	}
+	return servers
+}
+
+// buildTCPUpstreams returns the caddy-l4 upstream list for a TCP route: one
+// {dial: ["<overlayIP>:<containerPort>"]} per eligible replica. Mirrors the
+// HTTP buildUpstreams but dials the container port and uses the l4 dial shape.
+func buildTCPUpstreams(tr TCPRoute, healthyByService map[string][]ReplicaObservedView, services map[string]ServiceMeta) []any {
+	meta, ok := services[MetaKey(tr.Deployment, tr.Service)]
+	if !ok {
+		return nil
+	}
+	var upstreams []any
+	for _, r := range healthyByService[MetaKey(tr.Deployment, tr.Service)] {
+		ip, hasIP := meta.ReplicaIPs[r.ID]
+		if !hasIP {
+			continue
+		}
+		upstreams = append(upstreams, map[string]any{
+			"dial": []any{fmt.Sprintf("%s:%d", ip, tr.ContainerPort)},
+		})
+	}
+	return upstreams
 }
 
 // buildUpstreams returns the upstream list for a route.

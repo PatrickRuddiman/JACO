@@ -57,7 +57,7 @@ func TestBuildCaddyConfig_HealthyTwoOfThree(t *testing.T) {
 			},
 		},
 	}
-	got, err := config.BuildCaddyConfig(routes, replicas, services, opts())
+	got, err := config.BuildCaddyConfig(routes, nil, replicas, services, opts())
 	if err != nil {
 		t.Fatalf("BuildCaddyConfig: %v", err)
 	}
@@ -83,6 +83,77 @@ func TestBuildCaddyConfig_HealthyTwoOfThree(t *testing.T) {
 	}
 }
 
+func TestBuildCaddyConfig_TCPRouteTwoOfThree(t *testing.T) {
+	// Three db replicas: two RUNNING+fresh, one DEGRADED → 2 eligible upstreams.
+	tcpRoutes := []config.TCPRoute{
+		{PublishedPort: 5432, Deployment: "data", Service: "db", ContainerPort: 5432},
+	}
+	replicas := []config.ReplicaObservedView{
+		{ID: "data-db-0", Deployment: "data", Service: "db", State: "running", LastHealthAt: pinnedNow().Add(-1 * time.Second)},
+		{ID: "data-db-1", Deployment: "data", Service: "db", State: "running", LastHealthAt: pinnedNow().Add(-2 * time.Second)},
+		{ID: "data-db-2", Deployment: "data", Service: "db", State: "degraded", LastHealthAt: pinnedNow()},
+	}
+	services := map[string]config.ServiceMeta{
+		config.MetaKey("data", "db"): {
+			Deployment: "data", Service: "db",
+			ReplicaIPs: map[string]string{
+				"data-db-0": "10.244.7.2",
+				"data-db-1": "10.244.7.3",
+				"data-db-2": "10.244.7.4",
+			},
+		},
+	}
+	got, err := config.BuildCaddyConfig(nil, tcpRoutes, replicas, services, opts())
+	if err != nil {
+		t.Fatalf("BuildCaddyConfig: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("parse output: %v", err)
+	}
+	l4 := parsed["apps"].(map[string]any)["layer4"].(map[string]any)["servers"].(map[string]any)
+	srv, ok := l4["tcp_5432"].(map[string]any)
+	if !ok {
+		t.Fatalf("layer4 server tcp_5432 missing: %v", l4)
+	}
+	handle := srv["routes"].([]any)[0].(map[string]any)["handle"].([]any)[0].(map[string]any)
+	if ups := handle["upstreams"].([]any); len(ups) != 2 {
+		t.Errorf("tcp upstreams = %d, want 2 (degraded excluded)", len(ups))
+	}
+
+	want := loadGolden(t, "tcp-2of3.golden.json", got)
+	if !bytes.Equal(got, want) {
+		t.Errorf("output diverges from golden\n--- got:\n%s\n--- want:\n%s", got, want)
+	}
+}
+
+func TestBuildCaddyConfig_TCPRouteNoEligibleUpstreamsOmitted(t *testing.T) {
+	// A TCP route whose only replica is degraded has no eligible upstream, so
+	// the layer4 server (and apps.layer4) must be omitted — caddy-l4 rejects a
+	// zero-upstream proxy, which would fail the whole caddy.Load.
+	tcpRoutes := []config.TCPRoute{
+		{PublishedPort: 5432, Deployment: "data", Service: "db", ContainerPort: 5432},
+	}
+	replicas := []config.ReplicaObservedView{
+		{ID: "data-db-0", Deployment: "data", Service: "db", State: "degraded", LastHealthAt: pinnedNow()},
+	}
+	services := map[string]config.ServiceMeta{
+		config.MetaKey("data", "db"): {Deployment: "data", Service: "db", ReplicaIPs: map[string]string{"data-db-0": "10.244.7.2"}},
+	}
+	got, err := config.BuildCaddyConfig(nil, tcpRoutes, replicas, services, opts())
+	if err != nil {
+		t.Fatalf("BuildCaddyConfig: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("parse output: %v", err)
+	}
+	if _, ok := parsed["apps"].(map[string]any)["layer4"]; ok {
+		t.Errorf("apps.layer4 present despite zero eligible upstreams:\n%s", got)
+	}
+}
+
 func TestBuildCaddyConfig_TLSOffOmitsACME(t *testing.T) {
 	routes := []config.Route{
 		{Domain: "internal.example.com", Deployment: "sample", Service: "web", Port: 80, TLSAuto: false},
@@ -93,7 +164,7 @@ func TestBuildCaddyConfig_TLSOffOmitsACME(t *testing.T) {
 	services := map[string]config.ServiceMeta{
 		config.MetaKey("sample", "web"): {Deployment: "sample", Service: "web", ReplicaIPs: map[string]string{"sample-web-0": "10.244.5.2"}},
 	}
-	got, err := config.BuildCaddyConfig(routes, replicas, services, opts())
+	got, err := config.BuildCaddyConfig(routes, nil, replicas, services, opts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +185,7 @@ func TestBuildCaddyConfig_TLSOffOmitsACME(t *testing.T) {
 }
 
 func TestBuildCaddyConfig_ZeroRoutesProducesFallbackOnly(t *testing.T) {
-	got, err := config.BuildCaddyConfig(nil, nil, nil, opts())
+	got, err := config.BuildCaddyConfig(nil, nil, nil, nil, opts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +225,7 @@ func TestBuildCaddyConfig_StaleHealthExcludesUpstream(t *testing.T) {
 			"sample-web-0": "10.244.5.2", "sample-web-1": "10.244.5.3",
 		}},
 	}
-	got, err := config.BuildCaddyConfig(routes, replicas, services, opts())
+	got, err := config.BuildCaddyConfig(routes, nil, replicas, services, opts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +247,7 @@ func TestBuildCaddyConfig_MissingServiceMetaProducesEmptyUpstreams(t *testing.T)
 	routes := []config.Route{
 		{Domain: "web.example.com", Deployment: "sample", Service: "ghost", Port: 80, TLSAuto: true},
 	}
-	got, err := config.BuildCaddyConfig(routes, nil, nil, opts())
+	got, err := config.BuildCaddyConfig(routes, nil, nil, nil, opts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +268,7 @@ func TestBuildCaddyConfig_RoutesSortedByDomain(t *testing.T) {
 		{Domain: "a.example.com", Deployment: "a", Service: "a", Port: 80, TLSAuto: true},
 		{Domain: "m.example.com", Deployment: "m", Service: "m", Port: 80, TLSAuto: true},
 	}
-	got, err := config.BuildCaddyConfig(routes, nil, nil, opts())
+	got, err := config.BuildCaddyConfig(routes, nil, nil, nil, opts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +303,7 @@ func TestBuildCaddyConfig_PathMatcherWithCatchAll(t *testing.T) {
 		config.MetaKey("app", "api"): {Deployment: "app", Service: "api", ReplicaIPs: map[string]string{"app-api-0": "10.0.0.1"}},
 		config.MetaKey("app", "web"): {Deployment: "app", Service: "web", ReplicaIPs: map[string]string{"app-web-0": "10.0.0.2"}},
 	}
-	got, err := config.BuildCaddyConfig(routes, replicas, services, opts())
+	got, err := config.BuildCaddyConfig(routes, nil, replicas, services, opts())
 	if err != nil {
 		t.Fatalf("BuildCaddyConfig: %v", err)
 	}
@@ -299,7 +370,7 @@ func TestBuildCaddyConfig_LongestPrefixFirst(t *testing.T) {
 		{Domain: "jaco.sh", Deployment: "app", Service: "apiv1", Port: 8080, TLSAuto: true, Path: "/api/"},
 		{Domain: "jaco.sh", Deployment: "app", Service: "apiv2", Port: 9090, TLSAuto: true, Path: "/api/v2/"},
 	}
-	got, err := config.BuildCaddyConfig(routes, nil, nil, opts())
+	got, err := config.BuildCaddyConfig(routes, nil, nil, nil, opts())
 	if err != nil {
 		t.Fatalf("BuildCaddyConfig: %v", err)
 	}
@@ -332,7 +403,7 @@ func TestBuildCaddyConfig_ACMEPolicyShape(t *testing.T) {
 	routes := []config.Route{
 		{Domain: "web.example.com", Deployment: "sample", Service: "web", Port: 80, TLSAuto: true},
 	}
-	got, _ := config.BuildCaddyConfig(routes, nil, nil, opts())
+	got, _ := config.BuildCaddyConfig(routes, nil, nil, nil, opts())
 	var parsed map[string]any
 	_ = json.Unmarshal(got, &parsed)
 	tls := parsed["apps"].(map[string]any)["tls"].(map[string]any)
@@ -368,7 +439,7 @@ func TestBuildCaddyConfig_TLSSubjectsDeduped(t *testing.T) {
 		{Domain: "jaco.sh", Deployment: "app", Service: "api", Port: 8080, TLSAuto: true, Path: "/api/"},
 		{Domain: "jaco.sh", Deployment: "app", Service: "web", Port: 80, TLSAuto: true, Path: ""},
 	}
-	got, err := config.BuildCaddyConfig(routes, nil, nil, opts())
+	got, err := config.BuildCaddyConfig(routes, nil, nil, nil, opts())
 	if err != nil {
 		t.Fatalf("BuildCaddyConfig: %v", err)
 	}
@@ -398,7 +469,7 @@ func TestBuildCaddyConfig_PathMatchesExactPrefix(t *testing.T) {
 	routes := []config.Route{
 		{Domain: "jaco.sh", Deployment: "app", Service: "api", Port: 8080, TLSAuto: true, Path: "/api"},
 	}
-	got, err := config.BuildCaddyConfig(routes, nil, nil, opts())
+	got, err := config.BuildCaddyConfig(routes, nil, nil, nil, opts())
 	if err != nil {
 		t.Fatalf("BuildCaddyConfig: %v", err)
 	}

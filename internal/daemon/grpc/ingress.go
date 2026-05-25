@@ -16,6 +16,11 @@ import (
 	// caddy.Load rejects every real config with "unknown module: http/tls".
 	// Without this the embedded ingress never binds :80/:443 (issue #28).
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
+	// caddy-l4 registers the `layer4` app + `layer4.handlers.proxy` (and its
+	// round-robin selection policy) so caddy.Load resolves the apps.layer4
+	// block BuildCaddyConfig emits for TCP ingress (issue #37).
+	_ "github.com/mholt/caddy-l4/layer4"
+	_ "github.com/mholt/caddy-l4/modules/l4proxy"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/bridge"
@@ -88,7 +93,7 @@ func ingressBuilder(st *state.State, acmeEmail string) func() ([]byte, error) {
 			}
 		}
 
-		cfg, err := config.BuildCaddyConfig(routes, replicas, services, config.BuildOpts{
+		cfg, err := config.BuildCaddyConfig(routes, nil, replicas, services, config.BuildOpts{
 			ACMEEmail: acmeEmail,
 		})
 		log.Printf("ingress: built caddy config (%d routes, %d observed replicas, %d bytes, err=%v)", len(routes), len(replicas), len(cfg), err)
