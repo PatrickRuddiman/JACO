@@ -1,0 +1,23 @@
+# cert-manager ClusterIssuer for Let's Encrypt STAGING. cert-manager watches the
+# web Ingress (60-ingress.yaml), and because that Ingress is annotated with this
+# issuer + a tls block, it requests a cert for jaco.sh and solves the HTTP-01
+# challenge through ingress-nginx. Staging is used because this is a throwaway
+# bench and prod LE has tight duplicate limits; staging certs aren't
+# browser-trusted, so the bench's k6 runs with insecureSkipTLSVerify.
+#
+# Applied after cert-manager is installed (its CRDs must exist first) — see
+# bootstrap.sh.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: ops@jaco.sh
+    privateKeySecretRef:
+      name: letsencrypt-staging-account
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: nginx

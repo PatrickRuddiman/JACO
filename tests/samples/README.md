@@ -8,7 +8,7 @@ orchestrator, on the same hardware, and grade them with the same rubric.
 samples/
 ├── workload/     # the one app deployed everywhere (web + api + redis primary/replicas)
 ├── jaco/         # JACO deployment + 3-node bootstrap          ← implemented
-├── k8s/          # Kubernetes (kubeadm) bootstrap + manifests   ← follow-up (stub)
+├── k8s/          # Kubernetes (kubeadm) bootstrap + manifests   ← implemented
 ├── k3s/          # k3s bootstrap + manifests                    ← implemented
 ├── swarm/        # Docker Swarm bootstrap + stack               ← implemented
 └── bench/        # grading harness: load gen, metrics, rubric, scorecard
@@ -53,8 +53,10 @@ export BENCH_PUBLIC_IPS="<n1> <n2> <n3>" BENCH_PRIVATE_IPS="<p1> <p2> <p3>"
 | JACO  | ✅        | ✅        | ✅            |
 | swarm | ✅        | ✅        | ✅            |
 | k3s   | ✅        | ✅        | ✅            |
-| k8s   | stub      | stub      | stub          |
+| k8s   | ✅        | ✅        | ✅            |
 
-The workload, testbed, and grading harness are complete and validated against
-JACO, Swarm, and k3s. Only kubeadm (`k8s/`) remains — it reuses all of that
-unchanged; just its bootstrap + manifests + a thin bench adapter (see its README).
+All four stacks are implemented and bed-validated against the shared workload,
+testbed, and grading harness. The remaining #51 work is a single clean **4-way
+scorecard run** — all stacks deployed fresh, back-to-back, on one bed — for the
+authoritative comparison (the per-stack `result.json`s to date come from separate
+bed runs, so cross-stack TTL/composite aren't yet apples-to-apples).

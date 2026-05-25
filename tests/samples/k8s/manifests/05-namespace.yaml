@@ -1,0 +1,7 @@
+# Workload namespace. Everything below lives here; short-name service DNS (e.g.
+# web's `proxy_pass http://api:8080/`) resolves within the namespace via CoreDNS,
+# so the workload images are byte-identical to the JACO/Swarm runs.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bench
