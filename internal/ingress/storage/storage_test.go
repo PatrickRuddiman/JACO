@@ -363,6 +363,66 @@ func TestDiskCache_SurvivesRaftWipe(t *testing.T) {
 	}
 }
 
+// TestDiskCache_LoadReseedsRaft — issue #65: when Load serves a cert from the
+// disk fallback (raft wiped but the cache survived), it must re-seed raft so
+// peers — which can only read replicated CertBlobs, never this node's local
+// disk — can load it too. Otherwise the leader serves from disk while every
+// follower fails TLS.
+func TestDiskCache_LoadReseedsRaft(t *testing.T) {
+	dir := t.TempDir()
+	s1, _, _ := newHarnessWithCache(t, "node-a", dir)
+	ctx := context.Background()
+	key := "certificates/x/peer.example.com/peer.example.com.crt"
+	val := []byte("cert-bytes")
+	if err := s1.Store(ctx, key, val); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fresh raft state (wipe) + same disk dir.
+	s2, st2, _ := newHarnessWithCache(t, "node-a", dir)
+	if _, ok := st2.CertBlobs.Get(key); ok {
+		t.Fatal("precondition: fresh state should have no raft blob")
+	}
+	if _, err := s2.Load(ctx, key); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	b, ok := st2.CertBlobs.Get(key)
+	if !ok {
+		t.Fatal("disk-fallback Load did not re-seed raft CertBlobs (issue #65)")
+	}
+	if string(b.GetValue()) != string(val) {
+		t.Errorf("re-seeded blob = %q, want %q", b.GetValue(), val)
+	}
+}
+
+// TestDiskCache_LoadReseedBestEffort — on a follower the re-seed Apply fails
+// (not leader); Load must still serve the cached value without surfacing the
+// error.
+func TestDiskCache_LoadReseedBestEffort(t *testing.T) {
+	dir := t.TempDir()
+	seed, _, _ := newHarnessWithCache(t, "node-a", dir)
+	ctx := context.Background()
+	key := "certificates/x/follower.example.com/follower.example.com.crt"
+	val := []byte("cert-bytes")
+	if err := seed.Store(ctx, key, val); err != nil {
+		t.Fatal(err)
+	}
+
+	// Follower: fresh raft state, same disk dir, an Apply that always fails.
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	follower := storage.NewWithCache(st, func([]byte) error {
+		return errors.New("node is not the leader")
+	}, "node-b", time.Now, dir)
+	got, err := follower.Load(ctx, key)
+	if err != nil {
+		t.Fatalf("Load on follower (apply fails) should still serve disk value: %v", err)
+	}
+	if string(got) != string(val) {
+		t.Errorf("Load = %q, want %q", got, val)
+	}
+}
+
 // TestDiskCache_RaftWins — when raft has the blob, Load returns the raft copy
 // (raft is authoritative); the disk cache never overrides it.
 func TestDiskCache_RaftWins(t *testing.T) {
