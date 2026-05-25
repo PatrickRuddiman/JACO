@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
@@ -66,6 +67,14 @@ var ErrSubnetPoolExhausted = errors.New("subnet pool exhausted")
 // follower; either way it maps pool exhaustion to ErrSubnetPoolExhausted.
 type EnsureSubnetFn func(ctx context.Context, deployment, network, host string) (cidr string, err error)
 
+// startHandle tracks one in-flight async replica start so the reconcile loop
+// can dedup re-dispatches and cancel a start (on remove / host-migration /
+// shutdown).
+type startHandle struct {
+	raftIndex uint64
+	cancel    context.CancelFunc
+}
+
 // Reconciler is the per-host runtime driver.
 type Reconciler struct {
 	docker       dockerx.Docker
@@ -76,6 +85,20 @@ type Reconciler struct {
 	submit       health.SubmitFn
 	ensureSubnet EnsureSubnetFn
 	logger       *slog.Logger
+
+	// starting tracks in-flight async starts by replica id. A replica start
+	// does slow, blocking work — an image pull that retries forever on an
+	// unreachable registry, plus container create/start — so it runs in a
+	// per-replica goroutine. Doing it inline in Run's select loop let a single
+	// stuck pull freeze the loop and stall every other replica + the 30s safety
+	// tick on the node; dispatching it async keeps the loop responsive.
+	startMu  sync.Mutex
+	starting map[string]*startHandle
+
+	// netMu serializes the per-network ensureSubnet+bridge.Ensure step across
+	// concurrent start goroutines so two replicas sharing a network don't race
+	// to create the same docker bridge.
+	netMu sync.Mutex
 }
 
 // New constructs a Reconciler. submit is the function the per-replica
@@ -97,6 +120,7 @@ func New(docker dockerx.Docker, st *state.State, brokers *watch.Registry, hostna
 		submit:       submit,
 		ensureSubnet: ensureSubnet,
 		logger:       logger,
+		starting:     map[string]*startHandle{},
 	}
 }
 
@@ -134,6 +158,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			r.cancelAllStarts()
 			r.watcher.StopAll()
 			return ctx.Err()
 		case ev, ok := <-sub.Events():
@@ -181,17 +206,16 @@ func (r *Reconciler) orphanSweep(ctx context.Context) error {
 // OrphanSweep is the test-visible alias for orphanSweep.
 func (r *Reconciler) OrphanSweep(ctx context.Context) error { return r.orphanSweep(ctx) }
 
-// resync applies every desired replica host=self via lifecycle.Start. Used
-// on boot and after a watch broker overflow (KindResync).
+// resync dispatches an async start for every desired replica host=self. Used
+// on boot and after a watch broker overflow (KindResync). Dispatch is
+// non-blocking + deduped, so a replica whose start is already in flight (e.g.
+// stuck on an image pull) is skipped rather than piling up goroutines.
 func (r *Reconciler) resync(ctx context.Context) {
 	for _, rep := range r.state.ReplicasDesired.List() {
 		if rep.GetHost() != r.hostname {
 			continue
 		}
-		if err := r.startReplica(ctx, rep); err != nil {
-			r.logger.Error("start replica failed",
-				logging.KeyReplicaID, rep.GetId(), logging.KeyDeployment, rep.GetDeployment(), "error", err)
-		}
+		r.dispatchStart(ctx, rep)
 	}
 }
 
@@ -207,10 +231,7 @@ func (r *Reconciler) handle(ctx context.Context, ev watch.Event[*pb.ReplicaDesir
 			}
 			return
 		}
-		if err := r.startReplica(ctx, rep); err != nil {
-			r.logger.Error("start replica failed",
-				logging.KeyReplicaID, rep.GetId(), logging.KeyDeployment, rep.GetDeployment(), "error", err)
-		}
+		r.dispatchStart(ctx, rep)
 	case watch.KindRemoved:
 		rep := ev.Before
 		if rep == nil || rep.GetHost() != r.hostname {
@@ -222,9 +243,13 @@ func (r *Reconciler) handle(ctx context.Context, ev watch.Event[*pb.ReplicaDesir
 	}
 }
 
-// startReplica projects the ReplicaDesired into a compose.ContainerSpec
-// and calls lifecycle.Start, then begins health-watching the container.
-func (r *Reconciler) startReplica(ctx context.Context, rep *pb.ReplicaDesired) error {
+// runStart projects the ReplicaDesired into a compose.ContainerSpec and brings
+// the container up, then begins health-watching it. It runs inside a
+// per-replica goroutine (see dispatchStart): workCtx scopes the slow,
+// cancelable work (subnet alloc, image pull, create/start) so a stuck pull can
+// be cancelled on remove/shutdown, while watchCtx is the long-lived context the
+// health watcher runs under (it must outlive the start operation).
+func (r *Reconciler) runStart(workCtx, watchCtx context.Context, rep *pb.ReplicaDesired) error {
 	dep, ok := r.state.Deployments.Get(rep.GetDeployment())
 	if !ok {
 		return fmt.Errorf("deployment %s missing from state", rep.GetDeployment())
@@ -278,19 +303,24 @@ func (r *Reconciler) startReplica(ctx context.Context, rep *pb.ReplicaDesired) e
 		}
 		// Allocate this host's /24 for the network before creating the
 		// bridge. The leader computes it; a follower forwards to the leader.
-		cidr, err := r.ensureSubnet(ctx, rep.GetDeployment(), netSuffix, r.hostname)
+		cidr, err := r.ensureSubnet(workCtx, rep.GetDeployment(), netSuffix, r.hostname)
 		if err != nil {
 			if errors.Is(err, ErrSubnetPoolExhausted) {
-				r.failReplica(ctx, rep, netSuffix, "subnet_pool_exhausted")
+				r.failReplica(workCtx, rep, netSuffix, "subnet_pool_exhausted")
 				return nil
 			}
 			// Transient (e.g. no leader yet) — leave the replica unstarted;
 			// the watch / 30s safety tick retries.
 			return fmt.Errorf("ensureSubnet %s/%s on %s: %w", rep.GetDeployment(), netSuffix, r.hostname, err)
 		}
-		if _, err := bridge.Ensure(ctx, r.docker, rep.GetDeployment(), netSuffix, cidr, clusterID, r.logger); err != nil {
+		// Serialize bridge creation: concurrent start goroutines sharing a
+		// network must not race to NetworkCreate the same docker bridge.
+		r.netMu.Lock()
+		_, ensErr := bridge.Ensure(workCtx, r.docker, rep.GetDeployment(), netSuffix, cidr, clusterID, r.logger)
+		r.netMu.Unlock()
+		if ensErr != nil {
 			r.logger.Error("bridge.Ensure failed",
-				logging.KeyReplicaID, rep.GetId(), logging.KeyDeployment, rep.GetDeployment(), "network", netSuffix, "error", err)
+				logging.KeyReplicaID, rep.GetId(), logging.KeyDeployment, rep.GetDeployment(), "network", netSuffix, "error", ensErr)
 		}
 	}
 
@@ -308,17 +338,17 @@ func (r *Reconciler) startReplica(ctx context.Context, rep *pb.ReplicaDesired) e
 		switch s {
 		case pull.StatePulling:
 			if attempt == 1 {
-				r.observePull(ctx, rep, pb.ReplicaState_REPLICA_STATE_PULLING, "pulling", "")
+				r.observePull(workCtx, rep, pb.ReplicaState_REPLICA_STATE_PULLING, "pulling", "")
 			}
 		case pull.StateFailed:
 			r.logger.Warn("image pull failed; will retry",
 				logging.KeyReplicaID, rep.GetId(), logging.KeyDeployment, rep.GetDeployment(),
 				"image", spec.Image, "attempt", attempt, "error", lastErr)
-			r.observePull(ctx, rep, pb.ReplicaState_REPLICA_STATE_PENDING, "image_pull_failed",
+			r.observePull(workCtx, rep, pb.ReplicaState_REPLICA_STATE_PENDING, "image_pull_failed",
 				fmt.Sprintf("%s: %v", spec.Image, lastErr))
 		}
 	}
-	containerID, err := lifecycle.StartWithPullState(ctx, r.docker, spec, onPull, lifecycle.IsolationGate{
+	containerID, err := lifecycle.StartWithPullState(workCtx, r.docker, spec, onPull, lifecycle.IsolationGate{
 		State:        r.state,
 		SelfHostname: r.hostname,
 	})
@@ -328,8 +358,64 @@ func (r *Reconciler) startReplica(ctx context.Context, rep *pb.ReplicaDesired) e
 	r.logger.Info("replica container started",
 		logging.KeyReplicaID, rep.GetId(), logging.KeyDeployment, rep.GetDeployment(),
 		"service", rep.GetService(), "container_id", containerID)
-	r.watcher.Start(ctx, rep.GetId(), containerID, spec.Healthcheck != nil)
+	r.watcher.Start(watchCtx, rep.GetId(), containerID, spec.Healthcheck != nil)
 	return nil
+}
+
+// dispatchStart launches (or refreshes) the async start for rep. Non-blocking:
+// the pull+create+start runs in a goroutine so a slow/stuck pull never freezes
+// the reconcile loop. Deduped by replica id — a re-dispatch for the same
+// desired raft_index while a start is already in flight is a no-op; a changed
+// raft_index (e.g. an image roll) cancels and supersedes the in-flight start.
+func (r *Reconciler) dispatchStart(parent context.Context, rep *pb.ReplicaDesired) {
+	id := rep.GetId()
+	r.startMu.Lock()
+	if h, ok := r.starting[id]; ok {
+		if h.raftIndex == rep.GetRaftIndex() {
+			r.startMu.Unlock()
+			return // already starting this exact desired spec
+		}
+		h.cancel() // desired changed — supersede the in-flight start
+	}
+	workCtx, cancel := context.WithCancel(parent)
+	h := &startHandle{raftIndex: rep.GetRaftIndex(), cancel: cancel}
+	r.starting[id] = h
+	r.startMu.Unlock()
+
+	go func() {
+		defer cancel()
+		defer func() {
+			r.startMu.Lock()
+			if cur, ok := r.starting[id]; ok && cur == h {
+				delete(r.starting, id)
+			}
+			r.startMu.Unlock()
+		}()
+		if err := r.runStart(workCtx, parent, rep); err != nil && !errors.Is(err, context.Canceled) {
+			r.logger.Error("start replica failed",
+				logging.KeyReplicaID, id, logging.KeyDeployment, rep.GetDeployment(), "error", err)
+		}
+	}()
+}
+
+// cancelStart cancels and forgets any in-flight start for id.
+func (r *Reconciler) cancelStart(id string) {
+	r.startMu.Lock()
+	if h, ok := r.starting[id]; ok {
+		h.cancel()
+		delete(r.starting, id)
+	}
+	r.startMu.Unlock()
+}
+
+// cancelAllStarts cancels every in-flight start (Run shutdown).
+func (r *Reconciler) cancelAllStarts() {
+	r.startMu.Lock()
+	for id, h := range r.starting {
+		h.cancel()
+		delete(r.starting, id)
+	}
+	r.startMu.Unlock()
 }
 
 // failReplica publishes a FAILED ReplicaObserved with the given code so the
@@ -382,6 +468,10 @@ func (r *Reconciler) observePull(ctx context.Context, rep *pb.ReplicaDesired, st
 // stopReplica is the symmetric teardown — stops the health watcher then
 // stop+removes the container.
 func (r *Reconciler) stopReplica(ctx context.Context, rep *pb.ReplicaDesired) {
+	// Cancel any in-flight async start first (e.g. a replica removed while its
+	// image pull is still retrying) so the goroutine doesn't create a container
+	// we're about to tear down.
+	r.cancelStart(rep.GetId())
 	r.watcher.Stop(rep.GetId())
 	r.logger.Info("stopping replica container",
 		logging.KeyReplicaID, rep.GetId(), logging.KeyDeployment, rep.GetDeployment())
