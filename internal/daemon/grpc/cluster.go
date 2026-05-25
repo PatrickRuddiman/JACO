@@ -21,6 +21,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/bootstrap"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/ca"
 	"github.com/PatrickRuddiman/jaco/internal/daemon/admission"
+	"github.com/PatrickRuddiman/jaco/internal/daemon/netdetect"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -164,6 +165,10 @@ func (c *clusterServer) Join(ctx context.Context, req *pb.ClusterJoinRequest) (*
 	// the load-bearing one — clients dial the gRPC listener by that IP.
 	// The raft transport advertise IP is included too when distinct; dedupe
 	// in ca.GenerateNodeKeypair collapses identical values into one SAN.
+	// Every up, non-loopback local interface IP is added as well so an
+	// operator reaching this node by any other interface (second NIC, the
+	// VNet address when advertise picked Tailscale, etc.) doesn't hit a TLS
+	// SAN mismatch.
 	advertise := c.effectiveAdvertiseAddr()
 	grpcAdvertise := c.server.TCPAdvertiseAddr()
 	var clusterIP, listenIP net.IP
@@ -177,7 +182,8 @@ func (c *clusterServer) Join(ctx context.Context, req *pb.ClusterJoinRequest) (*
 			listenIP = net.ParseIP(host)
 		}
 	}
-	keyPEM, csrPEM, err := ca.GenerateNodeKeypair(hostname, listenIP, clusterIP)
+	sanIPs := append(netdetect.LocalIPs(), listenIP, clusterIP)
+	keyPEM, csrPEM, err := ca.GenerateNodeKeypair(hostname, sanIPs...)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "generate keypair: %v", err)
 	}

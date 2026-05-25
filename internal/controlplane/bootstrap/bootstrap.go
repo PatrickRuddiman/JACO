@@ -24,6 +24,7 @@ import (
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
+	"github.com/PatrickRuddiman/jaco/internal/daemon/netdetect"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -90,7 +91,11 @@ func Run(opts Options) (*Result, error) {
 	// so that any code path dialing the raft advertise face by IP also
 	// validates. ListenAdvertiseAddr defaults to AdvertiseAddr — in the
 	// common case both values are the same and dedupe in
-	// ca.GenerateNodeKeypair collapses them into one SAN.
+	// ca.GenerateNodeKeypair collapses them into one SAN. Every up,
+	// non-loopback local interface IP is added as well so an operator
+	// reaching the node by any other interface (second NIC, the VNet
+	// address when advertise picked Tailscale, etc.) doesn't hit a TLS SAN
+	// mismatch.
 	listenAdvertise := opts.ListenAdvertiseAddr
 	if listenAdvertise == "" {
 		listenAdvertise = opts.AdvertiseAddr
@@ -106,7 +111,8 @@ func Run(opts Options) (*Result, error) {
 			clusterIP = net.ParseIP(host)
 		}
 	}
-	nodeKeyPEM, csrPEM, err := ca.GenerateNodeKeypair(opts.Name, listenIP, clusterIP)
+	sanIPs := append(netdetect.LocalIPs(), listenIP, clusterIP)
+	nodeKeyPEM, csrPEM, err := ca.GenerateNodeKeypair(opts.Name, sanIPs...)
 	if err != nil {
 		return nil, fmt.Errorf("generate node keypair: %w", err)
 	}
