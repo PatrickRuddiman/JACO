@@ -1,6 +1,7 @@
 package challenge_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -97,7 +98,7 @@ func TestEmitIssued_TagsEnvironment(t *testing.T) {
 func TestIssue_StampsEnvironmentOnRenewed(t *testing.T) {
 	apply, st := newHarness(t)
 	iss := challenge.NewIssuerForEnv(apply, challenge.EnvStaging)
-	if err := iss.Issue(nil, "x.example.com", "tok", "keyauth"); err != nil {
+	if err := iss.Issue(context.Background(), "x.example.com", "tok", "keyauth"); err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
 	var ev *pb.AuditEvent

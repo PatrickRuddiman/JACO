@@ -3,7 +3,6 @@ package stagefirst
 import (
 	"context"
 	"log"
-	"sort"
 	"sync"
 	"time"
 )
@@ -179,16 +178,4 @@ func (c *Controller) issuedProd(domain string) bool {
 		return false
 	}
 	return c.IssuedProd(domain)
-}
-
-// stagingList returns the staging set as a sorted slice (test helper / logs).
-func (c *Controller) stagingList() []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	out := make([]string, 0, len(c.staging))
-	for d := range c.staging {
-		out = append(out, d)
-	}
-	sort.Strings(out)
-	return out
 }
