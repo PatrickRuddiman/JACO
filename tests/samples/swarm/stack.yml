@@ -1,0 +1,150 @@
+# Docker Swarm stack for the bench workload — the same images, replica counts,
+# and resource limits as the JACO deployment (tests/samples/jaco), expressed in
+# compose-v3 `deploy:` form so the comparison stays fair. Deployed with
+# `docker stack deploy -c stack.yml bench` (see bootstrap/).
+#
+# Swarm specifics vs the JACO manifest:
+#   - networks are overlay (multi-host); services find each other by name via
+#     Swarm's embedded DNS + per-service VIP, so the web/api/redis/postgres
+#     images are byte-identical to the JACO run (web's static proxy_pass to
+#     `api` resolves the api VIP).
+#   - web publishes :80 through the routing mesh (every node), so the testbed LB
+#     reaches it on any node. No TLS terminator here — measure over HTTP
+#     (BENCH_TARGET=http://<lb-ip> + BENCH_HOST_HEADER), per RUBRIC.md.
+#   - pg-primary / pg-replica are pinned to different nodes via placement
+#     constraints so the WAL stream crosses the overlay (cross-node replication).
+#   - REGISTRY is substituted to node-1's private IP by bootstrap.sh before
+#     deploy (the hostname jaco-1 doesn't resolve cross-VM on Azure).
+version: "3.8"
+
+services:
+  redis-primary:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--protected-mode", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks: [stack]
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+
+  redis-replica:
+    image: redis:7-alpine
+    command: ["redis-server", "--replicaof", "redis-primary", "6379", "--replica-read-only", "yes", "--save", "", "--appendonly", "no", "--protected-mode", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks: [stack]
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+
+  pg-primary:
+    image: ${REGISTRY:-jaco-1:5000}/bench-postgres:latest
+    environment:
+      PG_ROLE: primary
+      POSTGRES_USER: bench
+      POSTGRES_PASSWORD: bench
+      POSTGRES_DB: bench
+      POSTGRES_HOST_AUTH_METHOD: trust
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bench -d bench"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    networks: [stack]
+    deploy:
+      replicas: 1
+      placement:
+        constraints: ["node.hostname == jaco-2"]
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+
+  pg-replica:
+    image: ${REGISTRY:-jaco-1:5000}/bench-postgres:latest
+    environment:
+      PG_ROLE: replica
+      PG_PRIMARY_HOST: pg-primary
+      POSTGRES_USER: bench
+      POSTGRES_PASSWORD: bench
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bench"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    networks: [stack]
+    deploy:
+      replicas: 1
+      placement:
+        constraints: ["node.hostname == jaco-3"]
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+
+  api:
+    image: ${REGISTRY:-jaco-1:5000}/bench-api:latest
+    environment:
+      REDIS_PRIMARY: redis-primary:6379
+      REDIS_REPLICA: redis-replica:6379
+      PG_PRIMARY: pg-primary:5432
+      PG_REPLICA: pg-replica:5432
+      PG_DB: bench
+      PG_USER: bench
+      PG_PASSWORD: bench
+      LISTEN_PORT: "8080"
+      NODE_ENV: production
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks: [stack]
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+
+  web:
+    image: ${REGISTRY:-jaco-1:5000}/bench-web:latest
+    ports:
+      - target: 80
+        published: 80
+        protocol: tcp
+        mode: ingress
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks: [stack]
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+
+networks:
+  stack:
+    driver: overlay
