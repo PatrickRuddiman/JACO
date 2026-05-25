@@ -22,7 +22,7 @@ From the operator host, with the testbed already deployed:
 # nodes resolved from Azure (RESOURCE_GROUP + VM_NAME_PREFIX), or pass them:
 export BENCH_PUBLIC_IPS="<n1-pub> <n2-pub> <n3-pub>"   # node-1 first
 export BENCH_PRIVATE_IPS="<n1-priv> <n2-priv> <n3-priv>"
-export SSH_KEY=~/.ssh/jaco
+# SSH_KEY auto-resolves to the per-bed key minted at testbed/.ssh/jaco.
 samples/jaco/bootstrap/bootstrap.sh
 ```
 

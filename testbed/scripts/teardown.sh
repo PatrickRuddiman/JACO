@@ -56,5 +56,12 @@ else
   echo "[teardown] preserving persistent LB public IP in RG $PUBLIC_IP_RG (jaco.sh A record stays valid)"
 fi
 
+# Drop the ephemeral bed SSH key — the VMs are gone, so the next build mints a
+# fresh keypair (deploy.sh).
+if [[ -f "$INFRA_DIR/.ssh/jaco" ]]; then
+  rm -f "$INFRA_DIR/.ssh/jaco" "$INFRA_DIR/.ssh/jaco.pub"
+  echo "[teardown] removed ephemeral SSH key ($INFRA_DIR/.ssh/jaco)"
+fi
+
 echo "[teardown] initiated. Monitor with:"
 echo "  az group show --name $RESOURCE_GROUP --query properties.provisioningState -o tsv"

@@ -22,7 +22,8 @@ bench/
 ## Operator prerequisites
 
 - `curl`, `jq`, and either `docker` (to run `grafana/k6`) or a native `k6`.
-- SSH access to the testbed nodes (`SSH_KEY`, default `~/.ssh/jaco`).
+- SSH access to the testbed nodes. `SSH_KEY` defaults to the per-bed key the
+  testbed deploy script mints at `testbed/.ssh/jaco` (else `~/.ssh/jaco`).
 - Node addressing via `BENCH_PUBLIC_IPS`/`BENCH_PRIVATE_IPS` (node-1 first) or
   `RESOURCE_GROUP` (+ `az`) to resolve them.
 

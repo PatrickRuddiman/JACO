@@ -10,7 +10,10 @@ RESULTS_DIR="$BENCH_DIR/results"
 
 # --- ssh contract (shared with samples/<stack>/bootstrap) -------------------
 SSH_USER="${SSH_USER:-azureuser}"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/jaco}"
+# Default to the per-bed key minted by the testbed deploy script; fall back to
+# ~/.ssh/jaco for a bring-your-own key.
+_bed_key="$REPO_ROOT/testbed/.ssh/jaco"
+SSH_KEY="${SSH_KEY:-$([ -f "$_bed_key" ] && echo "$_bed_key" || echo "$HOME/.ssh/jaco")}"
 SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -o UserKnownHostsFile=/dev/null)
 
 log()  { printf '[bench] %s\n' "$*" >&2; }

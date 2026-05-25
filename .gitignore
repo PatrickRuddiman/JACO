@@ -5,9 +5,10 @@
 *.out
 coverage.*
 
-# Benchmark testbed local secrets (Azure creds + SSH key). The rest of
-# testbed/ is the tracked, sanitized infra.
+# Benchmark testbed local secrets. The rest of testbed/ is tracked, sanitized
+# infra. .ssh/ holds the ephemeral keypair deploy.sh mints per bed.
 testbed/.env.local
+testbed/.ssh/
 
 # Benchmark run output (summaries, scraped metrics, bundles).
 samples/bench/results/

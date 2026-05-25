@@ -26,7 +26,25 @@ if [[ -f .env.local ]]; then
 fi
 
 : "${AZ_SUBSCRIPTION:?AZ_SUBSCRIPTION required — set in testbed/.env.local (see .env.local.example)}"
-: "${ADMIN_PUBLIC_KEY:?ADMIN_PUBLIC_KEY required — set in testbed/.env.local (see .env.local.example)}"
+
+# SSH keypair. Minted fresh per bed (gitignored under testbed/.ssh) so no public
+# key is ever stored in the repo or .env.local. Reused on idempotent re-runs
+# against the same bed; teardown.sh removes it so the next build mints a new one.
+# Bring-your-own by exporting ADMIN_PUBLIC_KEY (then you manage the private key
+# + SSH_KEY yourself).
+KEY_PATH="$INFRA_DIR/.ssh/jaco"
+if [[ -z "${ADMIN_PUBLIC_KEY:-}" ]]; then
+  install -d -m 0700 "$INFRA_DIR/.ssh"
+  [[ "${REGEN_KEY:-0}" == "1" ]] && rm -f "$KEY_PATH" "$KEY_PATH.pub"
+  if [[ ! -f "$KEY_PATH.pub" ]]; then
+    echo "[deploy] minting ephemeral SSH keypair: $KEY_PATH"
+    ssh-keygen -t ed25519 -N '' -C "jaco-bed-$(date -u +%Y%m%dT%H%M%SZ)" -f "$KEY_PATH" >/dev/null
+  else
+    echo "[deploy] reusing SSH keypair: $KEY_PATH (REGEN_KEY=1 to mint fresh)"
+  fi
+  ADMIN_PUBLIC_KEY="$(cat "$KEY_PATH.pub")"
+fi
+export ADMIN_PUBLIC_KEY
 
 AZ_TENANT="${AZ_TENANT:-}"
 RESOURCE_GROUP="${RESOURCE_GROUP:-JACO}"
@@ -84,11 +102,12 @@ echo "[deploy] per-VM public IPs (SSH directly to each node):"
 az deployment group show \
   --resource-group "$RESOURCE_GROUP" --name "$DEPLOYMENT_NAME" \
   --query 'properties.outputs' -o json \
-  | jq -r '
+  | jq -r --arg key "$KEY_PATH" '
       (.vmNames.value) as $n | (.vmPublicIps.value) as $ip
-      | range(0; ($n|length)) | "  \($n[.])  ssh azureuser@\($ip[.])"'
+      | range(0; ($n|length)) | "  \($n[.])  ssh -i \($key) azureuser@\($ip[.])"'
 
 echo
+echo "[deploy] SSH key: $KEY_PATH  (the bench harness + bootstrap pick it up automatically)"
 echo "[deploy] LB ingress IP (80/443, jaco.sh): $PUBLIC_IP_ADDR"
 echo "[deploy] Base cloud-init only installs OS prep — bootstrap a stack with"
 echo "[deploy]   ../samples/<stack>/bootstrap, or run the bench: ../samples/bench/run.sh <stack>"
