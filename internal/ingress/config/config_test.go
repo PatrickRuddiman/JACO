@@ -106,6 +106,10 @@ func TestBuildCaddyConfig_TLSOffOmitsACME(t *testing.T) {
 	if _, hasTLS := apps["tls"]; hasTLS {
 		t.Errorf("tls automation appears for tls=off route: %v", apps["tls"])
 	}
+	// Caddy's automatic_https must be explicitly disabled — otherwise it
+	// auto-issues a default-PROD cert for the :443 host route despite no
+	// automation policy. (Regression: omitting the tls block is not enough.)
+	assertAutomaticHTTPSDisabled(t, apps)
 
 	want := loadGolden(t, "tls-off.golden.json", got)
 	if !bytes.Equal(got, want) {
@@ -477,6 +481,25 @@ func TestBuildCaddyConfig_ACMEDisabledOmitsAutomation(t *testing.T) {
 	// And the rendered bytes must not reference any ACME directory URL.
 	if strings.Contains(string(got), "acme") || strings.Contains(string(got), "letsencrypt") {
 		t.Errorf("rendered config mentions acme/letsencrypt with ACME disabled:\n%s", got)
+	}
+	// Critical: automatic_https must be disabled. Omitting the tls.automation
+	// block alone leaves Caddy's automatic_https ON, which auto-issues certs
+	// against its DEFAULT issuer (Let's Encrypt PROD) for every tls:auto host
+	// route — exactly what acme_enabled:false must prevent.
+	assertAutomaticHTTPSDisabled(t, parsed["apps"].(map[string]any))
+}
+
+// assertAutomaticHTTPSDisabled checks the jaco http server has
+// automatic_https.disable == true (the cluster-wide / no-policy opt-out).
+func assertAutomaticHTTPSDisabled(t *testing.T, apps map[string]any) {
+	t.Helper()
+	srv := apps["http"].(map[string]any)["servers"].(map[string]any)["jaco"].(map[string]any)
+	ah, ok := srv["automatic_https"].(map[string]any)
+	if !ok {
+		t.Fatalf("jaco server has no automatic_https block; Caddy would auto-issue default-PROD certs. server=%v", srv)
+	}
+	if ah["disable"] != true {
+		t.Errorf("automatic_https.disable = %v; want true", ah["disable"])
 	}
 }
 

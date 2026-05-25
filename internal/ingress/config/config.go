@@ -193,14 +193,25 @@ func BuildCaddyConfig(routes []Route, replicas []ReplicaObservedView, services m
 
 	tlsPolicies := buildTLSPolicies(sortedRoutes, opts)
 
+	jacoServer := map[string]any{
+		"listen": []any{":80", ":443"},
+		"routes": cfgRoutes,
+	}
+	if len(tlsPolicies) == 0 {
+		// No automation policies were emitted — either acme_enabled:false
+		// (cluster-wide opt-out) or no tls:auto route exists. Caddy's
+		// automatic_https defaults to ON, so without this it auto-issues a
+		// cert for every :443 host route using its DEFAULT issuer (Let's
+		// Encrypt PROD) — ignoring acme_ca and the acme_enabled opt-out, and
+		// burning prod rate limits. Disable it explicitly so the opt-out
+		// actually prevents all outbound ACME.
+		jacoServer["automatic_https"] = map[string]any{"disable": true}
+	}
 	root := map[string]any{
 		"apps": map[string]any{
 			"http": map[string]any{
 				"servers": map[string]any{
-					"jaco": map[string]any{
-						"listen": []any{":80", ":443"},
-						"routes": cfgRoutes,
-					},
+					"jaco": jacoServer,
 				},
 			},
 		},
@@ -316,7 +327,7 @@ func pathMatchers(path string) []any {
 func fallbackRoute() any {
 	return map[string]any{
 		"handle": []any{map[string]any{
-			"handler": "static_response",
+			"handler":     "static_response",
 			"status_code": 404,
 			"headers": map[string]any{
 				"Server": []any{"jaco"},
