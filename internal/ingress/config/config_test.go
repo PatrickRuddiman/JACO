@@ -15,7 +15,7 @@ import (
 func pinnedNow() time.Time { return time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC) }
 
 func opts() config.BuildOpts {
-	return config.BuildOpts{ACMEEmail: "ops@example.com", Now: pinnedNow}
+	return config.BuildOpts{ACMEEmail: "ops@example.com", ACMEEnabled: true, Now: pinnedNow}
 }
 
 // loadGolden reads a golden fixture; if REGEN_GOLDEN=1, writes the actual
@@ -77,6 +77,13 @@ func TestBuildCaddyConfig_HealthyTwoOfThree(t *testing.T) {
 		t.Errorf("upstreams len = %d, want 2 (degraded replica excluded)", len(upstreams))
 	}
 
+	// Positive case for the #41 automatic_https fix: with tls:auto policies
+	// present, automatic_https must NOT be disabled — otherwise Caddy never
+	// issues. Guards the fix from over-correcting (disabling automation always).
+	if ah, ok := jaco["automatic_https"].(map[string]any); ok && ah["disable"] == true {
+		t.Errorf("automatic_https disabled despite tls:auto policies present: %v", ah)
+	}
+
 	want := loadGolden(t, "healthy-2of3.golden.json", got)
 	if !bytes.Equal(got, want) {
 		t.Errorf("output diverges from golden\n--- got:\n%s\n--- want:\n%s", got, want)
@@ -106,6 +113,10 @@ func TestBuildCaddyConfig_TLSOffOmitsACME(t *testing.T) {
 	if _, hasTLS := apps["tls"]; hasTLS {
 		t.Errorf("tls automation appears for tls=off route: %v", apps["tls"])
 	}
+	// Caddy's automatic_https must be explicitly disabled — otherwise it
+	// auto-issues a default-PROD cert for the :443 host route despite no
+	// automation policy. (Regression: omitting the tls block is not enough.)
+	assertAutomaticHTTPSDisabled(t, apps)
 
 	want := loadGolden(t, "tls-off.golden.json", got)
 	if !bytes.Equal(got, want) {
@@ -449,5 +460,92 @@ func TestBuildCaddyConfig_PathMatchesExactPrefix(t *testing.T) {
 	}
 	if matchesAny("/other") {
 		t.Errorf("expected /other NOT to match, patterns = %v", patterns)
+	}
+}
+
+// TestBuildCaddyConfig_ACMEDisabledOmitsAutomation — with ACMEEnabled=false
+// the cluster-wide opt-out (jacod.yaml.acme_enabled: false) drops the entire
+// tls.automation block no matter how many tls:auto routes exist. Verifiable
+// offline (no outbound ACME call).
+func TestBuildCaddyConfig_ACMEDisabledOmitsAutomation(t *testing.T) {
+	routes := []config.Route{
+		{Domain: "web.example.com", Deployment: "sample", Service: "web", Port: 80, TLSAuto: true},
+		{Domain: "api.example.com", Deployment: "sample", Service: "api", Port: 80, TLSAuto: true},
+	}
+	o := opts()
+	o.ACMEEnabled = false
+	got, err := config.BuildCaddyConfig(routes, nil, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, hasTLS := parsed["apps"].(map[string]any)["tls"]; hasTLS {
+		t.Errorf("tls block present with ACMEEnabled=false: %v", parsed["apps"])
+	}
+	// And the rendered bytes must not reference any ACME directory URL.
+	if strings.Contains(string(got), "acme") || strings.Contains(string(got), "letsencrypt") {
+		t.Errorf("rendered config mentions acme/letsencrypt with ACME disabled:\n%s", got)
+	}
+	// Critical: automatic_https must be disabled. Omitting the tls.automation
+	// block alone leaves Caddy's automatic_https ON, which auto-issues certs
+	// against its DEFAULT issuer (Let's Encrypt PROD) for every tls:auto host
+	// route — exactly what acme_enabled:false must prevent.
+	assertAutomaticHTTPSDisabled(t, parsed["apps"].(map[string]any))
+}
+
+// assertAutomaticHTTPSDisabled checks the jaco http server has
+// automatic_https.disable == true (the cluster-wide / no-policy opt-out).
+func assertAutomaticHTTPSDisabled(t *testing.T, apps map[string]any) {
+	t.Helper()
+	srv := apps["http"].(map[string]any)["servers"].(map[string]any)["jaco"].(map[string]any)
+	ah, ok := srv["automatic_https"].(map[string]any)
+	if !ok {
+		t.Fatalf("jaco server has no automatic_https block; Caddy would auto-issue default-PROD certs. server=%v", srv)
+	}
+	if ah["disable"] != true {
+		t.Errorf("automatic_https.disable = %v; want true", ah["disable"])
+	}
+}
+
+// TestBuildCaddyConfig_StageFirstStagingPolicy — a domain in the staging set
+// gets a separate automation policy pointed at the staging directory; other
+// tls:auto domains stay on prod.
+func TestBuildCaddyConfig_StageFirstStagingPolicy(t *testing.T) {
+	routes := []config.Route{
+		{Domain: "new.example.com", Deployment: "s", Service: "w", Port: 80, TLSAuto: true},
+		{Domain: "old.example.com", Deployment: "s", Service: "w", Port: 80, TLSAuto: true},
+	}
+	o := opts()
+	o.ACMEStagingCA = "https://acme-staging-v02.api.letsencrypt.org/directory"
+	o.StagingDomains = map[string]bool{"new.example.com": true}
+	got, err := config.BuildCaddyConfig(routes, nil, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	policies := parsed["apps"].(map[string]any)["tls"].(map[string]any)["automation"].(map[string]any)["policies"].([]any)
+	if len(policies) != 2 {
+		t.Fatalf("policies = %d, want 2 (staging + prod)", len(policies))
+	}
+	// Build domain→ca map.
+	caFor := map[string]string{}
+	for _, pAny := range policies {
+		p := pAny.(map[string]any)
+		ca := p["issuers"].([]any)[0].(map[string]any)["ca"].(string)
+		for _, s := range p["subjects"].([]any) {
+			caFor[s.(string)] = ca
+		}
+	}
+	if caFor["new.example.com"] != o.ACMEStagingCA {
+		t.Errorf("new.example.com ca = %q, want staging", caFor["new.example.com"])
+	}
+	if caFor["old.example.com"] != o.ACMECA && caFor["old.example.com"] != "https://acme-v02.api.letsencrypt.org/directory" {
+		t.Errorf("old.example.com ca = %q, want prod", caFor["old.example.com"])
 	}
 }

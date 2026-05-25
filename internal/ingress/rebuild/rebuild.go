@@ -38,6 +38,12 @@ type Reloader struct {
 	// Logger is the ingress subsystem logger. nil → a discard logger.
 	Logger *slog.Logger
 
+	// rebuildMu serializes the whole build→compare→load→store sequence so
+	// concurrent Rebuild callers (the watch loop AND the stage-first
+	// reconcile loop, issue #41) don't race on caddy.Load or interleave the
+	// lastCfg TOCTOU. mu (below) only guards lastCfg for the stats readers.
+	rebuildMu sync.Mutex
+
 	mu      sync.Mutex
 	lastCfg []byte
 
@@ -65,6 +71,8 @@ func (r *Reloader) log() *slog.Logger {
 // issued) or when the load completes; returns the build / load error
 // otherwise.
 func (r *Reloader) Rebuild(ctx context.Context) error {
+	r.rebuildMu.Lock()
+	defer r.rebuildMu.Unlock()
 	r.rebuilds.Add(1)
 	cfg, err := r.build()
 	if err != nil {

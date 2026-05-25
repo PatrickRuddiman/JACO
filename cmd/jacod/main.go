@@ -107,6 +107,10 @@ func run(ctx context.Context, configPath string, root *slog.Logger) error {
 		Docker:               docker,
 		IPAMPool:             cfg.IPAMPool,
 		Logger:               root,
+		ACMEEmail:            cfg.ACMEEmail,
+		ACMECA:               cfg.ACMECAOrDefault(),
+		ACMEEnabled:          cfg.ACMEEnabledOrDefault(),
+		ACMESkipStaging:      cfg.ACMESkipStaging,
 	})
 	if err != nil {
 		return fmt.Errorf("gRPC server: %w", err)

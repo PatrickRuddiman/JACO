@@ -31,7 +31,9 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/discovery/firewall"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/ipam"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/wgmesh"
+	"github.com/PatrickRuddiman/jaco/internal/ingress/challenge"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/rebuild"
+	"github.com/PatrickRuddiman/jaco/internal/ingress/stagefirst"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/storage"
 	"github.com/PatrickRuddiman/jaco/internal/logging"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
@@ -101,6 +103,17 @@ type Server struct {
 	// handles Internal.EnsureSubnet.
 	ipamPool string
 
+	// dataDir is the daemon's $JACO_DATA_DIR; the ingress disk fallback cache
+	// lives under $dataDir/ingress/cache (issue #41).
+	dataDir string
+
+	// acme holds the resolved cluster-wide ACME settings plumbed from
+	// jacod.yaml (email, CA URL, enabled, skip-staging). Read in
+	// startSubsystems when wiring the ingress builder + issuer.
+	acme ingressACMEOpts
+	// acmeSkipStaging mirrors jacod.yaml.acme_skip_staging.
+	acmeSkipStaging bool
+
 	// tlsDyn holds the live server cert for the cross-host TCP listener.
 	// Nil when no TCP listener was opened. RebindTLS swaps the cert in
 	// after OpenRaft persists the cluster-CA-signed node cert.
@@ -166,6 +179,24 @@ type Options struct {
 	// IPAMPool is the /16 the leader allocates per-host /24s from when it
 	// handles Internal.EnsureSubnet. Empty → ipam.DefaultPoolCIDR.
 	IPAMPool string
+
+	// ACMEEmail is the contact address registered with the ACME CA. Plumbed
+	// from jacod.yaml.acme_email; empty is allowed.
+	ACMEEmail string
+
+	// ACMECA is the ACME directory URL the issuer targets (jacod.yaml.acme_ca).
+	// Empty → Let's Encrypt prod (config.DefaultACMECA).
+	ACMECA string
+
+	// ACMEEnabled is the cluster-wide ACME switch (jacod.yaml.acme_enabled).
+	// When false the daemon does not register the ACME issuer and the rendered
+	// Caddy config carries no tls.automation block (issue #41).
+	ACMEEnabled bool
+
+	// ACMESkipStaging opts out of stage-first issuance (jacod.yaml.acme_skip_
+	// staging). Stage-first is also skipped automatically when ACMECA is
+	// already non-prod.
+	ACMESkipStaging bool
 }
 
 // ipamPoolOrDefault returns the configured IPAM pool, or the JACO default
@@ -304,6 +335,13 @@ func New(opts Options) (*Server, error) {
 		docker:       opts.Docker,
 		tlsDyn:       dynTLS,
 		ipamPool:     ipamPoolOrDefault(opts.IPAMPool),
+		dataDir:      opts.DataDir,
+		acme: ingressACMEOpts{
+			Email:   opts.ACMEEmail,
+			CA:      acmeCAOrDefault(opts.ACMECA),
+			Enabled: opts.ACMEEnabled,
+		},
+		acmeSkipStaging: opts.ACMESkipStaging,
 	}
 	cluster := &clusterServer{
 		gate:          gate,
@@ -615,14 +653,60 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 	if caddyAvailable() {
 		// Construct + register the raft-backed Storage with caddy so
 		// configs referencing module "jaco" resolve at load time
-		// (task 33 deferral). hostname is the lessee in cert locks.
-		jacoStorage := storage.New(st, apply, hostname, nil)
+		// (task 33 deferral). hostname is the lessee in cert locks. The
+		// disk fallback cache lives under $dataDir/ingress/cache so a node
+		// whose raft state is wiped (clean-reinstall) can re-seed an
+		// already-valid cert without re-issuance (issue #41). Raft remains
+		// the authoritative store; the disk cache is only a rate-limit
+		// fallback.
+		jacoStorage := storage.NewWithCache(st, apply, hostname, nil, s.ingressCacheDir())
 		storage.SetDefaultStorage(jacoStorage)
 
-		// ACME email empty until we plumb config; operators set it via
-		// the future jacod.yaml.acme_email field.
+		// ACME settings plumbed from jacod.yaml (issue #41). When
+		// acme_enabled is false the builder omits the tls.automation block
+		// entirely, so no issuer is exercised.
 		ingressLog := logging.Subsystem(s.logger, "ingress").With(logging.KeyNode, hostname)
-		rl := rebuild.New(brokers, ingressBuilder(st, "", ingressLog), ingressLoader(ingressLog))
+		acme := s.acme
+		ingressLog.Info("ingress acme config",
+			"enabled", acme.Enabled, "ca", acme.CA, "email", acme.Email, "skip_staging", s.acmeSkipStaging)
+
+		// Stage-first issuance (issue #41, Q6 embedded-only): only when ACME is
+		// on, the configured CA is prod, the operator didn't opt out, and we're
+		// in embedded mode (an external caddy owns issuance under
+		// JACO_INGRESS_EXEC=1 and can't be programmatically re-issued/reloaded).
+		var ctrl *stagefirst.Controller
+		if acme.Enabled && embeddedIngress() && !s.acmeSkipStaging && stagefirst.IsProdCA(acme.CA) {
+			acme.StagingCA = stagefirst.LEStagingCA
+			ctrl = &stagefirst.Controller{
+				ConfiguredCA: acme.CA,
+				SkipStaging:  s.acmeSkipStaging,
+				Logger:       logging.Subsystem(s.logger, "stagefirst").With(logging.KeyNode, hostname),
+				LoadStagingChain: func(domain string) ([]byte, bool) {
+					return loadStagingChain(st, domain)
+				},
+				IssuedProd: func(domain string) bool {
+					return prodCertIssued(st, domain)
+				},
+				OnPromote: func(domain string) {
+					challenge.NewIssuerForEnv(apply, challenge.EnvStaging).EmitIssued(domain, challenge.EnvStaging)
+				},
+				OnStageFail: func(domain string, err error) {
+					challenge.NewIssuer(apply).EmitStageFailure(domain, err)
+				},
+			}
+			acme.StagingDomains = ctrl.StagingDomains
+			// Seed the staging set BEFORE the reloader's initial render so a
+			// brand-new domain's first rendered policy already points at the
+			// staging directory — otherwise the initial Rebuild would render a
+			// prod policy and embedded caddy could start prod issuance before
+			// the reconcile loop's first tick (issue #41). Routes present at
+			// startup are typically empty (raft resume populates them via
+			// watch events shortly after), so this is mostly defensive; the
+			// reconcile loop catches domains that appear later.
+			ctrl.Reconcile(ctx, tlsAutoDomains(st))
+		}
+
+		rl := rebuild.New(brokers, ingressBuilder(st, acme, ingressLog), ingressLoader(ingressLog))
 		rl.Logger = ingressLog
 		s.subsystemsWG.Add(1)
 		go func() {
@@ -631,6 +715,17 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 				s.srvLog.Error("ingress.Reloader.Run exited", "error", err)
 			}
 		}()
+
+		// Stage-first reconcile loop: periodically decides which new domains
+		// to stage and promotes ones whose staging chain passed the
+		// self-check, forcing a rebuild so the issuer flips staging↔prod.
+		if ctrl != nil {
+			s.subsystemsWG.Add(1)
+			go func() {
+				defer s.subsystemsWG.Done()
+				s.runStageFirst(ctx, ctrl, st, brokers, rl)
+			}()
+		}
 	} else {
 		s.srvLog.Info("caddy binary not found on PATH, ingress reload loop skipped")
 	}
