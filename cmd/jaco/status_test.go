@@ -59,6 +59,50 @@ func TestRunStatus_RendersThreeTables(t *testing.T) {
 	}
 }
 
+func TestRunStatus_RendersCertsTable(t *testing.T) {
+	notAfter := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	client := &fakeDeployStatusClient{
+		statusFn: func(_ context.Context, _ *pb.DeployStatusRequest) (*pb.DeployStatusResponse, error) {
+			return &pb.DeployStatusResponse{
+				Routes: []*pb.Route{{Domain: "web.example.com", Deployment: "s", Service: "web", Port: 80, TlsAuto: true}},
+				Certs: []*pb.CertState{{
+					Domain:        "web.example.com",
+					Environment:   "prod",
+					NotAfter:      timestamppb.New(notAfter),
+					LastRenewalAt: timestamppb.New(notAfter.Add(-60 * 24 * time.Hour)),
+				}},
+			}, nil
+		},
+	}
+	var out bytes.Buffer
+	if err := runStatus(context.Background(), client, "", "", &out); err != nil {
+		t.Fatalf("runStatus: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"Certs:", "ENVIRONMENT", "NOT_AFTER", "LAST_RENEWAL_AT", "web.example.com", "prod", "2026-08-01"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("certs output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRunStatus_OmitsCertsTableWhenEmpty(t *testing.T) {
+	client := &fakeDeployStatusClient{
+		statusFn: func(_ context.Context, _ *pb.DeployStatusRequest) (*pb.DeployStatusResponse, error) {
+			return &pb.DeployStatusResponse{
+				Routes: []*pb.Route{{Domain: "x", Deployment: "s", Service: "w", Port: 80}},
+			}, nil
+		},
+	}
+	var out bytes.Buffer
+	if err := runStatus(context.Background(), client, "", "", &out); err != nil {
+		t.Fatalf("runStatus: %v", err)
+	}
+	if strings.Contains(out.String(), "Certs:") {
+		t.Errorf("Certs table rendered with no cert state:\n%s", out.String())
+	}
+}
+
 func TestRunStatus_PropagatesServerError(t *testing.T) {
 	client := &fakeDeployStatusClient{
 		statusFn: func(_ context.Context, _ *pb.DeployStatusRequest) (*pb.DeployStatusResponse, error) {

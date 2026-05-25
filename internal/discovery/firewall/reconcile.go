@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 )
 
 // ReconcileInterval is the safety-tick cadence of Loop().
@@ -53,18 +55,19 @@ type Reconciler struct {
 	EnsureOverlay func(ctx context.Context, pool string) error
 
 	// Logger receives per-tick error lines (apply failures, UpdateStatus
-	// failures, Audit failures). Nil-safe: falls back to log.Default().
-	Logger *log.Logger
+	// failures, Audit failures) plus the per-Tick drift/apply summary.
+	// Nil-safe: falls back to a discard logger.
+	Logger *slog.Logger
 
 	// degraded tracks whether the last Tick saw an Apply failure.
 	degraded bool
 }
 
-func (r *Reconciler) logger() *log.Logger {
+func (r *Reconciler) logger() *slog.Logger {
 	if r.Logger != nil {
 		return r.Logger
 	}
-	return log.Default()
+	return logging.Discard()
 }
 
 // Tick runs one reconcile pass. Returns nil when the live ruleset matches
@@ -113,13 +116,13 @@ func (r *Reconciler) Tick(ctx context.Context) error {
 		if r.degraded {
 			r.degraded = false
 			if err := r.UpdateStatus(ctx, "ready", "isolation_reload_recovered"); err != nil {
-				r.logger().Printf("firewall.Reconciler: UpdateStatus(ready) failed: %v", err)
+				r.logger().Error("UpdateStatus(ready) failed", "error", err)
 				return err
 			}
 			if err := r.Audit(ctx, "ISOLATION_RULESET_RECONCILED", map[string]string{
 				"action": "recovered",
 			}); err != nil {
-				r.logger().Printf("firewall.Reconciler: Audit(ISOLATION_RULESET_RECONCILED action=recovered) failed: %v", err)
+				r.logger().Error("Audit(ISOLATION_RULESET_RECONCILED action=recovered) failed", "error", err)
 				return err
 			}
 		}
@@ -127,34 +130,36 @@ func (r *Reconciler) Tick(ctx context.Context) error {
 	}
 
 	// Mismatch detected — re-render + apply.
+	summary := summarizeDrift(selfErr)
+	r.logger().Info("firewall drift detected, applying ruleset", "drift", summary)
 	ruleset := Render(r.Render())
 	if applyErr := r.Applier(ctx, ruleset); applyErr != nil {
 		r.degraded = true
 		// Log the apply error directly — operators reading jacod logs need
 		// to see this even when raft node-status isn't being watched.
-		r.logger().Printf("firewall.Reconciler: apply ruleset failed: %v", applyErr)
+		r.logger().Error("apply ruleset failed", "error", applyErr)
 		// Log even if UpdateStatus fails — the previous behavior swallowed
 		// this with `_ =`, masking the real reason `nft list table inet jaco`
 		// stays missing on a live cluster (issue #45).
 		if err := r.UpdateStatus(ctx, "isolation_unavailable", applyErr.Error()); err != nil {
-			r.logger().Printf("firewall.Reconciler: UpdateStatus(isolation_unavailable) failed: %v (apply error: %v)", err, applyErr)
+			r.logger().Error("UpdateStatus(isolation_unavailable) failed", "error", err, "apply_error", applyErr)
 		}
 		return fmt.Errorf("apply ruleset: %w", applyErr)
 	}
 
 	// Apply succeeded. Audit the reconcile with a compact diff summary.
-	summary := summarizeDrift(selfErr)
+	r.logger().Info("firewall ruleset reconciled", "drift", summary)
 	if err := r.Audit(ctx, "ISOLATION_RULESET_RECONCILED", map[string]string{
 		"action":  "applied",
 		"summary": summary,
 	}); err != nil {
-		r.logger().Printf("firewall.Reconciler: Audit(ISOLATION_RULESET_RECONCILED action=applied) failed: %v", err)
+		r.logger().Error("Audit(ISOLATION_RULESET_RECONCILED action=applied) failed", "error", err)
 		return err
 	}
 	if r.degraded {
 		r.degraded = false
 		if err := r.UpdateStatus(ctx, "ready", "isolation_reload_recovered"); err != nil {
-			r.logger().Printf("firewall.Reconciler: UpdateStatus(ready) failed after recovery apply: %v", err)
+			r.logger().Error("UpdateStatus(ready) failed after recovery apply", "error", err)
 		}
 	}
 	return nil
@@ -167,7 +172,7 @@ func (r *Reconciler) Loop(ctx context.Context) error {
 	for {
 		// Run once at start so drift gets fixed quickly.
 		if err := r.Tick(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			r.logger().Printf("firewall.Reconciler.Tick: %v", err)
+			r.logger().Error("firewall.Reconciler.Tick failed", "error", err)
 		}
 		select {
 		case <-ctx.Done():

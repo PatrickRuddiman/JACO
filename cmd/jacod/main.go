@@ -10,8 +10,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -23,6 +22,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/daemon/config"
 	dgrpc "github.com/PatrickRuddiman/jaco/internal/daemon/grpc"
 	"github.com/PatrickRuddiman/jaco/internal/daemon/netdetect"
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 )
 
@@ -31,6 +31,7 @@ var version = "dev"
 func main() {
 	configPath := flag.String("config", defaultConfigPath(), "path to jacod.yaml")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	logLevel := flag.String("log-level", "", "log level: debug|info|warn|error (overrides JACO_LOG; default info)")
 	flag.Parse()
 
 	if *showVersion {
@@ -38,25 +39,38 @@ func main() {
 		return
 	}
 
+	// Resolve the global level: --log-level wins, then JACO_LOG, then INFO.
+	level := logging.LevelFromEnv(slog.LevelInfo)
+	if *logLevel != "" {
+		level = logging.ParseLevel(*logLevel, level)
+	}
+	// root is the bare logger (no subsystem); main logs under subsystem=jacod,
+	// subsystems derive their own from root via logging.Subsystem.
+	root := logging.NewDaemon(os.Stderr, level)
+
 	ctx, cancel := signalContext()
 	defer cancel()
 
-	if err := run(ctx, *configPath, os.Stderr); err != nil {
-		log.Fatalf("jacod: %v", err)
+	if err := run(ctx, *configPath, root); err != nil {
+		logging.Subsystem(root, "jacod").Error("jacod exited", "error", err)
+		os.Exit(1)
 	}
 }
 
-// run is the testable body of jacod. Returns when ctx is cancelled (via
-// SIGTERM/SIGINT in production) or the gRPC server dies.
-func run(ctx context.Context, configPath string, logOut io.Writer) error {
-	logger := log.New(logOut, "jacod: ", log.LstdFlags|log.Lmsgprefix)
-
+// run is the testable body of jacod. root is the bare root logger; run
+// derives subsystem=jacod for its own lifecycle logs and passes root to the
+// gRPC server (which tags each subsystem itself). Returns when ctx is
+// cancelled (via SIGTERM/SIGINT in production) or the gRPC server dies.
+func run(ctx context.Context, configPath string, root *slog.Logger) error {
+	logger := logging.Subsystem(root, "jacod")
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("load config %s: %w", configPath, err)
 	}
-	logger.Printf("starting (version=%s data_dir=%s unix_socket=%s)",
-		version, cfg.DataDir, cfg.UnixSocket)
+	logger.Info("starting",
+		logging.KeyVersion, version,
+		"data_dir", cfg.DataDir,
+		"unix_socket", cfg.UnixSocket)
 
 	// Resolve advertise + bind addresses. When listen_addr / cluster_addr is
 	// unspecified (0.0.0.0 / ::), jacod auto-detects a private-LAN-first face
@@ -78,7 +92,7 @@ func run(ctx context.Context, configPath string, logOut io.Writer) error {
 	// useful for staging boxes without docker and for unit tests.
 	var docker dockerx.Docker
 	if d, dockerErr := dockerx.New(""); dockerErr != nil {
-		logger.Printf("docker unreachable, runtime disabled: %v", dockerErr)
+		logger.Warn("docker unreachable, runtime disabled", "error", dockerErr)
 	} else {
 		docker = d
 	}
@@ -92,6 +106,11 @@ func run(ctx context.Context, configPath string, logOut io.Writer) error {
 		ClusterAdvertiseAddr: clusterAdvertise,
 		Docker:               docker,
 		IPAMPool:             cfg.IPAMPool,
+		Logger:               root,
+		ACMEEmail:            cfg.ACMEEmail,
+		ACMECA:               cfg.ACMECAOrDefault(),
+		ACMEEnabled:          cfg.ACMEEnabledOrDefault(),
+		ACMESkipStaging:      cfg.ACMESkipStaging,
 	})
 	if err != nil {
 		return fmt.Errorf("gRPC server: %w", err)
@@ -103,25 +122,26 @@ func run(ctx context.Context, configPath string, logOut io.Writer) error {
 	if _, statErr := os.Stat(cfg.DataDir + "/raft/log.db"); statErr == nil {
 		hostname, hErr := os.Hostname()
 		if hErr != nil {
-			logger.Printf("hostname for raft resume: %v (staying uninitialized)", hErr)
+			logger.Warn("hostname for raft resume failed, staying uninitialized", "error", hErr)
 		} else if err := server.OpenRaft(hostname, clusterBind, clusterAdvertise); err != nil {
-			logger.Printf("auto-resume OpenRaft: %v (staying uninitialized)", err)
+			logger.Warn("auto-resume OpenRaft failed, staying uninitialized", "error", err)
 		} else {
 			server.Gate().MarkInitialized()
-			logger.Printf("resumed existing raft state for %s on %s (advertise %s)", hostname, clusterBind, clusterAdvertise)
+			logger.Info("resumed existing raft state",
+				logging.KeyNode, hostname, "bind", clusterBind, "advertise", clusterAdvertise)
 		}
 	} else {
-		logger.Printf("listening on %s (uninitialized — run `jaco cluster init` or `jaco node join`)",
-			server.SocketPath())
+		logger.Info("listening (uninitialized — run `jaco cluster init` or `jaco node join`)",
+			"socket", server.SocketPath())
 	}
 
 	// Notify systemd we're up so Type=notify units complete activation.
 	// No-op when not run under systemd (sd_notify returns notSent=false
 	// with no err); logged for visibility.
 	if sent, err := daemon.SdNotify(false, daemon.SdNotifyReady); err != nil {
-		logger.Printf("sd_notify(READY=1): %v", err)
+		logger.Warn("sd_notify(READY=1) failed", "error", err)
 	} else if sent {
-		logger.Printf("sd_notify(READY=1) sent")
+		logger.Debug("sd_notify(READY=1) sent")
 	}
 
 	errCh := make(chan error, 1)
@@ -133,13 +153,13 @@ func run(ctx context.Context, configPath string, logOut io.Writer) error {
 			return fmt.Errorf("gRPC server died: %w", err)
 		}
 	case <-ctx.Done():
-		logger.Printf("signal received, shutting down")
+		logger.Info("signal received, shutting down")
 	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	server.Stop(shutdownCtx)
-	logger.Printf("shutdown complete")
+	logger.Info("shutdown complete")
 	return nil
 }
 
@@ -190,7 +210,7 @@ type advertisePlan struct {
 //
 // Errors carry guidance pointing at /etc/jaco/jacod.yaml so the operator
 // knows where to set an explicit value.
-func resolveAdvertise(listenBind, clusterBind string, logger *log.Logger) (advertisePlan, error) {
+func resolveAdvertise(listenBind, clusterBind string, logger *slog.Logger) (advertisePlan, error) {
 	plan := advertisePlan{listenBind: listenBind, clusterBind: clusterBind}
 
 	listenUnspec, listenPort, err := splitUnspecified(listenBind, "listen_addr")
@@ -209,7 +229,8 @@ func resolveAdvertise(listenBind, clusterBind string, logger *log.Logger) (adver
 	if derr != nil {
 		return advertisePlan{}, fmt.Errorf("auto-detect advertise IP: %w; set listen_addr/cluster_addr in /etc/jaco/jacod.yaml to a routable host:port", derr)
 	}
-	logger.Printf("advertise+bind=%s (auto-detected private face from %s) — control/data plane bound to this face, not 0.0.0.0", ip, iface)
+	logger.Info("auto-detected private advertise face — control/data plane bound here, not 0.0.0.0",
+		"advertise_ip", ip.String(), "iface", iface)
 	if listenUnspec {
 		bind := net.JoinHostPort(ip.String(), listenPort)
 		plan.listenBind = bind

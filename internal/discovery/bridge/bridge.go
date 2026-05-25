@@ -11,7 +11,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -20,6 +20,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	dnet "github.com/docker/docker/api/types/network"
 
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 )
 
@@ -87,8 +88,13 @@ func GatewayIP(cidr string) (string, error) {
 
 // Ensure idempotently creates the docker network backing (deployment,
 // network). Returns the docker network name regardless of whether a fresh
-// create or a reuse was performed.
-func Ensure(ctx context.Context, d dockerx.Docker, deployment, network, cidr, clusterID string) (string, error) {
+// create or a reuse was performed. logger may be nil (→ discard); the daemon
+// passes its runtime/reconciler-scoped logger so bridge drift/recreate
+// decisions appear in the journal.
+func Ensure(ctx context.Context, d dockerx.Docker, deployment, network, cidr, clusterID string, logger *slog.Logger) (string, error) {
+	if logger == nil {
+		logger = logging.Discard()
+	}
 	if deployment == "" || network == "" {
 		return "", fmt.Errorf("Ensure: deployment + network are required")
 	}
@@ -134,14 +140,16 @@ func Ensure(ctx context.Context, d dockerx.Docker, deployment, network, cidr, cl
 		}
 		// Stop attached containers before recreating — they're about to be
 		// re-scheduled with the new bridge anyway.
-		log.Printf("bridge: %s drift live_subnet=%q desired_subnet=%q live_cluster_id=%q desired_cluster_id=%q — recreating",
-			name, liveSubnet(insp), cidr, insp.Labels["jaco.cluster_id"], clusterID)
+		logger.Info("bridge drift detected, recreating",
+			"network", name, "live_subnet", liveSubnet(insp), "desired_subnet", cidr,
+			"live_cluster_id", insp.Labels["jaco.cluster_id"], "desired_cluster_id", clusterID)
 		for cid, ep := range insp.Containers {
-			log.Printf("bridge: %s stop+remove attached container %s (%s) before recreate", name, ep.Name, cid)
+			logger.Info("stop+remove attached container before recreate",
+				"network", name, "container", ep.Name, "container_id", cid)
 			timeout := 10
 			if err := d.ContainerStop(ctx, cid, container.StopOptions{Timeout: &timeout}); err != nil {
 				// Best-effort; continue to ContainerRemove which forces.
-				log.Printf("bridge: %s ContainerStop %s: %v (continuing)", name, cid, err)
+				logger.Warn("ContainerStop failed, continuing", "network", name, "container_id", cid, "error", err)
 			}
 			if err := d.ContainerRemove(ctx, cid, container.RemoveOptions{Force: true}); err != nil {
 				return "", fmt.Errorf("ContainerRemove %s (attached to %s): %w", cid, name, err)

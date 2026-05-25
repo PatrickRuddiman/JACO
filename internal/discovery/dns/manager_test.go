@@ -3,7 +3,7 @@ package dns
 import (
 	"bytes"
 	"context"
-	"log"
+	"log/slog"
 	"net"
 	"testing"
 	"time"
@@ -15,6 +15,12 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
+
+// testLogger returns an slog text logger at DEBUG writing to w, for tests
+// that assert on log output substrings.
+func testLogger(w *bytes.Buffer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
 
 // TestScopeKey — pure helper; just confirm the deployment/network
 // concatenation.
@@ -155,7 +161,7 @@ func TestManager_ReconcileSubnets_BadCIDRSkipped(t *testing.T) {
 	m := &Manager{
 		State:     st,
 		Brokers:   watch.NewRegistry(),
-		Logger:    log.New(&logBuf, "", 0),
+		Logger:    testLogger(&logBuf),
 		listeners: map[string]*listenerEntry{},
 	}
 	m.reconcileSubnets(context.Background())
@@ -177,7 +183,7 @@ func TestManager_ReconcileSubnets_SkipsNonLocalHostSubnet(t *testing.T) {
 	m := &Manager{
 		State:     st,
 		Brokers:   watch.NewRegistry(),
-		Logger:    log.New(&bytes.Buffer{}, "", 0),
+		Logger:    testLogger(&bytes.Buffer{}),
 		Hostname:  "host-a",
 		listeners: map[string]*listenerEntry{},
 	}
@@ -198,7 +204,7 @@ func TestManager_ReconcileSubnets_RemovesStaleListeners(t *testing.T) {
 	m := &Manager{
 		State:     state.New(watch.NewRegistry()),
 		Brokers:   watch.NewRegistry(),
-		Logger:    log.New(&bytes.Buffer{}, "", 0),
+		Logger:    testLogger(&bytes.Buffer{}),
 		listeners: map[string]*listenerEntry{},
 	}
 	// Plant a fake listener for a subnet that doesn't exist in state.
@@ -267,7 +273,7 @@ func TestManager_RefreshServiceMaps_FiltersOnHealthAndState(t *testing.T) {
 	m := &Manager{
 		State:   st,
 		Brokers: watch.NewRegistry(),
-		Logger:  log.New(&bytes.Buffer{}, "", 0),
+		Logger:  testLogger(&bytes.Buffer{}),
 		listeners: map[string]*listenerEntry{
 			"app/frontend": {
 				scope:     Scope{Deployment: "app", Network: "frontend"},
@@ -323,7 +329,7 @@ func TestManager_RefreshServiceMaps_SkipsMalformedIPAndMissingReplicaDesired(t *
 	m := &Manager{
 		State:   st,
 		Brokers: watch.NewRegistry(),
-		Logger:  log.New(&bytes.Buffer{}, "", 0),
+		Logger:  testLogger(&bytes.Buffer{}),
 		listeners: map[string]*listenerEntry{
 			"app/frontend": {responder: resp, udp: &mdns.Server{}, tcp: &mdns.Server{}},
 		},
@@ -348,7 +354,7 @@ func TestManager_RefreshServiceMaps_ListenerWithoutMatchingScopeClearsServices(t
 	m := &Manager{
 		State:   st,
 		Brokers: watch.NewRegistry(),
-		Logger:  log.New(&bytes.Buffer{}, "", 0),
+		Logger:  testLogger(&bytes.Buffer{}),
 		listeners: map[string]*listenerEntry{
 			"app/frontend": {responder: resp, udp: &mdns.Server{}, tcp: &mdns.Server{}},
 		},
@@ -386,7 +392,7 @@ func TestManager_RefreshServiceMaps_PrefersLocalReplica(t *testing.T) {
 	m := &Manager{
 		State:    st,
 		Brokers:  watch.NewRegistry(),
-		Logger:   log.New(&bytes.Buffer{}, "", 0),
+		Logger:   testLogger(&bytes.Buffer{}),
 		Hostname: "host-a",
 		listeners: map[string]*listenerEntry{
 			"app/frontend": {responder: resp, udp: &mdns.Server{}, tcp: &mdns.Server{}},
@@ -415,7 +421,7 @@ func TestManager_RunReturnsOnCtxCancel(t *testing.T) {
 	m := &Manager{
 		State:   st,
 		Brokers: brokers,
-		Logger:  log.New(&bytes.Buffer{}, "", 0),
+		Logger:  testLogger(&bytes.Buffer{}),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

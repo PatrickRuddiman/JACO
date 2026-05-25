@@ -11,6 +11,7 @@ package health
 
 import (
 	"context"
+	"log/slog"
 	"strconv"
 	"sync"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/docker/docker/api/types"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
@@ -46,8 +48,45 @@ type Watcher struct {
 	now    func() time.Time
 	after  func(time.Duration) <-chan time.Time
 
+	// Logger logs replica health-state transitions at INFO. nil → discard.
+	// Set by the reconciler after construction.
+	Logger *slog.Logger
+
 	mu       sync.Mutex
 	watchers map[string]*replicaWatcher
+}
+
+func (w *Watcher) log() *slog.Logger {
+	if w.Logger == nil {
+		return logging.Discard()
+	}
+	return w.Logger
+}
+
+// logTransition logs at INFO when newState differs from the watcher's last
+// observed state (pending→running→failed etc). No-op on steady-state polls.
+func (w *Watcher) logTransition(rw *replicaWatcher, newState pb.ReplicaState, code string) {
+	if newState == rw.lastState {
+		return
+	}
+	w.log().Info("replica health transition",
+		logging.KeyReplicaID, rw.replicaID,
+		"from", stateString(rw.lastState), "to", stateString(newState), "code", code)
+}
+
+// stateString renders a pb.ReplicaState as a short lowercase label for logs.
+func stateString(s pb.ReplicaState) string {
+	switch s {
+	case pb.ReplicaState_REPLICA_STATE_PENDING:
+		return "pending"
+	case pb.ReplicaState_REPLICA_STATE_RUNNING:
+		return "running"
+	case pb.ReplicaState_REPLICA_STATE_DEGRADED:
+		return "degraded"
+	case pb.ReplicaState_REPLICA_STATE_FAILED:
+		return "failed"
+	}
+	return "unspecified"
 }
 
 type replicaWatcher struct {
@@ -161,6 +200,7 @@ func (w *Watcher) poll(ctx context.Context, rw *replicaWatcher) *pb.ReplicaObser
 		// Treat inspect failures as `failed/inspect_failed` so the ingress
 		// drops the replica from rotation; the scheduler can decide whether
 		// to restart.
+		w.logTransition(rw, pb.ReplicaState_REPLICA_STATE_FAILED, "inspect_failed")
 		rw.lastState = pb.ReplicaState_REPLICA_STATE_FAILED
 		return &pb.ReplicaObserved{
 			Id:           rw.replicaID,
@@ -173,6 +213,7 @@ func (w *Watcher) poll(ctx context.Context, rw *replicaWatcher) *pb.ReplicaObser
 	}
 
 	state, code, exitCode := classify(info, rw)
+	w.logTransition(rw, state, code)
 	rw.lastState = state
 
 	obs := &pb.ReplicaObserved{

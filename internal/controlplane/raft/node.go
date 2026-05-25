@@ -9,6 +9,7 @@ package raftnode
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 
 	hraft "github.com/hashicorp/raft"
 	boltdb "github.com/hashicorp/raft-boltdb/v2"
+
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 )
 
 // Config holds everything New needs. All fields except LogOutput +
@@ -33,6 +36,9 @@ type Config struct {
 	Bootstrap     bool
 	FSM           hraft.FSM
 	LogOutput     io.Writer
+	// Logger logs leadership transitions (INFO) and Apply commit errors
+	// (ERROR). nil → discard. The daemon passes a subsystem=raft logger.
+	Logger *slog.Logger
 }
 
 // Node owns a running raft.Raft and the stores backing it.
@@ -41,6 +47,8 @@ type Node struct {
 	boltStore *boltdb.BoltStore // concrete handle so Shutdown can release the file lock
 	snapStore hraft.SnapshotStore
 	transport hraft.Transport
+	logger    *slog.Logger
+	stopCh    chan struct{}
 }
 
 // New constructs and starts a raft node. If cfg.Bootstrap is true the node
@@ -121,12 +129,42 @@ func New(cfg Config) (*Node, error) {
 		}
 	}
 
-	return &Node{
+	logger := cfg.Logger
+	if logger == nil {
+		logger = logging.Discard()
+	}
+	n := &Node{
 		Raft:      r,
 		boltStore: store,
 		snapStore: snaps,
 		transport: trans,
-	}, nil
+		logger:    logger,
+		stopCh:    make(chan struct{}),
+	}
+	go n.watchLeadership()
+	return n, nil
+}
+
+// watchLeadership logs every leadership transition at INFO until Shutdown
+// closes stopCh. raft's LeaderCh delivers true when this node acquires
+// leadership and false when it loses it.
+func (n *Node) watchLeadership() {
+	ch := n.Raft.LeaderCh()
+	for {
+		select {
+		case <-n.stopCh:
+			return
+		case isLeader, ok := <-ch:
+			if !ok {
+				return
+			}
+			if isLeader {
+				n.logger.Info("raft leadership acquired", "leader", string(n.transport.LocalAddr()))
+			} else {
+				n.logger.Info("raft leadership lost", "leader", string(n.transport.LocalAddr()))
+			}
+		}
+	}
 }
 
 // Apply submits cmd to the raft log. Returns the assigned log index on commit.
@@ -137,6 +175,14 @@ func (n *Node) Apply(cmd []byte, timeout time.Duration) (uint64, error) {
 	}
 	f := n.Raft.Apply(cmd, timeout)
 	if err := f.Error(); err != nil {
+		// ErrNotLeader is an expected control-flow signal (followers forward to
+		// the leader), so it stays at DEBUG; everything else is a genuine
+		// commit failure logged at ERROR.
+		if err == hraft.ErrNotLeader {
+			n.logger.Debug("raft apply rejected: not leader")
+		} else {
+			n.logger.Error("raft apply failed", "error", err)
+		}
 		return 0, err
 	}
 	return f.Index(), nil
@@ -161,6 +207,14 @@ func (n *Node) LocalAddr() hraft.ServerAddress {
 // Shutdown stops the raft node and releases the bolt log-store file lock so
 // the same data dir can be re-opened immediately after.
 func (n *Node) Shutdown() error {
+	if n.stopCh != nil {
+		select {
+		case <-n.stopCh:
+			// already closed
+		default:
+			close(n.stopCh)
+		}
+	}
 	var firstErr error
 	if f := n.Raft.Shutdown(); f.Error() != nil {
 		firstErr = f.Error()

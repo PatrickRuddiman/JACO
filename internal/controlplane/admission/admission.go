@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -68,10 +69,31 @@ func UnaryInterceptor(s *state.State) grpc.UnaryServerInterceptor {
 		}
 		newCtx, err := authResolve(ctx, s)
 		if err != nil {
+			logAdmission(ctx, info.FullMethod, "", err)
 			return nil, err
 		}
+		logAdmission(newCtx, info.FullMethod, IdentityFromContext(newCtx), nil)
 		return handler(newCtx, req)
 	}
+}
+
+// logAdmission records the admission decision on the request-scoped logger
+// (attached upstream by the logging interceptor; falls back to discard).
+// Rejections log at INFO with reason + method; accepts at DEBUG with the
+// resolved principal. The bearer token itself is never logged.
+func logAdmission(ctx context.Context, method, principal string, err error) {
+	l := logging.FromContext(ctx, nil)
+	if err != nil {
+		// The auth error's Message is the typed code (token_invalid /
+		// token_revoked / missing_*) — safe to log; carries no secret.
+		reason := "denied"
+		if st, ok := status.FromError(err); ok {
+			reason = st.Message()
+		}
+		l.Info("admission denied", logging.KeyMethod, method, logging.KeyReason, reason)
+		return
+	}
+	l.Debug("admission accepted", logging.KeyMethod, method, "principal", principal)
 }
 
 // StreamInterceptor returns a grpc.StreamServerInterceptor that runs
@@ -84,8 +106,10 @@ func StreamInterceptor(s *state.State) grpc.StreamServerInterceptor {
 		}
 		newCtx, err := authResolve(ss.Context(), s)
 		if err != nil {
+			logAdmission(ss.Context(), info.FullMethod, "", err)
 			return err
 		}
+		logAdmission(newCtx, info.FullMethod, IdentityFromContext(newCtx), nil)
 		return handler(srv, &wrappedStream{ServerStream: ss, ctx: newCtx})
 	}
 }

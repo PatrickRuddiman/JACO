@@ -11,12 +11,15 @@
 package dns
 
 import (
+	"log/slog"
 	"math/rand"
 	"net"
 	"strings"
 	"sync"
 
 	"github.com/miekg/dns"
+
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 )
 
 // Scope identifies one responder's (deployment, network) world.
@@ -43,6 +46,17 @@ type Responder struct {
 	services ServiceMap
 
 	forwarder LookupHostFn
+
+	// Logger logs each query at DEBUG and upstream-resolver fallback failures
+	// at WARN. nil → discard. Set by the Manager when it builds the responder.
+	Logger *slog.Logger
+}
+
+func (r *Responder) log() *slog.Logger {
+	if r.Logger == nil {
+		return logging.Discard()
+	}
+	return r.Logger
 }
 
 // New constructs a Responder for the given scope. forwarder=nil disables
@@ -88,6 +102,13 @@ func (r *Responder) Handle(req *dns.Msg) *dns.Msg {
 	resp := new(dns.Msg)
 	resp.SetReply(req)
 	resp.Authoritative = true
+
+	if len(req.Question) > 0 {
+		q := req.Question[0]
+		r.log().Debug("dns query received",
+			"name", strings.TrimSuffix(q.Name, "."), "qtype", dns.TypeToString[q.Qtype],
+			logging.KeyDeployment, r.scope.Deployment, "network", r.scope.Network)
+	}
 
 	// nameExists guards the NXDOMAIN fallback. A name that resolves (an
 	// in-scope service with records, or an external name the forwarder knows)
@@ -156,6 +177,7 @@ func (r *Responder) answerA(resp *dns.Msg, name, originalName string) (exists bo
 	}
 	ips, err := r.forwarder(name)
 	if err != nil {
+		r.log().Warn("upstream resolver fallback failed", "name", name, "error", err)
 		return false
 	}
 	for _, ip := range ips {

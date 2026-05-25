@@ -10,12 +10,14 @@ package rollout
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 	"github.com/PatrickRuddiman/jaco/internal/scheduler/counter"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
@@ -34,6 +36,17 @@ type Rollout struct {
 	state *state.State
 	apply Applier
 	now   func() time.Time
+
+	// Logger logs step transitions. nil → discard. Set by the daemon after
+	// construction; tests leave it nil.
+	Logger *slog.Logger
+}
+
+func (r *Rollout) log() *slog.Logger {
+	if r.Logger == nil {
+		return logging.Discard()
+	}
+	return r.Logger
 }
 
 // New constructs a Rollout. now=nil falls through to time.Now; tests pass
@@ -65,6 +78,9 @@ func (r *Rollout) Start(deployment, service string, targetRev uint64, totalSteps
 		StartedAt:      timestamppb.New(now),
 		LastStepAt:     timestamppb.New(now),
 	}
+	r.log().Info("rollout started",
+		logging.KeyDeployment, deployment, "service", service,
+		"target_revision", targetRev, "total_steps", totalSteps)
 	return r.applyPlan(plan)
 }
 
@@ -127,6 +143,9 @@ func (r *Rollout) AdvanceStep(deployment, service string) error {
 
 	plan.CurrentStep++
 	plan.LastStepAt = timestamppb.New(r.now())
+	r.log().Info("rollout step advanced",
+		logging.KeyDeployment, deployment, "service", service,
+		"current_step", plan.GetCurrentStep(), "total_steps", plan.GetTotalSteps())
 	return r.applyPlan(plan)
 }
 
@@ -138,6 +157,9 @@ func (r *Rollout) Complete(deployment, service string) error {
 	}
 	plan.State = pb.RolloutState_ROLLOUT_STATE_COMPLETED
 	plan.LastStepAt = timestamppb.New(r.now())
+	r.log().Info("rollout completed",
+		logging.KeyDeployment, deployment, "service", service,
+		"total_steps", plan.GetTotalSteps())
 	return r.applyPlan(plan)
 }
 
@@ -152,6 +174,8 @@ func (r *Rollout) Abort(_ context.Context, deployment, service, reason string) e
 	plan.State = pb.RolloutState_ROLLOUT_STATE_ABORTED
 	plan.FailureReason = reason
 	plan.LastStepAt = timestamppb.New(r.now())
+	r.log().Warn("rollout aborted, rolling back deployment",
+		logging.KeyDeployment, deployment, "service", service, logging.KeyReason, reason)
 
 	planCmd := planCommand(plan, r.now())
 

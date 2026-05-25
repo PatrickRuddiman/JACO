@@ -8,7 +8,12 @@
 // to re-fetch the entity store from scratch (see control-plane slice §5).
 package watch
 
-import "sync"
+import (
+	"log/slog"
+	"sync"
+
+	"github.com/PatrickRuddiman/jaco/internal/logging"
+)
 
 // DefaultBuffer is the per-subscriber channel buffer used by Broker.Subscribe
 // when no override is requested. Sized for steady-state bursts during rolling
@@ -56,6 +61,18 @@ type Broker[T any] struct {
 	mu          sync.Mutex
 	subscribers map[*subscriberState[T]]struct{}
 	buffer      int
+
+	// logger + name are set by Registry.SetLogger so fanout drops (WARN) and
+	// subscriber join/leave (DEBUG) name the entity broker. nil → discard.
+	logger *slog.Logger
+	name   string
+}
+
+func (b *Broker[T]) log() *slog.Logger {
+	if b.logger == nil {
+		return logging.Discard()
+	}
+	return b.logger
 }
 
 type subscriberState[T any] struct {
@@ -80,20 +97,28 @@ func (b *Broker[T]) Subscribe() *Subscription[T] {
 	s := &subscriberState[T]{ch: make(chan Event[T], b.buffer)}
 	b.mu.Lock()
 	b.subscribers[s] = struct{}{}
+	n := len(b.subscribers)
 	b.mu.Unlock()
+	b.log().Debug("watch subscriber joined", "broker", b.name, "subscribers", n)
 
 	return &Subscription[T]{
 		ch: s.ch,
 		cancel: func() {
 			b.mu.Lock()
+			removed := false
 			if _, ok := b.subscribers[s]; ok {
 				delete(b.subscribers, s)
 				if !s.closed {
 					s.closed = true
 					close(s.ch)
 				}
+				removed = true
 			}
+			n := len(b.subscribers)
 			b.mu.Unlock()
+			if removed {
+				b.log().Debug("watch subscriber left", "broker", b.name, "subscribers", n)
+			}
 		},
 	}
 }
@@ -103,8 +128,8 @@ func (b *Broker[T]) Subscribe() *Subscription[T] {
 // enqueued in its place; e itself is discarded for that subscriber (the
 // subscriber will re-fetch full state and observe e's effect there).
 func (b *Broker[T]) Publish(e Event[T]) {
+	drops := 0
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	for s := range b.subscribers {
 		if s.closed {
 			continue
@@ -114,6 +139,7 @@ func (b *Broker[T]) Publish(e Event[T]) {
 			// delivered
 		default:
 			// Channel full. Drop oldest, enqueue a Resync.
+			drops++
 			select {
 			case <-s.ch:
 			default:
@@ -125,6 +151,13 @@ func (b *Broker[T]) Publish(e Event[T]) {
 				// Skip — the next Publish will try again.
 			}
 		}
+	}
+	b.mu.Unlock()
+	// Log fanout drops outside the lock so the handler's IO doesn't serialize
+	// Publish. A drop means a subscriber fell behind and will re-fetch on the
+	// synthetic Resync — operationally a WARN.
+	if drops > 0 {
+		b.log().Warn("watch fanout overflow, subscribers resynced", "broker", b.name, "drops", drops)
 	}
 }
 

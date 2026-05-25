@@ -3,7 +3,7 @@ package wgmesh_test
 import (
 	"bytes"
 	"context"
-	"log"
+	"log/slog"
 	"net"
 	"strings"
 	"testing"
@@ -152,7 +152,7 @@ func TestSyncer_RunExitsCleanlyOnCtxCancel(t *testing.T) {
 	s := &wgmesh.Syncer{
 		SelfHostname: "self",
 		State:        newState(),
-		Logger:       log.New(&logBuf, "", 0),
+		Logger:       slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Interval:     20 * time.Millisecond,
 	}
 

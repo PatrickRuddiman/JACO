@@ -8,12 +8,15 @@ package fsm
 import (
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"strconv"
+	"strings"
 
 	hraft "github.com/hashicorp/raft"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 	"google.golang.org/protobuf/proto"
 )
@@ -23,6 +26,18 @@ import (
 type FSM struct {
 	State   *state.State
 	Brokers *watch.Registry
+
+	// Logger logs each Apply at DEBUG (op + raft_index) and unmarshal/dispatch
+	// failures at ERROR. nil → discard. Set by the daemon after construction;
+	// the FSM never logs audit-event payloads (those are user-facing, separate).
+	Logger *slog.Logger
+}
+
+func (f *FSM) log() *slog.Logger {
+	if f.Logger == nil {
+		return logging.Discard()
+	}
+	return f.Logger
 }
 
 // New constructs an FSM wired to existing state + brokers.
@@ -36,9 +51,11 @@ func New(s *state.State, b *watch.Registry) *FSM {
 func (f *FSM) Apply(log *hraft.Log) interface{} {
 	cmd := &pb.Command{}
 	if err := proto.Unmarshal(log.Data, cmd); err != nil {
+		f.log().Error("fsm unmarshal command failed", "raft_index", log.Index, "error", err)
 		return fmt.Errorf("fsm: unmarshal command at index %d: %w", log.Index, err)
 	}
 	idx := log.Index
+	f.log().Debug("fsm apply", "op", commandOp(cmd), "raft_index", idx)
 
 	auditType, auditPayload := f.applyPayload(cmd, idx)
 	if auditType != pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED {
@@ -489,4 +506,19 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 	// event but Apply returns nil so raft doesn't surface this as a hard
 	// error. Future Command variants must be added explicitly above.
 	return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
+}
+
+// commandOp returns a short operation label for the command's oneof variant,
+// derived from the Go type name (e.g. *pb.Command_NodeJoin → "NodeJoin").
+// It deliberately exposes only the variant NAME, never the payload contents,
+// so DEBUG fsm-apply logging stays free of sensitive fields.
+func commandOp(cmd *pb.Command) string {
+	if cmd == nil || cmd.Payload == nil {
+		return "unknown"
+	}
+	name := fmt.Sprintf("%T", cmd.Payload) // e.g. "*pb.Command_NodeJoin"
+	if i := strings.LastIndex(name, "_"); i >= 0 {
+		return name[i+1:]
+	}
+	return name
 }

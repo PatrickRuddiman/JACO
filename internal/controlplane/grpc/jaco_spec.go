@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"gopkg.in/yaml.v3"
@@ -19,6 +20,13 @@ type JacoYAML struct {
 	Deployment string            `yaml:"deployment"`
 	Services   []JacoServiceDecl `yaml:"services"`
 	Routes     []JacoRouteDecl   `yaml:"routes"`
+	// ACME is the deployment-level ACME switch. "off" disables automatic TLS
+	// for every route in this deployment unless a route sets its own
+	// `tls:` explicitly. Empty / "on" (default) leaves each route's tls
+	// decision to the route itself (issue #41). It is a convenience opt-out
+	// for dev/internal deployments that don't want JACO racing the operator
+	// to Let's Encrypt.
+	ACME string `yaml:"acme"`
 }
 
 // JacoServiceDecl is one service entry. Name must equal the corresponding
@@ -75,9 +83,18 @@ func ParseJacoYAML(body []byte) (*JacoYAML, error) {
 			j.Services[i].Placement = "spread"
 		}
 	}
+	// Deployment-level `acme: off` (issue #41) implicitly disables TLS on
+	// every route that didn't set `tls:` explicitly. A route may still
+	// override with `tls: auto`. This runs BEFORE the default-to-auto step
+	// so a blank route under `acme: off` resolves to off, not auto.
+	deploymentACMEOff := strings.EqualFold(j.ACME, "off")
 	for i := range j.Routes {
 		if j.Routes[i].TLS == "" {
-			j.Routes[i].TLS = "auto"
+			if deploymentACMEOff {
+				j.Routes[i].TLS = "off"
+			} else {
+				j.Routes[i].TLS = "auto"
+			}
 		}
 	}
 	return &j, nil
@@ -104,6 +121,11 @@ func ValidateJacoYAMLBytes(data []byte) error {
 func validateJacoYAML(j *JacoYAML) (code string, message string, ok bool) {
 	if j.Deployment == "" {
 		return "validation_failed", "deployment name is required", false
+	}
+	switch strings.ToLower(j.ACME) {
+	case "", "on", "off":
+	default:
+		return "validation_failed", fmt.Sprintf("acme %q is unknown (want on|off)", j.ACME), false
 	}
 	if len(j.Services) == 0 {
 		return "validation_failed", "at least one service is required", false

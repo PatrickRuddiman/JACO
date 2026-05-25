@@ -1,6 +1,8 @@
 package state
 
 import (
+	"log/slog"
+
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
@@ -29,6 +31,12 @@ type State struct {
 	RestartCounters  *Store[*pb.RestartCounter]
 	AuditEvents      *AuditEvents
 	Cluster          *Cluster
+
+	// Logger is the state-subsystem logger. State mutations are intentionally
+	// quiet by default (issue #38: "not noisy by default"); this is the
+	// extension point for ERROR-on-corruption logging and is set by the daemon
+	// after construction. nil → discard at the call site.
+	Logger *slog.Logger
 }
 
 // New constructs an empty State wired to a broker registry.

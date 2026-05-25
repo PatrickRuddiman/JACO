@@ -41,9 +41,14 @@ type FSMSnapshot struct {
 	ReplicaCounters  []*ReplicaCounter      `protobuf:"bytes,13,rep,name=replica_counters,json=replicaCounters,proto3" json:"replica_counters,omitempty"`
 	RestartCounters  []*RestartCounter      `protobuf:"bytes,14,rep,name=restart_counters,json=restartCounters,proto3" json:"restart_counters,omitempty"`
 	AuditEvents      []*AuditEvent          `protobuf:"bytes,15,rep,name=audit_events,json=auditEvents,proto3" json:"audit_events,omitempty"`
-	TcpRoutes        []*TCPRoute            `protobuf:"bytes,16,rep,name=tcp_routes,json=tcpRoutes,proto3" json:"tcp_routes,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// cert_blobs carries the certmagic-managed cert/key payloads so a fresh
+	// node that installs a raft snapshot picks up already-issued certs without
+	// re-issuance against the ACME CA (issue #41). Without this the snapshot
+	// path silently dropped every cert blob.
+	CertBlobs     []*CertBlob `protobuf:"bytes,16,rep,name=cert_blobs,json=certBlobs,proto3" json:"cert_blobs,omitempty"`
+	TcpRoutes     []*TCPRoute `protobuf:"bytes,17,rep,name=tcp_routes,json=tcpRoutes,proto3" json:"tcp_routes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *FSMSnapshot) Reset() {
@@ -181,6 +186,13 @@ func (x *FSMSnapshot) GetAuditEvents() []*AuditEvent {
 	return nil
 }
 
+func (x *FSMSnapshot) GetCertBlobs() []*CertBlob {
+	if x != nil {
+		return x.CertBlobs
+	}
+	return nil
+}
+
 func (x *FSMSnapshot) GetTcpRoutes() []*TCPRoute {
 	if x != nil {
 		return x.TcpRoutes
@@ -192,7 +204,7 @@ var File_jaco_v1_fsm_proto protoreflect.FileDescriptor
 
 const file_jaco_v1_fsm_proto_rawDesc = "" +
 	"\n" +
-	"\x11jaco/v1/fsm.proto\x12\ajaco.v1\x1a\x16jaco/v1/entities.proto\"\xea\x06\n" +
+	"\x11jaco/v1/fsm.proto\x12\ajaco.v1\x1a\x16jaco/v1/entities.proto\"\x9c\a\n" +
 	"\vFSMSnapshot\x12.\n" +
 	"\acluster\x18\x01 \x01(\v2\x14.jaco.v1.ClusterMetaR\acluster\x12#\n" +
 	"\x05nodes\x18\x02 \x03(\v2\r.jaco.v1.NodeR\x05nodes\x125\n" +
@@ -212,7 +224,9 @@ const file_jaco_v1_fsm_proto_rawDesc = "" +
 	"\x10restart_counters\x18\x0e \x03(\v2\x17.jaco.v1.RestartCounterR\x0frestartCounters\x126\n" +
 	"\faudit_events\x18\x0f \x03(\v2\x13.jaco.v1.AuditEventR\vauditEvents\x120\n" +
 	"\n" +
-	"tcp_routes\x18\x10 \x03(\v2\x11.jaco.v1.TCPRouteR\ttcpRoutesB:Z8github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1;jacov1b\x06proto3"
+	"cert_blobs\x18\x10 \x03(\v2\x11.jaco.v1.CertBlobR\tcertBlobs\x120\n" +
+	"\n" +
+	"tcp_routes\x18\x11 \x03(\v2\x11.jaco.v1.TCPRouteR\ttcpRoutesB:Z8github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1;jacov1b\x06proto3"
 
 var (
 	file_jaco_v1_fsm_proto_rawDescOnce sync.Once
@@ -244,7 +258,8 @@ var file_jaco_v1_fsm_proto_goTypes = []any{
 	(*ReplicaCounter)(nil),  // 13: jaco.v1.ReplicaCounter
 	(*RestartCounter)(nil),  // 14: jaco.v1.RestartCounter
 	(*AuditEvent)(nil),      // 15: jaco.v1.AuditEvent
-	(*TCPRoute)(nil),        // 16: jaco.v1.TCPRoute
+	(*CertBlob)(nil),        // 16: jaco.v1.CertBlob
+	(*TCPRoute)(nil),        // 17: jaco.v1.TCPRoute
 }
 var file_jaco_v1_fsm_proto_depIdxs = []int32{
 	1,  // 0: jaco.v1.FSMSnapshot.cluster:type_name -> jaco.v1.ClusterMeta
@@ -262,12 +277,13 @@ var file_jaco_v1_fsm_proto_depIdxs = []int32{
 	13, // 12: jaco.v1.FSMSnapshot.replica_counters:type_name -> jaco.v1.ReplicaCounter
 	14, // 13: jaco.v1.FSMSnapshot.restart_counters:type_name -> jaco.v1.RestartCounter
 	15, // 14: jaco.v1.FSMSnapshot.audit_events:type_name -> jaco.v1.AuditEvent
-	16, // 15: jaco.v1.FSMSnapshot.tcp_routes:type_name -> jaco.v1.TCPRoute
-	16, // [16:16] is the sub-list for method output_type
-	16, // [16:16] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	16, // 15: jaco.v1.FSMSnapshot.cert_blobs:type_name -> jaco.v1.CertBlob
+	17, // 16: jaco.v1.FSMSnapshot.tcp_routes:type_name -> jaco.v1.TCPRoute
+	17, // [17:17] is the sub-list for method output_type
+	17, // [17:17] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_jaco_v1_fsm_proto_init() }

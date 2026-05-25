@@ -9,11 +9,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 )
 
 // DebounceWindow batches bursts of watch events into one rebuild pass.
@@ -33,6 +35,15 @@ type Reloader struct {
 	build   Builder
 	load    Loader
 
+	// Logger is the ingress subsystem logger. nil → a discard logger.
+	Logger *slog.Logger
+
+	// rebuildMu serializes the whole build→compare→load→store sequence so
+	// concurrent Rebuild callers (the watch loop AND the stage-first
+	// reconcile loop, issue #41) don't race on caddy.Load or interleave the
+	// lastCfg TOCTOU. mu (below) only guards lastCfg for the stats readers.
+	rebuildMu sync.Mutex
+
 	mu      sync.Mutex
 	lastCfg []byte
 
@@ -46,11 +57,22 @@ func New(brokers *watch.Registry, build Builder, load Loader) *Reloader {
 	return &Reloader{brokers: brokers, build: build, load: load}
 }
 
+// log returns the configured logger, or a discard logger when none was set
+// (e.g. tests that construct a bare Reloader).
+func (r *Reloader) log() *slog.Logger {
+	if r.Logger == nil {
+		return logging.Discard()
+	}
+	return r.Logger
+}
+
 // Rebuild forces an immediate rebuild + load pass. Returns nil when the
 // new config is byte-identical to the previously-loaded one (no load
 // issued) or when the load completes; returns the build / load error
 // otherwise.
 func (r *Reloader) Rebuild(ctx context.Context) error {
+	r.rebuildMu.Lock()
+	defer r.rebuildMu.Unlock()
 	r.rebuilds.Add(1)
 	cfg, err := r.build()
 	if err != nil {
@@ -63,12 +85,14 @@ func (r *Reloader) Rebuild(ctx context.Context) error {
 		return nil
 	}
 	if err := r.load(ctx, cfg); err != nil {
+		r.log().Error("caddy config reload failed", "bytes", len(cfg), "error", err)
 		return fmt.Errorf("caddy load: %w", err)
 	}
 	r.mu.Lock()
 	r.lastCfg = cfg
 	r.mu.Unlock()
 	r.loads.Add(1)
+	r.log().Info("caddy config reloaded", "bytes", len(cfg))
 	return nil
 }
 

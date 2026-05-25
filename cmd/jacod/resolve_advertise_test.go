@@ -1,18 +1,18 @@
 package main
 
 import (
-	"io"
-	"log"
 	"net"
 	"strings"
 	"testing"
+
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 )
 
 // TestResolveAdvertise_BothExplicit_NoOp: when neither bind is
 // unspecified, resolveAdvertise honors the pinned values verbatim for bind
 // and leaves advertise empty (the server falls back to the bind).
 func TestResolveAdvertise_BothExplicit_NoOp(t *testing.T) {
-	lg := log.New(io.Discard, "", 0)
+	lg := logging.Discard()
 	plan, err := resolveAdvertise("127.0.0.1:7000", "127.0.0.1:7001", lg)
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -33,7 +33,7 @@ func TestResolveAdvertise_BothExplicit_NoOp(t *testing.T) {
 // We can't fake the host's interfaces here, so assert the synthesized
 // addresses keep the original port and are never 0.0.0.0 or public.
 func TestResolveAdvertise_Unspecified_BindsDetectedIP(t *testing.T) {
-	lg := log.New(io.Discard, "", 0)
+	lg := logging.Discard()
 	plan, err := resolveAdvertise("0.0.0.0:7000", "0.0.0.0:7001", lg)
 	if err != nil {
 		// Acceptable on a CI runner with no usable private interfaces.
@@ -77,7 +77,7 @@ func TestResolveAdvertise_Unspecified_BindsDetectedIP(t *testing.T) {
 // listen_addr, unspecified cluster_addr) honors the pin and resolves only
 // the unspecified one. Skips cleanly when no private face exists.
 func TestResolveAdvertise_OneExplicitOnePinned(t *testing.T) {
-	lg := log.New(io.Discard, "", 0)
+	lg := logging.Discard()
 	plan, err := resolveAdvertise("10.10.0.4:7000", "0.0.0.0:7001", lg)
 	if err != nil {
 		if !strings.Contains(err.Error(), "/etc/jaco/jacod.yaml") {

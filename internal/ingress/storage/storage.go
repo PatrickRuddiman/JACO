@@ -9,9 +9,13 @@ package storage
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -69,14 +73,31 @@ type JacoStorage struct {
 	now    func() time.Time
 	lessee string
 
+	// cacheDir is the on-disk fallback cache root ($dataDir/ingress/cache).
+	// Empty disables the disk fallback (raft-only). Raft remains the
+	// authoritative store; the disk cache is a TOCTOU-safe rate-limit
+	// fallback so a node whose raft state was wiped can re-seed an
+	// already-valid cert without re-issuance (issue #41).
+	cacheDir string
+
 	// renewers tracks active auto-renew goroutines keyed by lock name.
 	renewersMu sync.Mutex
 	renewers   map[string]context.CancelFunc
 }
 
-// New constructs a JacoStorage. lessee is the local node's hostname (used
-// as the lock identity in raft); now may be nil to use time.Now.
+// New constructs a JacoStorage with the disk fallback cache disabled.
+// lessee is the local node's hostname (used as the lock identity in raft);
+// now may be nil to use time.Now.
 func New(st *state.State, apply Applier, lessee string, now func() time.Time) *JacoStorage {
+	return NewWithCache(st, apply, lessee, now, "")
+}
+
+// NewWithCache constructs a JacoStorage backed by raft, optionally with an
+// on-disk fallback cache rooted at cacheDir. cacheDir == "" disables the
+// fallback. The disk cache is write-through (Store/Delete mirror to disk)
+// and read-fallback (Load/Exists/Stat consult disk only when raft has no
+// entry), so it never overrides raft — it just survives a raft wipe.
+func NewWithCache(st *state.State, apply Applier, lessee string, now func() time.Time, cacheDir string) *JacoStorage {
 	if now == nil {
 		now = time.Now
 	}
@@ -85,6 +106,7 @@ func New(st *state.State, apply Applier, lessee string, now func() time.Time) *J
 		apply:    apply,
 		now:      now,
 		lessee:   lessee,
+		cacheDir: cacheDir,
 		renewers: map[string]context.CancelFunc{},
 	}
 }
@@ -202,23 +224,33 @@ func (s *JacoStorage) Store(_ context.Context, key string, value []byte) error {
 	if err != nil {
 		return err
 	}
-	return s.apply(data)
+	if err := s.apply(data); err != nil {
+		return err
+	}
+	// Write-through to the disk fallback (best-effort; raft is authoritative).
+	s.cacheWrite(key, cp)
+	return nil
 }
 
-// Load reads the value for key from state.CertBlobs. Returns ErrNotExist
-// when the key is absent (certmagic checks errors.Is(err, fs.ErrNotExist)).
+// Load reads the value for key from state.CertBlobs. Falls back to the disk
+// cache when raft has no entry (e.g. raft state was wiped but the cert is
+// still on disk). Returns ErrNotExist when neither has the key (certmagic
+// checks errors.Is(err, fs.ErrNotExist)).
 func (s *JacoStorage) Load(_ context.Context, key string) ([]byte, error) {
 	b, ok := s.state.CertBlobs.Get(key)
-	if !ok {
-		return nil, fmt.Errorf("Load %s: %w", key, ErrNotExist)
+	if ok {
+		cp := make([]byte, len(b.GetValue()))
+		copy(cp, b.GetValue())
+		return cp, nil
 	}
-	cp := make([]byte, len(b.GetValue()))
-	copy(cp, b.GetValue())
-	return cp, nil
+	if v, ok := s.cacheRead(key); ok {
+		return v, nil
+	}
+	return nil, fmt.Errorf("Load %s: %w", key, ErrNotExist)
 }
 
 // Delete raft-Applies CertBlobRemove{key}. No-op when absent (matches
-// certmagic's contract).
+// certmagic's contract). Also removes the disk-cache mirror.
 func (s *JacoStorage) Delete(_ context.Context, key string) error {
 	cmd := &pb.Command{
 		Identity: "ingress",
@@ -229,12 +261,20 @@ func (s *JacoStorage) Delete(_ context.Context, key string) error {
 	if err != nil {
 		return err
 	}
-	return s.apply(data)
+	if err := s.apply(data); err != nil {
+		return err
+	}
+	s.cacheDelete(key)
+	return nil
 }
 
-// Exists reports whether key has a value in state.CertBlobs.
+// Exists reports whether key has a value in state.CertBlobs, or in the disk
+// fallback when raft has no entry.
 func (s *JacoStorage) Exists(_ context.Context, key string) bool {
-	_, ok := s.state.CertBlobs.Get(key)
+	if _, ok := s.state.CertBlobs.Get(key); ok {
+		return true
+	}
+	_, ok := s.cacheRead(key)
 	return ok
 }
 
@@ -281,15 +321,97 @@ func (s *JacoStorage) List(_ context.Context, prefix string, recursive bool) ([]
 // a value (vs. being just a directory prefix).
 func (s *JacoStorage) Stat(_ context.Context, key string) (KeyInfo, error) {
 	b, ok := s.state.CertBlobs.Get(key)
-	if !ok {
-		return KeyInfo{}, fmt.Errorf("Stat %s: %w", key, ErrNotExist)
+	if ok {
+		return KeyInfo{
+			Key:        key,
+			Modified:   b.GetUpdatedAt().AsTime(),
+			Size:       int64(len(b.GetValue())),
+			IsTerminal: true,
+		}, nil
 	}
-	return KeyInfo{
-		Key:        key,
-		Modified:   b.GetUpdatedAt().AsTime(),
-		Size:       int64(len(b.GetValue())),
-		IsTerminal: true,
-	}, nil
+	if v, modTime, ok := s.cacheStat(key); ok {
+		return KeyInfo{
+			Key:        key,
+			Modified:   modTime,
+			Size:       int64(len(v)),
+			IsTerminal: true,
+		}, nil
+	}
+	return KeyInfo{}, fmt.Errorf("Stat %s: %w", key, ErrNotExist)
+}
+
+// --- Disk fallback cache --------------------------------------------------
+//
+// Layout: $cacheDir/<sha256(key)>. We hash the key (certmagic keys contain
+// path separators, '@', and other characters that don't map cleanly to a
+// single filename) so every blob is a flat file. The issue spec's
+// "<domain>/<finger>" intent is satisfied — the key already embeds the
+// domain (e.g. "certificates/<issuer>/<domain>/<domain>.crt"), and the
+// hash is the deterministic fingerprint.
+
+// cachePath returns the on-disk path for key, or "" when the cache is off.
+func (s *JacoStorage) cachePath(key string) string {
+	if s.cacheDir == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(key))
+	return filepath.Join(s.cacheDir, hex.EncodeToString(sum[:]))
+}
+
+// cacheWrite mirrors a blob to disk best-effort. Failures are swallowed —
+// the disk cache is a fallback, never the authoritative store.
+func (s *JacoStorage) cacheWrite(key string, value []byte) {
+	p := s.cachePath(key)
+	if p == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return
+	}
+	// Atomic write: temp file + rename so a crash mid-write can't leave a
+	// truncated blob that certmagic would parse as a corrupt cert.
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, value, 0o600); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, p)
+}
+
+// cacheRead returns the disk-cached blob for key, or (nil, false).
+func (s *JacoStorage) cacheRead(key string) ([]byte, bool) {
+	p := s.cachePath(key)
+	if p == "" {
+		return nil, false
+	}
+	v, err := os.ReadFile(p)
+	if err != nil {
+		return nil, false
+	}
+	return v, true
+}
+
+// cacheStat returns the disk-cached blob bytes + modtime for key.
+func (s *JacoStorage) cacheStat(key string) ([]byte, time.Time, bool) {
+	p := s.cachePath(key)
+	if p == "" {
+		return nil, time.Time{}, false
+	}
+	info, err := os.Stat(p)
+	if err != nil {
+		return nil, time.Time{}, false
+	}
+	v, err := os.ReadFile(p)
+	if err != nil {
+		return nil, time.Time{}, false
+	}
+	return v, info.ModTime(), true
+}
+
+// cacheDelete removes the disk mirror for key. Best-effort.
+func (s *JacoStorage) cacheDelete(key string) {
+	if p := s.cachePath(key); p != "" {
+		_ = os.Remove(p)
+	}
 }
 
 // ErrNotExist is the sentinel Load/Stat return for missing keys. certmagic

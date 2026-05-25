@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
-	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -79,7 +82,7 @@ func TestRun_BootsAndAcceptsStatus(t *testing.T) {
 	t.Cleanup(cancel)
 
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, configPath, io.Discard) }()
+	go func() { done <- run(ctx, configPath, discardLog()) }()
 
 	// Wait for the socket to appear.
 	waitForSocket(t, sock, 3*time.Second)
@@ -109,7 +112,7 @@ func TestRun_InitFlipsStatusAndPersistsRaft(t *testing.T) {
 	t.Cleanup(cancel)
 
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, configPath, io.Discard) }()
+	go func() { done <- run(ctx, configPath, discardLog()) }()
 	waitForSocket(t, sock, 3*time.Second)
 
 	conn := dialDaemonForTest(t, sock)
@@ -156,7 +159,7 @@ func TestRun_LoadsConfigFromPath(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	err := run(ctx, bad, io.Discard)
+	err := run(ctx, bad, discardLog())
 	if err == nil {
 		t.Fatalf("expected error from bad config")
 	}
@@ -174,7 +177,7 @@ func TestRun_RejectsMissingDataDir(t *testing.T) {
 	defer cancel()
 
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, configPath, io.Discard) }()
+	go func() { done <- run(ctx, configPath, discardLog()) }()
 	// We expect Init or Serve to fail; allow the boot to complete then Init
 	// fails. For this test it's enough to verify run() doesn't panic.
 	time.Sleep(100 * time.Millisecond)
@@ -209,3 +212,71 @@ func waitForSocket(t *testing.T, path string, timeout time.Duration) {
 
 // silence unused
 var _ sync.Mutex
+
+// discardLog returns a slog logger that drops all output, for run() tests.
+func discardLog() *slog.Logger { return logging.Discard() }
+
+// TestRun_StartupBannerHasSubsystemAndVersion is issue #38 acceptance (a) + (c):
+// jacod's startup banner carries subsystem=jacod and version=..., and each
+// emitted line is a single parseable JSON object.
+func TestRun_StartupBannerHasSubsystemAndVersion(t *testing.T) {
+	version = "9.9.9-test"
+
+	dataDir := t.TempDir()
+	sock := filepath.Join(t.TempDir(), "jacod.sock")
+	configPath := writeConfig(t, dataDir, sock)
+
+	var buf syncBuffer
+	root := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, configPath, root) }()
+	waitForSocket(t, sock, 3*time.Second)
+	cancel()
+	<-done
+
+	// Every emitted line must be a single JSON object.
+	var bannerFound bool
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("log line is not one JSON object: %v (%q)", err, line)
+		}
+		if rec["msg"] == "starting" {
+			bannerFound = true
+			if rec["subsystem"] != "jacod" {
+				t.Errorf("banner subsystem = %v, want jacod", rec["subsystem"])
+			}
+			if rec["version"] != "9.9.9-test" {
+				t.Errorf("banner version = %v, want 9.9.9-test", rec["version"])
+			}
+		}
+	}
+	if !bannerFound {
+		t.Errorf("startup banner (msg=starting) not found in:\n%s", buf.String())
+	}
+}
+
+// syncBuffer is a goroutine-safe bytes.Buffer wrapper (the daemon logs from
+// multiple goroutines during boot).
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}

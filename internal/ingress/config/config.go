@@ -78,6 +78,23 @@ type BuildOpts struct {
 	ACMEEmail string
 	// ACMECA is the ACME directory URL. Default is Let's Encrypt prod.
 	ACMECA string
+	// ACMEEnabled is the cluster-wide ACME switch (jacod.yaml.acme_enabled).
+	// When false, BuildCaddyConfig omits the tls.automation block entirely no
+	// matter how many `tls: auto` routes exist — verifiable without any
+	// outbound ACME call (issue #41). The zero value is false, so the daemon
+	// MUST set this true to get automation; ingressBuilder does exactly that
+	// from Config.ACMEEnabledOrDefault().
+	ACMEEnabled bool
+	// ACMEStagingCA is the staging directory URL used for stage-first
+	// issuance. Domains in StagingDomains get a separate automation policy
+	// pointed here instead of ACMECA; once a domain's staging dry-run
+	// succeeds the daemon drops it from StagingDomains and the next rebuild
+	// re-issues it against ACMECA (prod). Empty when stage-first is off.
+	ACMEStagingCA string
+	// StagingDomains is the set of `tls: auto` domains currently in their
+	// staging dry-run. nil/empty means every domain issues directly against
+	// ACMECA (no staging in flight).
+	StagingDomains map[string]bool
 	// Now is the clock used for last_health_at staleness checks. Tests pin
 	// it; production passes time.Now.
 	Now func() time.Time
@@ -186,14 +203,25 @@ func BuildCaddyConfig(routes []Route, tcpRoutes []TCPRoute, replicas []ReplicaOb
 
 	tlsPolicies := buildTLSPolicies(sortedRoutes, opts)
 
+	jacoServer := map[string]any{
+		"listen": []any{":80", ":443"},
+		"routes": cfgRoutes,
+	}
+	if len(tlsPolicies) == 0 {
+		// No automation policies were emitted — either acme_enabled:false
+		// (cluster-wide opt-out) or no tls:auto route exists. Caddy's
+		// automatic_https defaults to ON, so without this it auto-issues a
+		// cert for every :443 host route using its DEFAULT issuer (Let's
+		// Encrypt PROD) — ignoring acme_ca and the acme_enabled opt-out, and
+		// burning prod rate limits. Disable it explicitly so the opt-out
+		// actually prevents all outbound ACME.
+		jacoServer["automatic_https"] = map[string]any{"disable": true}
+	}
 	root := map[string]any{
 		"apps": map[string]any{
 			"http": map[string]any{
 				"servers": map[string]any{
-					"jaco": map[string]any{
-						"listen": []any{":80", ":443"},
-						"routes": cfgRoutes,
-					},
+					"jaco": jacoServer,
 				},
 			},
 		},
@@ -365,7 +393,7 @@ func pathMatchers(path string) []any {
 func fallbackRoute() any {
 	return map[string]any{
 		"handle": []any{map[string]any{
-			"handler": "static_response",
+			"handler":     "static_response",
 			"status_code": 404,
 			"headers": map[string]any{
 				"Server": []any{"jaco"},
@@ -382,8 +410,15 @@ func fallbackRoute() any {
 // the subjects list is deduped — ACME would otherwise be asked to issue
 // the same cert several times.
 func buildTLSPolicies(routes []Route, opts BuildOpts) []any {
+	// Cluster-wide ACME opt-out: no automation block at all, regardless of
+	// per-route tls_auto. The HTTP-only listener serves :80; :443 routes get
+	// no managed cert (the operator runs their own cert pipeline). This is the
+	// safety net that lets `acme_enabled: false` be verified offline.
+	if !opts.ACMEEnabled {
+		return nil
+	}
 	seen := map[string]bool{}
-	var domains []string
+	var prodDomains, stagingDomains []string
 	for _, r := range routes {
 		if !r.TLSAuto {
 			continue
@@ -392,33 +427,53 @@ func buildTLSPolicies(routes []Route, opts BuildOpts) []any {
 			continue
 		}
 		seen[r.Domain] = true
-		domains = append(domains, r.Domain)
+		// Stage-first: a domain in its staging dry-run gets a policy pointing
+		// at the staging directory. All others issue against the prod CA.
+		if opts.StagingDomains[r.Domain] && opts.ACMEStagingCA != "" {
+			stagingDomains = append(stagingDomains, r.Domain)
+		} else {
+			prodDomains = append(prodDomains, r.Domain)
+		}
 	}
-	if len(domains) == 0 {
+	if len(prodDomains) == 0 && len(stagingDomains) == 0 {
 		return nil
 	}
-	sort.Strings(domains)
+	sort.Strings(prodDomains)
+	sort.Strings(stagingDomains)
+
+	var policies []any
+	// Staging policy first (deterministic order: staging before prod) so the
+	// rendered JSON is golden-stable.
+	if len(stagingDomains) > 0 {
+		policies = append(policies, tlsPolicy(stagingDomains, opts.ACMEStagingCA, opts.ACMEEmail))
+	}
+	if len(prodDomains) > 0 {
+		policies = append(policies, tlsPolicy(prodDomains, opts.ACMECA, opts.ACMEEmail))
+	}
+	return policies
+}
+
+// tlsPolicy builds one automation policy for the given subjects + CA.
+func tlsPolicy(domains []string, ca, email string) any {
 	subjects := make([]any, 0, len(domains))
 	for _, d := range domains {
 		subjects = append(subjects, d)
 	}
 	issuer := map[string]any{
 		"module": "acme",
-		"ca":     opts.ACMECA,
+		"ca":     ca,
 		"challenges": map[string]any{
 			"http": map[string]any{},
 		},
 	}
-	if opts.ACMEEmail != "" {
-		issuer["email"] = opts.ACMEEmail
+	if email != "" {
+		issuer["email"] = email
 	}
-	return []any{
-		map[string]any{
-			"subjects": subjects,
-			"issuers":  []any{issuer},
-			"key_type": "p256",
-			"storage":  map[string]any{"module": "jaco"},
-		},
+	return map[string]any{
+		"subjects": subjects,
+		"issuers":  []any{issuer},
+		"key_type": "p256",
+		"storage":  map[string]any{"module": "jaco"},
 	}
 }
 

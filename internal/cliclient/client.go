@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -27,10 +29,26 @@ type Client struct {
 	creds    credentials.TransportCredentials
 	token    string
 	serverNm string // TLS ServerName override, empty for default
+	logger   *slog.Logger
 
 	mu   sync.Mutex
 	conn *grpc.ClientConn // current connection, lazily dialed
 	cur  int              // index into addrs that conn corresponds to
+}
+
+// WithLogger attaches a logger so the client emits debug lines for server
+// selection + retry decisions (issue #38 CLI logging). nil-safe via log().
+// Returns c for chaining.
+func (c *Client) WithLogger(l *slog.Logger) *Client {
+	c.logger = logging.Subsystem(l, "cliclient")
+	return c
+}
+
+func (c *Client) log() *slog.Logger {
+	if c.logger == nil {
+		return logging.Discard()
+	}
+	return c.logger
 }
 
 // NewClient builds a Client from a resolved Context. Reads the CA cert from
@@ -126,6 +144,7 @@ func (c *Client) Invoke(ctx context.Context, fn func(*grpc.ClientConn) error) er
 		if err := fn(conn); err != nil {
 			lastErr = err
 			if shouldRotate(err) {
+				c.log().Debug("rotating to next endpoint", "attempt", attempt, "error", err)
 				c.discardCurrent()
 				continue
 			}
@@ -157,6 +176,7 @@ func (c *Client) dialLocked(index int) (*grpc.ClientConn, error) {
 	if index < 0 || index >= len(c.addrs) {
 		return nil, fmt.Errorf("index %d out of range %d", index, len(c.addrs))
 	}
+	c.log().Debug("selecting server endpoint", "addr", c.addrs[index], "index", index)
 	dialOpts := []grpc.DialOption{grpc.WithTransportCredentials(c.creds)}
 	conn, err := grpc.NewClient(c.addrs[index], dialOpts...)
 	if err != nil {

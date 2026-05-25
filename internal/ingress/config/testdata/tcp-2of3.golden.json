@@ -3,6 +3,9 @@
     "http": {
       "servers": {
         "jaco": {
+          "automatic_https": {
+            "disable": true
+          },
           "listen": [
             ":80",
             ":443"

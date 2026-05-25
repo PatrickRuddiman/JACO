@@ -1,6 +1,8 @@
 package watch
 
 import (
+	"log/slog"
+
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -24,6 +26,33 @@ type Registry struct {
 	RestartCounters  *Broker[*pb.RestartCounter]
 	AuditEvents      *Broker[*pb.AuditEvent]
 	Cluster          *Broker[*pb.ClusterMeta]
+
+	// Logger is the watch-subsystem logger. Set it via SetLogger so it
+	// propagates to every broker (subscriber join/leave DEBUG, fanout-drop
+	// WARN). nil → brokers discard.
+	Logger *slog.Logger
+}
+
+// SetLogger tags the registry and every broker with logger so watch events
+// (subscriber join/leave, fanout drops) carry subsystem=watch + a broker name.
+func (r *Registry) SetLogger(logger *slog.Logger) {
+	r.Logger = logger
+	r.Nodes.logger, r.Nodes.name = logger, "Nodes"
+	r.Deployments.logger, r.Deployments.name = logger, "Deployments"
+	r.ReplicasDesired.logger, r.ReplicasDesired.name = logger, "ReplicasDesired"
+	r.ReplicasObserved.logger, r.ReplicasObserved.name = logger, "ReplicasObserved"
+	r.Routes.logger, r.Routes.name = logger, "Routes"
+	r.Certs.logger, r.Certs.name = logger, "Certs"
+	r.CertBlobs.logger, r.CertBlobs.name = logger, "CertBlobs"
+	r.ChallengeTokens.logger, r.ChallengeTokens.name = logger, "ChallengeTokens"
+	r.Tokens.logger, r.Tokens.name = logger, "Tokens"
+	r.JoinTokens.logger, r.JoinTokens.name = logger, "JoinTokens"
+	r.Subnets.logger, r.Subnets.name = logger, "Subnets"
+	r.RolloutPlans.logger, r.RolloutPlans.name = logger, "RolloutPlans"
+	r.ReplicaCounters.logger, r.ReplicaCounters.name = logger, "ReplicaCounters"
+	r.RestartCounters.logger, r.RestartCounters.name = logger, "RestartCounters"
+	r.AuditEvents.logger, r.AuditEvents.name = logger, "AuditEvents"
+	r.Cluster.logger, r.Cluster.name = logger, "Cluster"
 }
 
 // NewRegistry builds a Registry with each broker sized to DefaultBuffer.

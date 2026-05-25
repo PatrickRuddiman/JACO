@@ -2,6 +2,8 @@ package grpc
 
 import (
 	"bytes"
+	"io"
+	"log/slog"
 	"testing"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -40,7 +42,8 @@ func TestIngressBuilder_EmitsTCPRoute(t *testing.T) {
 	st := state.New(brokers)
 	seedHealthyTCPService(t, st, "data", "db", 5432)
 
-	cfg, err := ingressBuilder(st, "")()
+	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg, err := ingressBuilder(st, ingressACMEOpts{}, discard)()
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
