@@ -1,0 +1,15 @@
+# Caddy ingress for the Swarm bench stack — terminates TLS for jaco.sh (via
+# ACME) and reverse-proxies to the web tier, mirroring JACO's Caddy ingress so
+# the two stacks are benched over the SAME protocol (HTTPS).
+#
+# acme_ca is pinned to Let's Encrypt STAGING: this is a throwaway bench and prod
+# LE has tight duplicate-cert limits. Staging certs aren't browser-trusted (k6
+# runs with insecureSkipTLSVerify), which is fine for a perf measurement.
+{
+	acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+	email ops@jaco.sh
+}
+
+jaco.sh {
+	reverse_proxy web:80
+}

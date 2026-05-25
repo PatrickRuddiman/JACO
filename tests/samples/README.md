@@ -51,9 +51,9 @@ export BENCH_PUBLIC_IPS="<n1> <n2> <n3>" BENCH_PRIVATE_IPS="<p1> <p2> <p3>"
 | stack | bootstrap | manifests | bench adapter |
 |-------|-----------|-----------|---------------|
 | JACO  | ✅        | ✅        | ✅            |
+| swarm | ✅        | ✅        | ✅            |
 | k8s   | stub      | stub      | stub          |
 | k3s   | stub      | stub      | stub          |
-| swarm | stub      | stub      | stub          |
 
 The workload, testbed, and grading harness are complete and validated against
 JACO. The other three stacks reuse all of that unchanged — only their bootstrap

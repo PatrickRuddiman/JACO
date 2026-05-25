@@ -57,6 +57,15 @@ type IsolationGate struct {
 // the production caller; existing test paths pass the zero-value gate and
 // bypass the check.
 func Start(ctx context.Context, d dockerx.Docker, spec compose.ContainerSpec, gate ...IsolationGate) (containerID string, err error) {
+	return StartWithPullState(ctx, d, spec, nil, gate...)
+}
+
+// StartWithPullState is Start with an image-pull state callback. onPull (may be
+// nil) receives every pull transition (pulling / failed-then-retrying / done)
+// so the caller can surface pull progress and failures — e.g. the runtime
+// reconciler logs them and submits a ReplicaObserved so a stuck pull shows up
+// in `jaco status` instead of failing silently.
+func StartWithPullState(ctx context.Context, d dockerx.Docker, spec compose.ContainerSpec, onPull pull.StateFn, gate ...IsolationGate) (containerID string, err error) {
 	if spec.ReplicaID == "" {
 		return "", errors.New("Start: ContainerSpec.ReplicaID is required")
 	}
@@ -100,7 +109,7 @@ func Start(ctx context.Context, d dockerx.Docker, spec compose.ContainerSpec, ga
 	// haven't cached the image error with "No such image" on Create
 	// otherwise. pull.Pull retries with exponential backoff so transient
 	// registry failures don't abort the reconcile.
-	if err := pull.Pull(ctx, d, spec.Image, nil, nil); err != nil {
+	if err := pull.Pull(ctx, d, spec.Image, nil, onPull); err != nil {
 		return "", fmt.Errorf("ImagePull %s: %w", spec.Image, err)
 	}
 

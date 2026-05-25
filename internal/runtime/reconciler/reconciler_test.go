@@ -37,6 +37,9 @@ type fakeDocker struct {
 	mu         sync.Mutex
 	containers map[string]*fakeContainer
 	idSeq      int
+	pullErr    error         // when set, ImagePull fails with it (simulates an unreachable registry)
+	blockImage string        // ImagePull blocks for this exact ref until unblock closes / ctx is done
+	unblock    chan struct{} // closed to release a blocked ImagePull
 }
 
 type fakeContainer struct {
@@ -47,7 +50,17 @@ type fakeContainer struct {
 
 func newFakeDocker() *fakeDocker { return &fakeDocker{containers: map[string]*fakeContainer{}} }
 
-func (f *fakeDocker) ImagePull(_ context.Context, _ string, _ image.PullOptions) (io.ReadCloser, error) {
+func (f *fakeDocker) ImagePull(ctx context.Context, ref string, _ image.PullOptions) (io.ReadCloser, error) {
+	if f.pullErr != nil {
+		return nil, f.pullErr
+	}
+	if f.blockImage != "" && ref == f.blockImage && f.unblock != nil {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-f.unblock:
+		}
+	}
 	return io.NopCloser(strings.NewReader(`{}`)), nil
 }
 
@@ -430,6 +443,121 @@ func (r *recordingSubmit) failedWithCode(code string) *pb.ReplicaObserved {
 		}
 	}
 	return nil
+}
+
+func (r *recordingSubmit) withStateCode(st pb.ReplicaState, code string) *pb.ReplicaObserved {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, o := range r.obs {
+		if o.GetState() == st && o.GetCode() == code {
+			return o
+		}
+	}
+	return nil
+}
+
+// TestReconciler_ImagePullFailureSurfacesPending — when the image can't be
+// pulled (e.g. an unreachable registry), the replica is published
+// PENDING/image_pull_failed with the error so it shows in `jaco status` instead
+// of silently never appearing (issue #66). No container is created.
+func TestReconciler_ImagePullFailureSurfacesPending(t *testing.T) {
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	f := fsm.New(st, brokers)
+	d := newFakeDocker()
+	d.pullErr = errors.New("dial tcp: lookup jaco-1: no such host")
+	var raftIdx uint64
+	seedAll(t, f, &raftIdx)
+
+	rec := &recordingSubmit{}
+	r := reconciler.New(d, st, brokers, "host-a", rec.fn, okEnsureSubnet, silentLogger())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+
+	raftIdx++
+	apply(t, f, &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_ReplicaDesiredUpsert{
+		ReplicaDesiredUpsert: &pb.ReplicaDesiredUpsert{Replica: &pb.ReplicaDesired{
+			Id: "smoke-web-0", Deployment: "smoke", Service: "web", Index: 0, Host: "host-a", Image: "nginx:1.27",
+		}},
+	}}, raftIdx)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if rec.withStateCode(pb.ReplicaState_REPLICA_STATE_PENDING, "image_pull_failed") != nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	obs := rec.withStateCode(pb.ReplicaState_REPLICA_STATE_PENDING, "image_pull_failed")
+	if obs == nil {
+		t.Fatalf("no PENDING/image_pull_failed observation published for a failing pull")
+	}
+	if obs.GetDetails()["reason"] == "" {
+		t.Errorf("image_pull_failed observation missing a reason detail")
+	}
+	if got := len(d.snapshotByReplicaID()); got != 0 {
+		t.Errorf("created %d containers despite pull failure; want 0", got)
+	}
+}
+
+// TestReconciler_StuckPullDoesNotBlockOtherReplicas — a replica whose image
+// pull hangs (e.g. an unreachable registry) must not freeze the reconcile loop
+// and stall other replicas on the node. Each start runs in its own goroutine,
+// so replica B comes up while replica A is wedged in its pull.
+func TestReconciler_StuckPullDoesNotBlockOtherReplicas(t *testing.T) {
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	f := fsm.New(st, brokers)
+	d := newFakeDocker()
+	d.blockImage = "stuck:1"
+	d.unblock = make(chan struct{})
+	var raftIdx uint64
+	seedAll(t, f, &raftIdx)
+
+	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, okEnsureSubnet, silentLogger())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- rec.Run(ctx) }()
+
+	// Replica A: image whose pull hangs forever.
+	raftIdx++
+	apply(t, f, &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_ReplicaDesiredUpsert{
+		ReplicaDesiredUpsert: &pb.ReplicaDesiredUpsert{Replica: &pb.ReplicaDesired{
+			Id: "smoke-web-0", Deployment: "smoke", Service: "web", Index: 0, Host: "host-a", Image: "stuck:1",
+		}},
+	}}, raftIdx)
+	// Replica B: a normal image that pulls fine.
+	raftIdx++
+	apply(t, f, &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_ReplicaDesiredUpsert{
+		ReplicaDesiredUpsert: &pb.ReplicaDesiredUpsert{Replica: &pb.ReplicaDesired{
+			Id: "smoke-web-1", Deployment: "smoke", Service: "web", Index: 1, Host: "host-a", Image: "ok:1",
+		}},
+	}}, raftIdx)
+
+	// B must come up even though A is wedged in its pull.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := d.snapshotByReplicaID()["smoke-web-1"]; ok {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, ok := d.snapshotByReplicaID()["smoke-web-1"]; !ok {
+		t.Fatal("replica B never started while replica A's pull was stuck — the reconcile loop blocked")
+	}
+	if _, ok := d.snapshotByReplicaID()["smoke-web-0"]; ok {
+		t.Error("replica A should still be stuck pulling (no container yet)")
+	}
+
+	close(d.unblock) // release A so its goroutine can finish
+	cancel()
+	<-done
 }
 
 // TestReconciler_PoolExhaustionMarksReplicaFailed — when ensureSubnet reports

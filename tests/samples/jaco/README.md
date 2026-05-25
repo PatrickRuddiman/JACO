@@ -50,6 +50,19 @@ curl -s -XPOST https://jaco.sh/api/notes \
 curl -s https://jaco.sh/api/metrics           # Prometheus metrics from an api replica
 ```
 
+## Known caveat: multi-node TLS readiness
+
+The ingress LB fronts `:443` on all nodes, but the ACME cert is obtained by the
+raft **leader** — followers serve TLS only once that cert propagates to them.
+On a freshly-(re)initialized cluster, expect a window where the leader answers
+HTTPS while followers still fail the handshake, so LB-fronted requests are
+intermittently rejected until propagation completes (observed to take minutes,
+and to not complete at all if a cluster's raft state is wiped without also
+clearing each node's Caddy storage). The bench's readiness check now waits for a
+**stable streak** of successes (not a single 200) before measuring, so it won't
+start against a half-up fleet. If followers never start serving TLS, that's a
+JACO cross-host cert-propagation problem, not a workload issue.
+
 ## Local dry-run (no cluster)
 
 The compose file builds and runs on a single host with stock `docker compose`:

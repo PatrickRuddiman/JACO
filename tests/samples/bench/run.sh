@@ -76,7 +76,9 @@ if have k6; then
   k6 run "${nargs[@]}" "$BENCH_DIR/loadgen/scenario.js" --summary-export "$RUNDIR/summary.json" || true
 else
   dargs=(); for kv in "${KV[@]}"; do dargs+=(-e "$kv"); done
-  docker run --rm \
+  # Run as the host user so k6 can write summary.json into the host-owned mount
+  # (the grafana/k6 image otherwise runs as its own uid and is denied).
+  docker run --rm --user "$(id -u):$(id -g)" \
     -v "$BENCH_DIR/loadgen":/scenario:ro -v "$RUNDIR":/work \
     "${dargs[@]}" \
     grafana/k6 run /scenario/scenario.js --summary-export /work/summary.json || true
