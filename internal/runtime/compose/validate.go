@@ -3,6 +3,7 @@ package compose
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -119,8 +120,116 @@ func Validate(rawYAML []byte) error {
 				}
 			}
 		}
+		if ports, ok := svc["ports"]; ok {
+			if verr := checkReservedPorts(svcName, ports); verr != nil {
+				return verr
+			}
+		}
 	}
 	return nil
+}
+
+// reservedHostPorts are the host ports JACO's HTTP/S ingress owns; a compose
+// service may not publish them (they'd silently steal Caddy's listeners).
+var reservedHostPorts = []int{80, 443}
+
+// checkReservedPorts rejects any ports: entry that publishes a reserved host
+// port (80/443). Only the published host side is inspected — container-side
+// targets and bare entries with no host publish are documentation and pass.
+func checkReservedPorts(svcName string, portsField any) *ValidationError {
+	entries, ok := portsField.([]any)
+	if !ok {
+		return nil
+	}
+	for _, item := range entries {
+		lo, hi, raw, ok := publishedHostRange(item)
+		if !ok {
+			continue
+		}
+		for _, rp := range reservedHostPorts {
+			if lo <= rp && rp <= hi {
+				return &ValidationError{
+					Code: "reserved_port",
+					Message: fmt.Sprintf("service %q publishes reserved host port %d (entry %q); 80 and 443 belong to JACO's HTTP/S ingress",
+						svcName, rp, raw),
+					Details: map[string]string{
+						"service": svcName,
+						"port":    strconv.Itoa(rp),
+						"entry":   raw,
+					},
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// publishedHostRange extracts the published host port range from one ports:
+// entry. Returns ok=false when the entry declares no published host side
+// (bare container port, or a long-form map without `published`).
+func publishedHostRange(item any) (lo, hi int, raw string, ok bool) {
+	switch v := item.(type) {
+	case string:
+		s := v
+		if i := strings.IndexByte(s, '/'); i >= 0 { // drop /tcp|/udp suffix
+			s = s[:i]
+		}
+		parts := strings.Split(s, ":")
+		var published string
+		switch len(parts) {
+		case 2: // "H:C"
+			published = parts[0]
+		case 3: // "IP:H:C"
+			published = parts[1]
+		default: // bare "C" — no published host side
+			return 0, 0, v, false
+		}
+		lo, hi, ok = parsePortRange(published)
+		return lo, hi, v, ok
+	case map[string]any:
+		return publishedFromMap(v)
+	case map[any]any:
+		m := make(map[string]any, len(v))
+		for k, val := range v {
+			if ks, ok := k.(string); ok {
+				m[ks] = val
+			}
+		}
+		return publishedFromMap(m)
+	}
+	return 0, 0, "", false
+}
+
+// publishedFromMap reads the `published` key of a long-form ports: entry.
+func publishedFromMap(m map[string]any) (lo, hi int, raw string, ok bool) {
+	pub, present := m["published"]
+	if !present {
+		return 0, 0, "", false
+	}
+	pubStr := fmt.Sprintf("%v", pub)
+	lo, hi, ok = parsePortRange(pubStr)
+	return lo, hi, fmt.Sprintf("published: %v", pub), ok
+}
+
+// parsePortRange parses "80" → (80,80) or "8000-8100" → (8000,8100).
+func parsePortRange(s string) (lo, hi int, ok bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, 0, false
+	}
+	if i := strings.IndexByte(s, '-'); i >= 0 {
+		a, errA := strconv.Atoi(strings.TrimSpace(s[:i]))
+		b, errB := strconv.Atoi(strings.TrimSpace(s[i+1:]))
+		if errA != nil || errB != nil || a > b {
+			return 0, 0, false
+		}
+		return a, b, true
+	}
+	p, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, 0, false
+	}
+	return p, p, true
 }
 
 // rawCompose is the strict-key view we use for closed-field validation.
