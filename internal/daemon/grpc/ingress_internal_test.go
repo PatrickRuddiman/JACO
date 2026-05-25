@@ -2,8 +2,6 @@ package grpc
 
 import (
 	"bytes"
-	"fmt"
-	"net"
 	"testing"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -34,43 +32,48 @@ func seedHealthyTCPService(t *testing.T, st *state.State, deployment, service st
 	st.TCPRoutes.Apply(&pb.TCPRoute{PublishedPort: int32(port), Deployment: deployment, Service: service, ContainerPort: 5432}, 4)
 }
 
-// TestIngressBuilder_DropsUnbindableTCPPort: a published port already held by
-// another listener on this node is skipped from the built config (so it can't
-// fail the atomic caddy.Load), and reappears once the port is free.
-func TestIngressBuilder_DropsUnbindableTCPPort(t *testing.T) {
+// TestIngressBuilder_EmitsTCPRoute: a TCPRoute with a healthy replica produces
+// a layer4 server in the built config. (No bind-probe — caddy-l4 owns the
+// listener and re-binding its own port on reload is idempotent.)
+func TestIngressBuilder_EmitsTCPRoute(t *testing.T) {
 	brokers := watch.NewRegistry()
 	st := state.New(brokers)
+	seedHealthyTCPService(t, st, "data", "db", 5432)
 
-	// Grab a free ephemeral port and hold it, then publish that exact port.
-	ln, err := net.Listen("tcp", ":0")
+	cfg, err := ingressBuilder(st, "")()
 	if err != nil {
-		t.Fatalf("listen: %v", err)
+		t.Fatalf("build: %v", err)
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	seedHealthyTCPService(t, st, "data", "db", port)
+	if !bytes.Contains(cfg, []byte("tcp_5432")) {
+		t.Errorf("built config missing tcp_5432 server:\n%s", cfg)
+	}
+}
 
-	build := ingressBuilder(st, "")
-
-	cfg, err := build()
-	if err != nil {
-		t.Fatalf("build (port occupied): %v", err)
+// TestShouldLoad guards the startup-vs-teardown gate: route-less configs are
+// skipped only before caddy first starts; once running, they MUST load so a
+// deleted route's listeners are torn down.
+func TestShouldLoad(t *testing.T) {
+	fallback := []byte(`{"apps":{"http":{"servers":{"jaco":{"routes":[{"handle":[{"handler":"static_response"}]}]}}}}}`)
+	httpCfg := []byte(`{"apps":{"http":{"servers":{"jaco":{"routes":[{"handle":[{"handler":"reverse_proxy"}]}]}}}}}`)
+	l4Cfg := []byte(`{"apps":{"layer4":{"servers":{"tcp_5432":{"listen":[":5432"]}}}}}`)
+	cases := []struct {
+		name    string
+		started bool
+		cfg     []byte
+		want    bool
+	}{
+		{"startup + route-less -> skip", false, fallback, false},
+		{"startup + http -> load", false, httpCfg, true},
+		{"startup + layer4 -> load", false, l4Cfg, true},
+		{"running + route-less -> load (teardown)", true, fallback, true},
+		{"running + layer4 -> load", true, l4Cfg, true},
 	}
-	marker := []byte(fmt.Sprintf("tcp_%d", port))
-	if bytes.Contains(cfg, marker) {
-		t.Errorf("config still contains tcp_%d while the port is occupied:\n%s", port, cfg)
-	}
-
-	// Free the port; the route must now be emitted (proving the drop was the
-	// bind probe, not a missing upstream).
-	if err := ln.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	cfg2, err := build()
-	if err != nil {
-		t.Fatalf("build (port free): %v", err)
-	}
-	if !bytes.Contains(cfg2, marker) {
-		t.Errorf("config missing tcp_%d after the port was freed:\n%s", port, cfg2)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldLoad(tc.started, tc.cfg); got != tc.want {
+				t.Errorf("shouldLoad(%v, ...) = %v, want %v", tc.started, got, tc.want)
+			}
+		})
 	}
 }
 

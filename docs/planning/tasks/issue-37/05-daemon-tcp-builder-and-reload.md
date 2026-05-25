@@ -22,4 +22,9 @@ Wire the daemon's ingress builder to project `state.TCPRoutes` into `BuildCaddyC
 - [x] `go build ./...` exits 0.
 - [x] `git grep -nE 'TCPRoutes\.Subscribe' internal/ingress/rebuild/rebuild.go` matches and `git grep -nE 'net\.Listen\("tcp"' internal/daemon/grpc/ingress.go` matches.
 
+## Post-cluster-test revision (2026-05-25)
+Live 3-node testing surfaced two defects in the as-shipped task, both fixed in a follow-up commit (slice §3 decision 5 + §4 loader gate updated to match):
+- **Bind-probe removed.** `net.Listen(":port")` false-positives on caddy-l4's *own* listener, so the route was dropped on every rebuild, flapping the listener. The builder now emits every route; `caddy.Load` is an idempotent graceful swap for ports it already owns. A genuine foreign conflict fails the atomic load and the Reloader keeps last-good.
+- **Route-less configs now load once caddy is running** (`shouldLoad(started, cfg)`), so deleting the last route tears its listeners down. The skip applies only before caddy's first start. Without this, deleted TCP listeners lingered cluster-wide.
+
 > If a `## Tasks` checkbox can't be completed without changing what the parent slice specifies, stop and update the slice. Do not redesign here.

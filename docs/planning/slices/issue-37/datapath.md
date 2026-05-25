@@ -24,7 +24,7 @@ The per-node north-south TCP forwarder. Every node listens on every declared pub
 2. **Cluster-wide listeners.** Options: listen only on nodes hosting a local replica; listen on every node for every route. **Chosen:** every node emits a layer4 listener for **every** `TCPRoute` in cluster state, with upstreams = eligible overlay IPs anywhere. Rationale: the issue requires "reachable on every node regardless of where scheduled"; a node with no local replica proxies over the WG mesh (sourced from its mesh IP, admitted `mesh→pool` by `firewall/overlay.go`) — identical to how Caddy serves HTTP on every node.
 3. **Load balancing.** Options: round-robin; random (HTTP parity); source-IP hash. **Chosen:** round-robin per new connection (each connection then pins to its chosen replica for its lifetime). Rationale: TCP services carry a small number of long-lived connections where random clumps; round-robin spreads them evenly. caddy-l4 supports it directly.
 4. **Rolling-update drain.** Options: graceful (exclude from new, let open finish); hard cut on reload. **Chosen:** graceful. Rationale: a retiring-but-healthy replica is dropped from new connections on rebuild; established connections run until the peer closes or the scheduler tears the container down after its drain window (the effective grace). Mirrors the HTTP "in-flight allowed to complete" promise and relies on caddy-l4's graceful config swap — no connection bookkeeping. A crashed replica needs no handling: its sockets are already severed and reconnects land on survivors.
-5. **Port-bind failure handling.** Options: probe-and-skip per port; atomic + keep last-good. **Chosen:** probe-and-skip in the daemon builder. Rationale: `caddy.Load` is atomic, so one un-bindable port would otherwise stall all ingress (incl. HTTP) on that node; the builder test-binds each port and omits + logs the un-bindable ones so the rest still load. A rare probe→load TOCTOU race fails the load atomically, the Reloader keeps last-good, and the next rebuild re-probes and converges.
+5. **Port-bind failure handling.** Options: probe-and-skip per port; emit all + rely on last-good. **Chosen (revised after cluster test):** emit every TCP route and let caddy own the sockets; if a genuine *foreign* (operator-held) port fails the atomic `caddy.Load`, the Reloader retains the previous good config until it's resolved. Rationale: a pre-bind `net.Listen` probe can't distinguish caddy-l4's **own** listener from a foreign one — once caddy binds a published port, the probe sees it `address already in use` and drops the route on *every* subsequent rebuild, flapping the listener (observed on the bed). `caddy.Load` is an idempotent graceful swap for ports caddy already owns, so re-emitting them is safe. The earlier "probe-and-skip" decision was wrong and was removed.
 6. **Upstream health.** Options: reuse `running + fresh`; add a caddy-l4 active TCP-connect probe. **Chosen:** reuse `running + fresh` only (`config.isEligible`), no active health. Rationale: the issue mandates the same eligibility rule the HTTP path uses; keeps L4 and L7 behavior identical.
 
 ## §4 Contracts & shapes
@@ -45,7 +45,8 @@ The per-node north-south TCP forwarder. Every node listens on every declared pub
 - Pass the surviving `tcpRoutes` into `BuildCaddyConfig`.
 
 **Loader gate (`internal/daemon/grpc/ingress.go` — `ingressLoaderEmbedded`)**
-- The "has a real route" guard (`ingress.go:120`) must also fire for layer4 configs: load when the config contains `"reverse_proxy"` **or** a layer4 `"proxy"` handler, else a TCP-only deployment (ports, no HTTP routes) would never load.
+- `configHasLoadableRoute(cfg)` returns true when the config contains `"reverse_proxy"` **or** a `"layer4"` app, else a TCP-only deployment (ports, no HTTP routes) would never load.
+- `shouldLoad(started, cfg) = started || configHasLoadableRoute(cfg)`. The route-less skip applies **only before caddy first starts** (avoids a bare-404 stub at boot, bug-009). **Once caddy is running, a route-less config MUST still load** — otherwise deleting the last route never tears its listeners down and stale TCP listeners linger cluster-wide (observed on the bed; the Reloader's byte-dedup keeps this to one teardown load).
 
 **Reload loop (`internal/ingress/rebuild/rebuild.go` — `Reloader.Run`)**
 - Add a `TCPRoutes` subscription (`r.brokers.TCPRoutes.Subscribe()`) to the select loop (`rebuild.go:78-115`), feeding the same debounce/rebuild path as Routes. No other change — the existing byte-equality short-circuit (`rebuild.go:59-66`) already suppresses no-op reloads.
@@ -73,11 +74,11 @@ Rolling update (retire a healthy replica):
 
 Route delete (deployment delete):
 1. Control-plane cascade removes the deployment's `TCPRoute`s; `TCPRoutes` broker emits Removed.
-2. Rebuild emits a config without those layer4 servers; `caddy.Load` closes the listeners cluster-wide.
+2. Rebuild emits a route-less config; because caddy is already running, the loader loads it (it does not skip) and `caddy.Load` closes the listeners cluster-wide. (Verified on the bed: listener gone on all nodes within ~3 s.)
 
-Port-bind conflict on one node:
-1. Builder's probe finds `:5432` already held by an operator service on node C → drops it, logs degraded; node C loads the rest.
-2. Nodes A/B still serve `5432`; the deployment is reachable via them. (A probe→load race that slips through fails the atomic load; Reloader keeps last-good; next rebuild re-probes and converges.)
+Port-bind conflict on one node (foreign service holds the port):
+1. Builder emits the route; `caddy.Load` on that node fails to bind `:5432` (an operator service owns it) → the atomic load fails → the Reloader retains the previous good config, logs the error.
+2. The conflict stalls that node's ingress updates until the operator frees the port. Other nodes are unaffected. (Rare operator error; not silently degraded — a `net.Listen` pre-probe was rejected because it false-positives on caddy's own listener.)
 
 ## §6 Out of scope
 
