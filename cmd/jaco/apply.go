@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc/metadata"
 
 	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
@@ -26,42 +25,32 @@ func applyCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 	}
 	var (
-		server, opToken, caCertPath string
-		composePath                 string
-		dryRun                      bool
+		server, opToken, caCertPath, socket string
+		composePath                         string
+		dryRun                              bool
 	)
-	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
-	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN)")
+	c.Flags().StringVar(&server, "server", "", "leader address (host:port); off-node only — omit to use the local socket")
+	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN); required with --server")
 	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
+	c.Flags().StringVar(&socket, "socket", socketDefault(), "local jacod unix socket (used when --server is omitted)")
 	c.Flags().StringVar(&composePath, "compose", "", "compose file path; defaults to compose.yml next to jaco.yaml")
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "print the diff and exit without applying")
-	_ = c.MarkFlagRequired("server")
 
 	c.RunE = func(_ *cobra.Command, args []string) error {
-		if opToken == "" {
-			opToken = os.Getenv("JACO_TOKEN")
-		}
-		if opToken == "" {
-			return fmt.Errorf("--token or JACO_TOKEN env is required")
-		}
 		jacoPath := args[0]
 		jacoBytes, composeBytes, err := readManifestPair(jacoPath, composePath)
 		if err != nil {
 			return err
 		}
 
-		caCertPEM, err := readCACert(caCertPath)
-		if err != nil {
-			return err
-		}
-		conn, err := dialServer(server, caCertPEM)
+		conn, withAuth, err := dialOperator(operatorAuth{server: server, token: opToken, caCert: caCertPath, socket: socket})
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+opToken)
+		ctx = withAuth(ctx)
 
 		client := pb.NewDeployClient(conn)
 		return runApply(ctx, client, jacoBytes, composeBytes, dryRun, os.Stdout)

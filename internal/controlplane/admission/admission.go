@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
@@ -23,6 +24,13 @@ import (
 // identityCtxKey is the typed key under which authResolve stashes the
 // authenticated identity in the request context.
 type identityCtxKey struct{}
+
+// LocalIdentity is the principal attributed to RPCs that arrive over the
+// unix socket. The socket's filesystem permissions (mode 0660, owned by the
+// jaco group) ARE the auth mechanism — the kernel checks group membership on
+// connect(2) — so the bearer token is not required. Audit still records this
+// principal so on-node actions remain attributed.
+const LocalIdentity = "local"
 
 // IdentityFromContext returns the authenticated identity for the current RPC,
 // or the empty string when admission has not attached one (e.g. a no-auth RPC
@@ -89,9 +97,27 @@ type wrappedStream struct {
 
 func (w *wrappedStream) Context() context.Context { return w.ctx }
 
-// authResolve extracts the Bearer token, looks it up in state.Tokens, and
-// returns a context carrying the resolved identity.
+// isUnixPeer reports whether the RPC arrived over the local unix socket.
+// It fails closed: when no peer info is present (ok=false) or the peer's
+// network is anything other than "unix", it returns false so the caller
+// requires the bearer token. This is a security boundary — the bypass must
+// trigger ONLY for genuine unix-socket peers, never for TCP.
+func isUnixPeer(ctx context.Context) bool {
+	p, ok := peer.FromContext(ctx)
+	if !ok || p.Addr == nil {
+		return false
+	}
+	return p.Addr.Network() == "unix"
+}
+
+// authResolve authenticates the RPC and returns a context carrying the
+// resolved identity. Unix-socket peers are trusted by the socket's
+// filesystem permissions and bypass the bearer check (attributed to
+// LocalIdentity); TCP peers must present a valid, non-revoked Bearer token.
 func authResolve(ctx context.Context, s *state.State) (context.Context, error) {
+	if isUnixPeer(ctx) {
+		return context.WithValue(ctx, identityCtxKey{}, LocalIdentity), nil
+	}
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return nil, authError("token_invalid", "missing metadata")

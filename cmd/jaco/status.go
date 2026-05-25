@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc/metadata"
 
 	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
@@ -27,21 +26,15 @@ func statusCmd() *cobra.Command {
 		Short: "Print a snapshot of cluster deployments, replicas, and routes",
 		Args:  cobra.MaximumNArgs(1),
 	}
-	var server, opToken, caCertPath string
+	var server, opToken, caCertPath, socket string
 	var watch bool
-	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
-	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN)")
+	c.Flags().StringVar(&server, "server", "", "leader address (host:port); off-node only — omit to use the local socket")
+	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN); required with --server")
 	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
+	c.Flags().StringVar(&socket, "socket", socketDefault(), "local jacod unix socket (used when --server is omitted)")
 	c.Flags().BoolVarP(&watch, "watch", "w", false, "re-render on every state change (Ctrl-C to exit)")
-	_ = c.MarkFlagRequired("server")
 
 	c.RunE = func(_ *cobra.Command, args []string) error {
-		if opToken == "" {
-			opToken = os.Getenv("JACO_TOKEN")
-		}
-		if opToken == "" {
-			return fmt.Errorf("--token or JACO_TOKEN env is required")
-		}
 		dep, svc := "", ""
 		if len(args) == 1 {
 			parts := strings.SplitN(args[0], "/", 2)
@@ -50,17 +43,12 @@ func statusCmd() *cobra.Command {
 				svc = parts[1]
 			}
 		}
-		caCertPEM, err := readCACert(caCertPath)
-		if err != nil {
-			return err
-		}
-		conn, err := dialServer(server, caCertPEM)
+		conn, withAuth, err := dialOperator(operatorAuth{server: server, token: opToken, caCert: caCertPath, socket: socket})
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		ctx := metadata.AppendToOutgoingContext(context.Background(),
-			"authorization", "Bearer "+opToken)
+		ctx := withAuth(context.Background())
 		deployClient := pb.NewDeployClient(conn)
 		if !watch {
 			ctx, cancel := context.WithTimeout(ctx, 30*time.Second)

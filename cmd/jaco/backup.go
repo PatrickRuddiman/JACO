@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc/metadata"
 
 	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
@@ -24,34 +23,23 @@ func backupCmd() *cobra.Command {
 		Use:   "backup",
 		Short: "Stream a cluster backup tarball to a local file",
 	}
-	var server, opToken, caCertPath, outputPath string
-	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
-	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN)")
+	var server, opToken, caCertPath, socket, outputPath string
+	c.Flags().StringVar(&server, "server", "", "leader address (host:port); off-node only — omit to use the local socket")
+	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN); required with --server")
 	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
+	c.Flags().StringVar(&socket, "socket", socketDefault(), "local jacod unix socket (used when --server is omitted)")
 	c.Flags().StringVar(&outputPath, "output", "", "destination file (e.g. cluster.tar.gz); required")
-	_ = c.MarkFlagRequired("server")
 	_ = c.MarkFlagRequired("output")
 
 	c.RunE = func(_ *cobra.Command, _ []string) error {
-		if opToken == "" {
-			opToken = os.Getenv("JACO_TOKEN")
-		}
-		if opToken == "" {
-			return fmt.Errorf("--token or JACO_TOKEN env is required")
-		}
-
-		caCertPEM, err := readCACert(caCertPath)
-		if err != nil {
-			return err
-		}
-		conn, err := dialServer(server, caCertPEM)
+		conn, withAuth, err := dialOperator(operatorAuth{server: server, token: opToken, caCert: caCertPath, socket: socket})
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
-		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+opToken)
+		ctx = withAuth(ctx)
 
 		stream, err := pb.NewClusterClient(conn).Backup(ctx, &pb.BackupRequest{})
 		if err != nil {
