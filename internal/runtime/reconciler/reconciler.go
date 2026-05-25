@@ -24,6 +24,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/health"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/lifecycle"
+	"github.com/PatrickRuddiman/jaco/internal/runtime/pull"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -297,7 +298,27 @@ func (r *Reconciler) startReplica(ctx context.Context, rep *pb.ReplicaDesired) e
 	// network, look up the subnet CIDR in state.Subnets and compute the
 	// gateway IP; that's where the daemon's discovery/dns Manager binds.
 	spec.DNSServers = resolveDNSServers(r.state, rep.GetDeployment(), r.hostname, spec.Networks)
-	containerID, err := lifecycle.Start(ctx, r.docker, spec, lifecycle.IsolationGate{
+
+	// Surface image-pull state. Without this, a pull that can't succeed (e.g.
+	// an unreachable registry) retries forever inside Start with zero
+	// visibility — the replica simply never appears in `jaco status` and the
+	// node logs nothing (issue #66). Report PULLING on the first attempt and
+	// PENDING + the error on each failure so the stuck replica is visible.
+	onPull := func(s pull.State, attempt int, _ time.Time, lastErr error) {
+		switch s {
+		case pull.StatePulling:
+			if attempt == 1 {
+				r.observePull(ctx, rep, pb.ReplicaState_REPLICA_STATE_PULLING, "pulling", "")
+			}
+		case pull.StateFailed:
+			r.logger.Warn("image pull failed; will retry",
+				logging.KeyReplicaID, rep.GetId(), logging.KeyDeployment, rep.GetDeployment(),
+				"image", spec.Image, "attempt", attempt, "error", lastErr)
+			r.observePull(ctx, rep, pb.ReplicaState_REPLICA_STATE_PENDING, "image_pull_failed",
+				fmt.Sprintf("%s: %v", spec.Image, lastErr))
+		}
+	}
+	containerID, err := lifecycle.StartWithPullState(ctx, r.docker, spec, onPull, lifecycle.IsolationGate{
 		State:        r.state,
 		SelfHostname: r.hostname,
 	})
@@ -333,6 +354,28 @@ func (r *Reconciler) failReplica(ctx context.Context, rep *pb.ReplicaDesired, ne
 		},
 	}); err != nil {
 		r.logger.Error("failReplica submit failed", logging.KeyReplicaID, rep.GetId(), "error", err)
+	}
+}
+
+// observePull submits a ReplicaObserved capturing image-pull state so a pull
+// that's in progress or stuck is visible in `jaco status` + audit instead of
+// silently absent. No-op when submit is unset (tests that don't wire it).
+func (r *Reconciler) observePull(ctx context.Context, rep *pb.ReplicaDesired, st pb.ReplicaState, code, reason string) {
+	if r.submit == nil {
+		return
+	}
+	details := map[string]string{"deployment": rep.GetDeployment(), "host": r.hostname}
+	if reason != "" {
+		details["reason"] = reason
+	}
+	if err := r.submit(ctx, &pb.ReplicaObserved{
+		Id:      rep.GetId(),
+		State:   st,
+		Code:    code,
+		Host:    r.hostname,
+		Details: details,
+	}); err != nil {
+		r.logger.Error("observePull submit failed", logging.KeyReplicaID, rep.GetId(), "error", err)
 	}
 }
 
