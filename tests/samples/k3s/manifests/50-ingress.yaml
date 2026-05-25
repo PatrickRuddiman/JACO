@@ -1,0 +1,28 @@
+# North-south ingress: Traefik routes jaco.sh → web:80 and terminates TLS with
+# the `lestaging` ACME resolver defined in 00-traefik-acme.yaml. The
+# router.entrypoints annotation puts the route on :443 (websecure); the tls
+# block + certresolver annotation trigger Traefik to obtain the staging cert.
+# Benched over https://jaco.sh, same target as JACO and Swarm.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web
+  namespace: bench
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls.certresolver: lestaging
+spec:
+  rules:
+    - host: jaco.sh
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - jaco.sh

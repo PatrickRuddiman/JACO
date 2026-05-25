@@ -9,8 +9,8 @@ samples/
 ├── workload/     # the one app deployed everywhere (web + api + redis primary/replicas)
 ├── jaco/         # JACO deployment + 3-node bootstrap          ← implemented
 ├── k8s/          # Kubernetes (kubeadm) bootstrap + manifests   ← follow-up (stub)
-├── k3s/          # k3s bootstrap + manifests                    ← follow-up (stub)
-├── swarm/        # Docker Swarm bootstrap + stack               ← follow-up (stub)
+├── k3s/          # k3s bootstrap + manifests                    ← implemented
+├── swarm/        # Docker Swarm bootstrap + stack               ← implemented
 └── bench/        # grading harness: load gen, metrics, rubric, scorecard
 ```
 
@@ -52,9 +52,9 @@ export BENCH_PUBLIC_IPS="<n1> <n2> <n3>" BENCH_PRIVATE_IPS="<p1> <p2> <p3>"
 |-------|-----------|-----------|---------------|
 | JACO  | ✅        | ✅        | ✅            |
 | swarm | ✅        | ✅        | ✅            |
+| k3s   | ✅        | ✅        | ✅            |
 | k8s   | stub      | stub      | stub          |
-| k3s   | stub      | stub      | stub          |
 
 The workload, testbed, and grading harness are complete and validated against
-JACO. The other three stacks reuse all of that unchanged — only their bootstrap
-+ manifests + a thin bench adapter remain (each stack's README specifies them).
+JACO, Swarm, and k3s. Only kubeadm (`k8s/`) remains — it reuses all of that
+unchanged; just its bootstrap + manifests + a thin bench adapter (see its README).

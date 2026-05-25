@@ -1,0 +1,24 @@
+# Patch the Traefik that k3s bundles (helm-controller reconciles this) to add a
+# Let's Encrypt STAGING cert resolver. This is what makes the k3s ingress serve
+# HTTPS for jaco.sh, so the stack is benched over the same protocol as JACO and
+# Swarm. Staging is used because this is a throwaway bench and prod LE has tight
+# duplicate-cert limits; staging certs aren't browser-trusted, so the bench's k6
+# runs with insecureSkipTLSVerify.
+#
+# The HTTP-01 challenge uses Traefik's `web` (:80) entrypoint. k3s' servicelb
+# (klipper) publishes Traefik's :80/:443 on every node, so the challenge — and
+# normal traffic — reach the single Traefik pod from behind the testbed LB
+# regardless of which node the LB picks. One Traefik replica means no
+# multi-instance ACME coordination is needed.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    additionalArguments:
+      - "--certificatesresolvers.lestaging.acme.email=ops@jaco.sh"
+      - "--certificatesresolvers.lestaging.acme.storage=/data/acme.json"
+      - "--certificatesresolvers.lestaging.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
+      - "--certificatesresolvers.lestaging.acme.httpchallenge.entrypoint=web"
