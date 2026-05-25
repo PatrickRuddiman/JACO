@@ -19,12 +19,12 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAMPLES_DIR="$(cd "$HERE/../.." && pwd)"
-REPO_ROOT="$(cd "$SAMPLES_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SAMPLES_DIR/../.." && pwd)"   # tests/samples -> repo root
 JACO_DIR="$SAMPLES_DIR/jaco"
 
 SSH_USER="${SSH_USER:-azureuser}"
 # Default to the per-bed key minted by the testbed deploy script.
-_bed_key="$REPO_ROOT/testbed/.ssh/jaco"
+_bed_key="$REPO_ROOT/tests/testbed/.ssh/jaco"
 SSH_KEY="${SSH_KEY:-$([ -f "$_bed_key" ] && echo "$_bed_key" || echo "$HOME/.ssh/jaco")}"
 VNET_CIDR="${VNET_CIDR:-172.16.0.0/16}"
 SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -o UserKnownHostsFile=/dev/null)

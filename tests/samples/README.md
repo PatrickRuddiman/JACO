@@ -34,11 +34,12 @@ and replication lag.
 ## Quick start (JACO)
 
 ```sh
+# run from the repo root.
 # 1. provision the substrate (see ../testbed/README.md)
-cd ../testbed && cp .env.local.example .env.local && ./scripts/deploy.sh
+( cd tests/testbed && cp .env.local.example .env.local && ./scripts/deploy.sh )
 
 # 2. bootstrap + benchmark JACO
-cd ../samples/bench
+cd tests/samples/bench
 export BENCH_PUBLIC_IPS="<n1> <n2> <n3>" BENCH_PRIVATE_IPS="<p1> <p2> <p3>"
 ./run.sh jaco
 ./collect.sh

@@ -22,8 +22,8 @@ From the operator host, with the testbed already deployed:
 # nodes resolved from Azure (RESOURCE_GROUP + VM_NAME_PREFIX), or pass them:
 export BENCH_PUBLIC_IPS="<n1-pub> <n2-pub> <n3-pub>"   # node-1 first
 export BENCH_PRIVATE_IPS="<n1-priv> <n2-priv> <n3-priv>"
-# SSH_KEY auto-resolves to the per-bed key minted at testbed/.ssh/jaco.
-samples/jaco/bootstrap/bootstrap.sh
+# SSH_KEY auto-resolves to the per-bed key minted at tests/testbed/.ssh/jaco.
+tests/samples/jaco/bootstrap/bootstrap.sh
 ```
 
 What it does, in order:
@@ -55,7 +55,7 @@ curl -s https://jaco.sh/api/metrics           # Prometheus metrics from an api r
 The compose file builds and runs on a single host with stock `docker compose`:
 
 ```sh
-cd samples/jaco
+cd tests/samples/jaco
 REGISTRY=local docker compose build
 docker compose up        # then map a port for web, or hit it on the compose network
 ```

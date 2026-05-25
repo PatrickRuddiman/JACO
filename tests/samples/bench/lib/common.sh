@@ -5,14 +5,15 @@
 # --- paths ------------------------------------------------------------------
 BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SAMPLES_DIR="$(cd "$BENCH_DIR/.." && pwd)"
-REPO_ROOT="$(cd "$SAMPLES_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SAMPLES_DIR/../.." && pwd)"   # tests/samples -> repo root
+TESTBED_DIR="$REPO_ROOT/tests/testbed"
 RESULTS_DIR="$BENCH_DIR/results"
 
 # --- ssh contract (shared with samples/<stack>/bootstrap) -------------------
 SSH_USER="${SSH_USER:-azureuser}"
 # Default to the per-bed key minted by the testbed deploy script; fall back to
 # ~/.ssh/jaco for a bring-your-own key.
-_bed_key="$REPO_ROOT/testbed/.ssh/jaco"
+_bed_key="$TESTBED_DIR/.ssh/jaco"
 SSH_KEY="${SSH_KEY:-$([ -f "$_bed_key" ] && echo "$_bed_key" || echo "$HOME/.ssh/jaco")}"
 SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -o UserKnownHostsFile=/dev/null)
 

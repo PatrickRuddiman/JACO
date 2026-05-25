@@ -64,7 +64,7 @@ meaningful once ≥2 stacks have run.
 ## Running
 
 ```sh
-# from samples/bench, with the testbed deployed and node IPs resolvable
+# from tests/samples/bench, with the testbed deployed and node IPs resolvable
 ./run.sh jaco                  # deploy + measure + record one stack
 ./collect.sh                   # snapshot node resource stats + bundle for download
 # ...repeat ./run.sh for k8s / k3s / swarm (adapters land in the follow-up)...

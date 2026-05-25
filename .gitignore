@@ -5,17 +5,17 @@
 *.out
 coverage.*
 
-# Benchmark testbed local secrets. The rest of testbed/ is tracked, sanitized
-# infra. .ssh/ holds the ephemeral keypair deploy.sh mints per bed.
-testbed/.env.local
-testbed/.ssh/
+# Benchmark testbed local secrets. The rest of tests/testbed/ is tracked,
+# sanitized infra. .ssh/ holds the ephemeral keypair deploy.sh mints per bed.
+tests/testbed/.env.local
+tests/testbed/.ssh/
 
 # Benchmark run output (summaries, scraped metrics, bundles).
-samples/bench/results/
+tests/samples/bench/results/
 
 # Node build artifacts in the sample workload (package-lock.json is tracked).
 node_modules/
-samples/workload/api/dist/
+tests/samples/workload/api/dist/
 
 # Editor / agent metadata.
 .agents/
