@@ -1,0 +1,45 @@
+# Node api tier (2 replicas). Writes to redis-primary, reads from redis-replica,
+# and drives the postgres heartbeat that publishes bench_pg_replica_lag_seconds.
+# Same image + env + replica count + limits as the Swarm/JACO runs.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: bench
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: api }
+  template:
+    metadata:
+      labels: { app: api }
+    spec:
+      containers:
+        - name: api
+          image: jaco-1:5000/bench-api:latest
+          env:
+            - { name: REDIS_PRIMARY, value: "redis-primary:6379" }
+            - { name: REDIS_REPLICA, value: "redis-replica:6379" }
+            - { name: PG_PRIMARY, value: "pg-primary:5432" }
+            - { name: PG_REPLICA, value: "pg-replica:5432" }
+            - { name: PG_DB, value: bench }
+            - { name: PG_USER, value: bench }
+            - { name: PG_PASSWORD, value: bench }
+            - { name: LISTEN_PORT, value: "8080" }
+            - { name: NODE_ENV, value: production }
+          ports: [{ containerPort: 8080 }]
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits:   { cpu: "500m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: bench
+spec:
+  selector: { app: api }
+  ports: [{ port: 8080, targetPort: 8080 }]

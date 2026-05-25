@@ -1,0 +1,35 @@
+# nginx web tier (2 replicas): serves the static UX and proxies /api/* to the
+# api Service. Same image/replicas/limits as the other stacks. Fronted by the
+# Traefik Ingress (50-ingress.yaml) — no host port of its own.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: bench
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: web }
+  template:
+    metadata:
+      labels: { app: web }
+    spec:
+      containers:
+        - name: web
+          image: jaco-1:5000/bench-web:latest
+          ports: [{ containerPort: 80 }]
+          readinessProbe:
+            httpGet: { path: /healthz, port: 80 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "25m", memory: "32Mi" }
+            limits:   { cpu: "250m", memory: "128Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: bench
+spec:
+  selector: { app: web }
+  ports: [{ port: 80, targetPort: 80 }]
