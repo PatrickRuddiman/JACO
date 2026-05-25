@@ -156,5 +156,9 @@ listener, follower→leader forwarding of `ReplicaObserved` updates, the
 caddy/v2 ingress reload loop, rollout state-machine integration with the
 scheduler, and the drain step machine for `jaco node remove`.
 
-See `spec.md` for the v1 contract and `design.md` for the architecture
-overview.
+For operator and developer documentation see [`docs/`](docs/) —
+start with [`docs/getting-started.md`](docs/getting-started.md) for the
+end-to-end user path and
+[`docs/concepts/architecture.md`](docs/concepts/architecture.md) for
+the architecture overview. The original v1 spec and design notes live
+under [`docs/planning/`](docs/planning/) (`spec.md`, `design.md`).
