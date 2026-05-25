@@ -15,7 +15,7 @@ import (
 func pinnedNow() time.Time { return time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC) }
 
 func opts() config.BuildOpts {
-	return config.BuildOpts{ACMEEmail: "ops@example.com", Now: pinnedNow}
+	return config.BuildOpts{ACMEEmail: "ops@example.com", ACMEEnabled: true, Now: pinnedNow}
 }
 
 // loadGolden reads a golden fixture; if REGEN_GOLDEN=1, writes the actual
@@ -449,5 +449,73 @@ func TestBuildCaddyConfig_PathMatchesExactPrefix(t *testing.T) {
 	}
 	if matchesAny("/other") {
 		t.Errorf("expected /other NOT to match, patterns = %v", patterns)
+	}
+}
+
+// TestBuildCaddyConfig_ACMEDisabledOmitsAutomation — with ACMEEnabled=false
+// the cluster-wide opt-out (jacod.yaml.acme_enabled: false) drops the entire
+// tls.automation block no matter how many tls:auto routes exist. Verifiable
+// offline (no outbound ACME call).
+func TestBuildCaddyConfig_ACMEDisabledOmitsAutomation(t *testing.T) {
+	routes := []config.Route{
+		{Domain: "web.example.com", Deployment: "sample", Service: "web", Port: 80, TLSAuto: true},
+		{Domain: "api.example.com", Deployment: "sample", Service: "api", Port: 80, TLSAuto: true},
+	}
+	o := opts()
+	o.ACMEEnabled = false
+	got, err := config.BuildCaddyConfig(routes, nil, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, hasTLS := parsed["apps"].(map[string]any)["tls"]; hasTLS {
+		t.Errorf("tls block present with ACMEEnabled=false: %v", parsed["apps"])
+	}
+	// And the rendered bytes must not reference any ACME directory URL.
+	if strings.Contains(string(got), "acme") || strings.Contains(string(got), "letsencrypt") {
+		t.Errorf("rendered config mentions acme/letsencrypt with ACME disabled:\n%s", got)
+	}
+}
+
+// TestBuildCaddyConfig_StageFirstStagingPolicy — a domain in the staging set
+// gets a separate automation policy pointed at the staging directory; other
+// tls:auto domains stay on prod.
+func TestBuildCaddyConfig_StageFirstStagingPolicy(t *testing.T) {
+	routes := []config.Route{
+		{Domain: "new.example.com", Deployment: "s", Service: "w", Port: 80, TLSAuto: true},
+		{Domain: "old.example.com", Deployment: "s", Service: "w", Port: 80, TLSAuto: true},
+	}
+	o := opts()
+	o.ACMEStagingCA = "https://acme-staging-v02.api.letsencrypt.org/directory"
+	o.StagingDomains = map[string]bool{"new.example.com": true}
+	got, err := config.BuildCaddyConfig(routes, nil, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	policies := parsed["apps"].(map[string]any)["tls"].(map[string]any)["automation"].(map[string]any)["policies"].([]any)
+	if len(policies) != 2 {
+		t.Fatalf("policies = %d, want 2 (staging + prod)", len(policies))
+	}
+	// Build domain→ca map.
+	caFor := map[string]string{}
+	for _, pAny := range policies {
+		p := pAny.(map[string]any)
+		ca := p["issuers"].([]any)[0].(map[string]any)["ca"].(string)
+		for _, s := range p["subjects"].([]any) {
+			caFor[s.(string)] = ca
+		}
+	}
+	if caFor["new.example.com"] != o.ACMEStagingCA {
+		t.Errorf("new.example.com ca = %q, want staging", caFor["new.example.com"])
+	}
+	if caFor["old.example.com"] != o.ACMECA && caFor["old.example.com"] != "https://acme-v02.api.letsencrypt.org/directory" {
+		t.Errorf("old.example.com ca = %q, want prod", caFor["old.example.com"])
 	}
 }

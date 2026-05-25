@@ -390,3 +390,78 @@ func TestValidateJacoYAML_RouteConflict(t *testing.T) {
 		}
 	})
 }
+
+// TestParseJacoYAML_DeploymentACMEOff — a top-level `acme: off` (issue #41)
+// implicitly disables TLS on every route that didn't set tls explicitly, but
+// a route may still opt back in with tls: auto.
+func TestParseJacoYAML_DeploymentACMEOff(t *testing.T) {
+	yaml := `
+deployment: dev
+acme: off
+services:
+  - name: web
+    replicas: 1
+routes:
+  - domain: a.example.com
+    service: web
+    port: 80
+  - domain: b.example.com
+    service: web
+    port: 80
+    tls: auto
+`
+	j, err := ParseJacoYAML([]byte(yaml))
+	if err != nil {
+		t.Fatalf("ParseJacoYAML: %v", err)
+	}
+	if j.Routes[0].TLS != "off" {
+		t.Errorf("route a (no tls under acme:off) = %q, want off", j.Routes[0].TLS)
+	}
+	if j.Routes[1].TLS != "auto" {
+		t.Errorf("route b (explicit tls:auto) = %q, want auto (route override wins)", j.Routes[1].TLS)
+	}
+	// And the projection onto pb.Route carries through.
+	pbs := toRoutes("dev", j.Routes)
+	if pbs[0].GetTlsAuto() {
+		t.Errorf("pb route a TlsAuto = true; want false under acme:off")
+	}
+	if !pbs[1].GetTlsAuto() {
+		t.Errorf("pb route b TlsAuto = false; want true (override)")
+	}
+}
+
+// TestParseJacoYAML_NoACMEKeyDefaultsAuto — without acme:off, a blank route
+// tls still defaults to auto (no regression).
+func TestParseJacoYAML_NoACMEKeyDefaultsAuto(t *testing.T) {
+	yaml := `
+deployment: prod
+services:
+  - name: web
+    replicas: 1
+routes:
+  - domain: a.example.com
+    service: web
+    port: 80
+`
+	j, err := ParseJacoYAML([]byte(yaml))
+	if err != nil {
+		t.Fatalf("ParseJacoYAML: %v", err)
+	}
+	if j.Routes[0].TLS != "auto" {
+		t.Errorf("blank route tls = %q, want auto", j.Routes[0].TLS)
+	}
+}
+
+// TestValidateJacoYAML_RejectsUnknownACME — acme must be on|off|empty.
+func TestValidateJacoYAML_RejectsUnknownACME(t *testing.T) {
+	err := ValidateJacoYAMLBytes([]byte(`
+deployment: d
+acme: maybe
+services:
+  - name: web
+    replicas: 1
+`))
+	if err == nil {
+		t.Fatalf("expected rejection of acme: maybe")
+	}
+}

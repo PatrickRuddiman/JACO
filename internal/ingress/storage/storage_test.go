@@ -313,3 +313,105 @@ func TestStat_MissingKeyReturnsNotExist(t *testing.T) {
 		t.Errorf("Stat missing err = %v; want ErrNotExist", err)
 	}
 }
+
+// newHarnessWithCache builds state+FSM+applier and a JacoStorage with the
+// disk fallback cache rooted at cacheDir.
+func newHarnessWithCache(t *testing.T, lessee, cacheDir string) (*storage.JacoStorage, *state.State, storage.Applier) {
+	t.Helper()
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	f := fsm.New(st, brokers)
+	var raftIdx uint64
+	apply := func(data []byte) error {
+		raftIdx++
+		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
+		return nil
+	}
+	return storage.NewWithCache(st, apply, lessee, time.Now, cacheDir), st, apply
+}
+
+// TestDiskCache_SurvivesRaftWipe — the disk fallback (issue #41) serves an
+// already-issued cert after the raft state is wiped, avoiding re-issuance.
+func TestDiskCache_SurvivesRaftWipe(t *testing.T) {
+	dir := t.TempDir()
+	s1, _, _ := newHarnessWithCache(t, "node-a", dir)
+	ctx := context.Background()
+	key := "certificates/acme-v02.api.letsencrypt.org-directory/example.com/example.com.crt"
+	val := []byte("-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n")
+	if err := s1.Store(ctx, key, val); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+
+	// Simulate a raft wipe: brand-new state (empty CertBlobs) pointed at the
+	// SAME disk cache dir.
+	s2, st2, _ := newHarnessWithCache(t, "node-a", dir)
+	if _, ok := st2.CertBlobs.Get(key); ok {
+		t.Fatal("precondition: fresh state should have no raft blob")
+	}
+	got, err := s2.Load(ctx, key)
+	if err != nil {
+		t.Fatalf("Load after raft wipe (should hit disk): %v", err)
+	}
+	if string(got) != string(val) {
+		t.Errorf("disk-fallback Load = %q, want %q", got, val)
+	}
+	if !s2.Exists(ctx, key) {
+		t.Errorf("Exists = false after raft wipe; disk fallback should report true")
+	}
+	if _, err := s2.Stat(ctx, key); err != nil {
+		t.Errorf("Stat after raft wipe: %v", err)
+	}
+}
+
+// TestDiskCache_RaftWins — when raft has the blob, Load returns the raft copy
+// (raft is authoritative); the disk cache never overrides it.
+func TestDiskCache_RaftWins(t *testing.T) {
+	dir := t.TempDir()
+	s, _, _ := newHarnessWithCache(t, "node-a", dir)
+	ctx := context.Background()
+	key := "certificates/x/example.com/example.com.crt"
+	if err := s.Store(ctx, key, []byte("raft-value")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Load(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "raft-value" {
+		t.Errorf("Load = %q, want raft-value (raft authoritative)", got)
+	}
+}
+
+// TestDiskCache_DeleteRemovesMirror — Delete drops both the raft blob and the
+// disk mirror.
+func TestDiskCache_DeleteRemovesMirror(t *testing.T) {
+	dir := t.TempDir()
+	s1, _, _ := newHarnessWithCache(t, "node-a", dir)
+	ctx := context.Background()
+	key := "certificates/x/d.example.com/d.example.com.crt"
+	_ = s1.Store(ctx, key, []byte("v"))
+	if err := s1.Delete(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	// Fresh raft state + same disk dir: the mirror must be gone too.
+	s2, _, _ := newHarnessWithCache(t, "node-a", dir)
+	if _, err := s2.Load(ctx, key); !errors.Is(err, storage.ErrNotExist) {
+		t.Errorf("Load after Delete = %v; want ErrNotExist (mirror not removed)", err)
+	}
+}
+
+// TestDiskCache_DisabledWhenNoDir — New() (cacheDir="") never writes to disk;
+// a fresh raft state with no disk fallback returns ErrNotExist on Load.
+func TestDiskCache_DisabledWhenNoDir(t *testing.T) {
+	s1, _, _ := newHarnessWithCache(t, "node-a", "") // cache off
+	ctx := context.Background()
+	key := "certificates/x/nodisk.example.com/nodisk.example.com.crt"
+	if err := s1.Store(ctx, key, []byte("v")); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	// Fresh raft state, cache still off: no disk fallback to seed from.
+	s2, _, _ := newHarnessWithCache(t, "node-a", "")
+	if _, err := s2.Load(ctx, key); !errors.Is(err, storage.ErrNotExist) {
+		t.Errorf("Load with cache disabled = %v; want ErrNotExist", err)
+	}
+}

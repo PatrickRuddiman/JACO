@@ -128,3 +128,72 @@ func TestDefaults_PassValidation(t *testing.T) {
 		t.Errorf("defaults failed validation: %v", err)
 	}
 }
+
+func TestACMEDefaults_WhenKeysAbsent(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte("acme_email: ops@example.com\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ACMEEnabledOrDefault() {
+		t.Errorf("acme_enabled default = false; want true when absent")
+	}
+	if cfg.ACMECAOrDefault() != config.DefaultACMECA {
+		t.Errorf("acme_ca default = %q; want %q", cfg.ACMECAOrDefault(), config.DefaultACMECA)
+	}
+	if cfg.ACMESkipStaging {
+		t.Errorf("acme_skip_staging default = true; want false")
+	}
+}
+
+func TestACMEEnabledFalse_Parsed(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte("acme_enabled: false\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ACMEEnabled == nil {
+		t.Fatalf("acme_enabled: false left ACMEEnabled nil (can't distinguish from absent)")
+	}
+	if cfg.ACMEEnabledOrDefault() {
+		t.Errorf("acme_enabled: false → ACMEEnabledOrDefault() true")
+	}
+}
+
+func TestACMECA_PinStaging(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte("acme_ca: " + config.ACMEStagingCA + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ACMECAOrDefault() != config.ACMEStagingCA {
+		t.Errorf("acme_ca = %q; want staging", cfg.ACMECAOrDefault())
+	}
+}
+
+func TestACMESkipStaging_Parsed(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte("acme_skip_staging: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ACMESkipStaging {
+		t.Errorf("acme_skip_staging: true not parsed")
+	}
+}
+
+func TestValidate_RejectsBadACMECA(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ACMECA = "ftp://nope"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "acme_ca") {
+		t.Errorf("bad acme_ca err = %v; want mention of acme_ca", err)
+	}
+	cfg.ACMECA = "not a url at all ::::"
+	if err := cfg.Validate(); err == nil {
+		t.Errorf("malformed acme_ca accepted")
+	}
+}
+
+func TestACMEEnabled_UnknownFieldStillRejected(t *testing.T) {
+	// Closed-schema invariant must survive the new keys.
+	_, err := config.LoadBytes([]byte("acme_enabledd: false\n"))
+	if err == nil {
+		t.Fatalf("typo acme_enabledd accepted; schema not closed")
+	}
+}

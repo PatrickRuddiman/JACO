@@ -40,13 +40,31 @@ const ChallengePath = "/.well-known/acme-challenge/"
 // Applier wraps raft.Apply.
 type Applier func(cmd []byte) error
 
-// Issuer publishes ChallengeTokens to raft.
+// ACME environment labels carried on cert audit events so an operator can
+// tell a cheap staging dry-run failure apart from a prod rate-limit hit
+// (issue #41).
+const (
+	EnvStaging = "staging"
+	EnvProd    = "prod"
+)
+
+// Issuer publishes ChallengeTokens to raft and emits cert lifecycle audit
+// events. The environment label (staging|prod) is stamped onto every audit
+// payload so the stage-first flow is observable.
 type Issuer struct {
 	apply Applier
+	env   string
 }
 
-// NewIssuer constructs an Issuer.
+// NewIssuer constructs an Issuer with the environment unspecified (prod-
+// shaped events carry no acme_environment label). Prefer NewIssuerForEnv.
 func NewIssuer(apply Applier) *Issuer { return &Issuer{apply: apply} }
+
+// NewIssuerForEnv constructs an Issuer tagged with the ACME environment
+// (EnvStaging | EnvProd) so emitted audit events carry acme_environment.
+func NewIssuerForEnv(apply Applier, env string) *Issuer {
+	return &Issuer{apply: apply, env: env}
+}
 
 // Issue raft-Applies a ChallengeTokenStore. domain + token + keyAuth come
 // from certmagic's challenge presentation. Audit events for the CertMagic
@@ -77,16 +95,94 @@ func (i *Issuer) Issue(_ context.Context, domain, token, keyAuth string) error {
 		return err
 	}
 	if applyErr := i.apply(data); applyErr != nil {
-		_ = i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_FAILED, map[string]string{
+		_ = i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_FAILED, i.withEnv(map[string]string{
 			"domain": domain,
 			"reason": applyErr.Error(),
-		})
+		}))
 		return applyErr
 	}
-	_ = i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_RENEWED, map[string]string{
+	_ = i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_RENEWED, i.withEnv(map[string]string{
 		"domain": domain,
-	})
+	}))
 	return nil
+}
+
+// FailureClass buckets an ACME issuance error so audit consumers and the
+// stage-first decision logic can tell a transient problem (retry later)
+// apart from a rate-limit (back off) apart from a config/DNS misconfig
+// (don't bother escalating to prod).
+type FailureClass string
+
+const (
+	// FailureRateLimit is the CA's rate-limit response — escalating to prod
+	// would only burn the prod limit too, so the stage-first flow stops here.
+	FailureRateLimit FailureClass = "rate_limit"
+	// FailureValidation covers DNS / HTTP-01 reachability failures — the
+	// cluster's routing or the operator's DNS is wrong; staging caught it
+	// cheaply.
+	FailureValidation FailureClass = "validation"
+	// FailureTransient is a network blip / CA 5xx — safe to retry.
+	FailureTransient FailureClass = "transient"
+	// FailureUnknown is everything else.
+	FailureUnknown FailureClass = "unknown"
+)
+
+// ClassifyFailure buckets an ACME error string. certmagic/acmez surface CA
+// problem-detail types in the error text; we match on the stable substrings
+// (LE's urn:ietf:params:acme:error:rateLimited etc.) rather than the wire
+// type since the error is already flattened to a string by the time it
+// reaches us.
+func ClassifyFailure(err error) FailureClass {
+	if err == nil {
+		return FailureUnknown
+	}
+	s := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(s, "ratelimited") || strings.Contains(s, "rate limit") ||
+		strings.Contains(s, "too many") || strings.Contains(s, "rate_limit"):
+		return FailureRateLimit
+	case strings.Contains(s, "dns") || strings.Contains(s, "unauthorized") ||
+		strings.Contains(s, "connection refused") || strings.Contains(s, "no such host") ||
+		strings.Contains(s, "timeout") && strings.Contains(s, "challenge") ||
+		strings.Contains(s, "incorrect validation") || strings.Contains(s, "challenge failed"):
+		return FailureValidation
+	case strings.Contains(s, "503") || strings.Contains(s, "502") ||
+		strings.Contains(s, "serverinternal") || strings.Contains(s, "temporarily"):
+		return FailureTransient
+	default:
+		return FailureUnknown
+	}
+}
+
+// EmitStageFailure records a CERTIFICATE_FAILED audit event for a staging-
+// stage failure, stamping stage_failed_at=staging + the failure class so an
+// operator sees that prod was deliberately NOT attempted (issue #41).
+func (i *Issuer) EmitStageFailure(domain string, err error) {
+	_ = i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_FAILED, map[string]string{
+		"domain":           domain,
+		"acme_environment": EnvStaging,
+		"stage_failed_at":  "staging",
+		"failure_class":    string(ClassifyFailure(err)),
+		"reason":           err.Error(),
+	})
+}
+
+// EmitIssued records a CERTIFICATE_ISSUED audit event tagged with the
+// environment the cert was issued against.
+func (i *Issuer) EmitIssued(domain, env string) {
+	_ = i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_ISSUED, map[string]string{
+		"domain":           domain,
+		"acme_environment": env,
+	})
+}
+
+// withEnv stamps acme_environment onto an audit payload when the issuer was
+// constructed with a known environment.
+func (i *Issuer) withEnv(payload map[string]string) map[string]string {
+	if i.env != "" {
+		payload["acme_environment"] = i.env
+	}
+	return payload
 }
 
 // emitAudit raft-Applies an AuditAppend command. Failure to emit audit

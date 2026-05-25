@@ -160,5 +160,33 @@ func renderStatus(out io.Writer, resp *pb.DeployStatusResponse) error {
 		})
 	}
 	fmt.Fprintln(out, "\nRoutes:")
-	return cliclient.RenderTable(out, rtHeaders, rtRows)
+	if err := cliclient.RenderTable(out, rtHeaders, rtRows); err != nil {
+		return err
+	}
+
+	// Certs table (issue #41): per-domain ACME cert state. Omitted entirely
+	// when no managed cert is observable (no tls: auto routes, or certs not
+	// issued yet).
+	if len(resp.GetCerts()) == 0 {
+		return nil
+	}
+	certHeaders := []string{"DOMAIN", "ENVIRONMENT", "NOT_AFTER", "LAST_RENEWAL_AT"}
+	var certRows [][]string
+	for _, cs := range resp.GetCerts() {
+		env := cs.GetEnvironment()
+		if env == "" {
+			env = "unknown"
+		}
+		notAfter := ""
+		if t := cs.GetNotAfter(); t != nil {
+			notAfter = t.AsTime().UTC().Format(time.RFC3339)
+		}
+		lastRenewal := ""
+		if t := cs.GetLastRenewalAt(); t != nil {
+			lastRenewal = t.AsTime().UTC().Format(time.RFC3339)
+		}
+		certRows = append(certRows, []string{cs.GetDomain(), env, notAfter, lastRenewal})
+	}
+	fmt.Fprintln(out, "\nCerts:")
+	return cliclient.RenderTable(out, certHeaders, certRows)
 }

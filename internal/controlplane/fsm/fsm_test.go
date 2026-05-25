@@ -379,6 +379,14 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 			Deployment: "sample", Network: "_default", Cidr: "10.42.0.0/24", Host: "node-a",
 		}},
 	})
+	// CertBlob — issue #41: the snapshot path used to drop cert blobs, so a
+	// fresh node that snapshot-installed would re-issue every cert against the
+	// ACME CA. Now they must survive the round-trip.
+	applyCmd(t, f1, 5, &pb.Command{
+		Payload: &pb.Command_CertBlobUpsert{CertBlobUpsert: &pb.CertBlobUpsert{
+			Blob: &pb.CertBlob{Key: "certificates/x/a.example/a.example.crt", Value: []byte("pem-blob")},
+		}},
+	})
 
 	// Take snapshot.
 	snap, err := f1.Snapshot()
@@ -410,6 +418,12 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 	}
 	if _, ok := s2.Subnets.Get(state.SubnetKey("sample", "_default", "node-a")); !ok {
 		t.Errorf("restored subnet missing")
+	}
+	cb, ok := s2.CertBlobs.Get("certificates/x/a.example/a.example.crt")
+	if !ok {
+		t.Errorf("restored cert blob missing (snapshot dropped CertBlobs)")
+	} else if string(cb.GetValue()) != "pem-blob" {
+		t.Errorf("restored cert blob value = %q, want pem-blob", cb.GetValue())
 	}
 	_ = s1 // silence unused (kept for clarity in the test setup)
 }

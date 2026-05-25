@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	// Register Caddy's standard modules (http, tls, reverse_proxy, acme,
@@ -18,8 +20,11 @@ import (
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/bridge"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/config"
+	"github.com/PatrickRuddiman/jaco/internal/ingress/rebuild"
+	"github.com/PatrickRuddiman/jaco/internal/ingress/stagefirst"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -27,10 +32,152 @@ import (
 // Operators can repoint this with an env override in a follow-up iter.
 const ingressConfigPath = "/etc/caddy/jaco.json"
 
+// ingressACMEOpts is the daemon-resolved ACME configuration the builder
+// projects onto config.BuildOpts. Sourced from jacod.yaml (acme_email,
+// acme_ca, acme_enabled).
+type ingressACMEOpts struct {
+	Email   string
+	CA      string
+	Enabled bool
+	// StagingCA is the LE staging directory used for stage-first dry runs.
+	// Empty disables stage-first (e.g. when the configured CA is already
+	// non-prod or acme_skip_staging is set).
+	StagingCA string
+	// StagingDomains, when non-nil, is consulted on every rebuild for the set
+	// of domains currently in their staging dry-run. The stage-first
+	// controller owns this; nil means no stage-first controller is running.
+	StagingDomains func() map[string]bool
+}
+
+// leProdCA / leStagingCA mirror internal/daemon/config so the grpc package
+// can classify the configured directory without importing config (which
+// would create an import cycle — config doesn't import grpc, but keeping the
+// constants local avoids coupling the ingress wiring to the loader).
+const (
+	leProdCA    = "https://acme-v02.api.letsencrypt.org/directory"
+	leStagingCA = "https://acme-staging-v02.api.letsencrypt.org/directory"
+)
+
+// acmeCAOrDefault returns the configured ACME directory URL, or LE prod when
+// the operator left acme_ca unset.
+func acmeCAOrDefault(ca string) string {
+	if ca == "" {
+		return leProdCA
+	}
+	return ca
+}
+
+// ingressCacheDir is the on-disk fallback cache path for cert blobs:
+// $dataDir/ingress/cache. Empty dataDir → "" (disk fallback disabled, e.g.
+// in tests that don't set DataDir).
+func (s *Server) ingressCacheDir() string {
+	if s.dataDir == "" {
+		return ""
+	}
+	return filepath.Join(s.dataDir, "ingress", "cache")
+}
+
+// embeddedIngress reports whether the daemon owns issuance in-process
+// (embedded caddy). Stage-first programmatic re-issuance/reload needs the
+// embedded path; JACO_INGRESS_EXEC=1 hands issuance to an external caddy that
+// JACO can't drive (issue #41 Q6).
+func embeddedIngress() bool { return os.Getenv("JACO_INGRESS_EXEC") != "1" }
+
+// stageFirstInterval is how often the stage-first controller re-evaluates the
+// staging set + checks for landed staging chains.
+const stageFirstInterval = 5 * time.Second
+
+// runStageFirst drives the stage-first reconcile loop until ctx cancellation.
+// It reconciles on a ticker (to pick up landed staging chains) AND on every
+// Routes event (so a brand-new tls:auto domain is staged BEFORE the debounced
+// reload loop would otherwise render it against prod). On any staging-set
+// change it forces a config rebuild so the issuer flips a domain's automation
+// policy between the staging and prod directories.
+func (s *Server) runStageFirst(ctx context.Context, ctrl *stagefirst.Controller, st *state.State, brokers *watch.Registry, rl *rebuild.Reloader) {
+	routes := brokers.Routes.Subscribe()
+	defer routes.Cancel()
+
+	t := time.NewTicker(stageFirstInterval)
+	defer t.Stop()
+
+	reconcile := func() {
+		if ctrl.Reconcile(ctx, tlsAutoDomains(st)) {
+			if err := rl.Rebuild(ctx); err != nil {
+				s.logger.Printf("stagefirst: rebuild after staging change: %v", err)
+			}
+		}
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			reconcile()
+		case <-routes.Events():
+			reconcile()
+		}
+	}
+}
+
+// tlsAutoDomains returns the deduped set of domains with at least one
+// `tls: auto` route.
+func tlsAutoDomains(st *state.State) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range st.Routes.List() {
+		if !r.GetTlsAuto() || seen[r.GetDomain()] {
+			continue
+		}
+		seen[r.GetDomain()] = true
+		out = append(out, r.GetDomain())
+	}
+	return out
+}
+
+// loadStagingChain finds the staging-issued leaf chain for a domain in the
+// cert blob store. certmagic keys the blob under the CA host, so a staging
+// cert's key contains "staging" + the domain. Returns (pem, true) once the
+// staging cert has landed.
+func loadStagingChain(st *state.State, domain string) ([]byte, bool) {
+	for _, b := range st.CertBlobs.List() {
+		key := b.GetKey()
+		if !strings.HasSuffix(key, ".crt") {
+			continue
+		}
+		if !strings.Contains(key, "staging") {
+			continue
+		}
+		if !strings.Contains(key, "/"+domain+"/") {
+			continue
+		}
+		return b.GetValue(), true
+	}
+	return nil, false
+}
+
+// prodCertIssued reports whether a non-staging (prod) leaf cert for the
+// domain is already in the cert blob store — i.e. the domain isn't new.
+func prodCertIssued(st *state.State, domain string) bool {
+	for _, b := range st.CertBlobs.List() {
+		key := b.GetKey()
+		if !strings.HasSuffix(key, ".crt") {
+			continue
+		}
+		if strings.Contains(key, "staging") {
+			continue
+		}
+		if strings.Contains(key, "/"+domain+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 // ingressBuilder is the rebuild.Builder concrete impl. Reads state.Routes
 // + state.ReplicasObserved + state.Deployments, projects them into the
 // config package's typed views, and calls BuildCaddyConfig.
-func ingressBuilder(st *state.State, acmeEmail string) func() ([]byte, error) {
+func ingressBuilder(st *state.State, acme ingressACMEOpts) func() ([]byte, error) {
 	return func() ([]byte, error) {
 		var routes []config.Route
 		for _, r := range st.Routes.List() {
@@ -88,8 +235,16 @@ func ingressBuilder(st *state.State, acmeEmail string) func() ([]byte, error) {
 			}
 		}
 
+		var stagingDomains map[string]bool
+		if acme.StagingDomains != nil {
+			stagingDomains = acme.StagingDomains()
+		}
 		cfg, err := config.BuildCaddyConfig(routes, replicas, services, config.BuildOpts{
-			ACMEEmail: acmeEmail,
+			ACMEEmail:      acme.Email,
+			ACMECA:         acme.CA,
+			ACMEEnabled:    acme.Enabled,
+			ACMEStagingCA:  acme.StagingCA,
+			StagingDomains: stagingDomains,
 		})
 		log.Printf("ingress: built caddy config (%d routes, %d observed replicas, %d bytes, err=%v)", len(routes), len(replicas), len(cfg), err)
 		return cfg, err
