@@ -162,3 +162,10 @@ end-to-end user path and
 [`docs/concepts/architecture.md`](docs/concepts/architecture.md) for
 the architecture overview. The original v1 spec and design notes live
 under [`docs/planning/`](docs/planning/) (`spec.md`, `design.md`).
+
+## License
+
+JACO is licensed under the [Apache License 2.0](LICENSE). Third-party
+modules bundled with the binary are listed in
+[`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md); upstream
+attribution notices are aggregated in [`NOTICE`](NOTICE).
