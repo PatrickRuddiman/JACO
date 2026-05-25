@@ -2,8 +2,9 @@
 # Docker Swarm adapter for the bench harness. Same four functions as the JACO
 # adapter; relies on helpers + PUB/PRIV from lib/common.sh (sourced by run.sh).
 #
-# Swarm serves the workload on :80 via the routing mesh (no TLS terminator), so
-# bench it over HTTP: BENCH_TARGET=http://<lb-ip> BENCH_HOST_HEADER=jaco.sh.
+# Swarm runs its own Caddy ingress (TLS for jaco.sh, ACME staging) published via
+# the routing mesh, mirroring JACO — so bench it over HTTPS the same way:
+# BENCH_TARGET=https://jaco.sh (k6 uses insecureSkipTLSVerify for the staging cert).
 
 adapter_label() { echo "Docker Swarm"; }
 

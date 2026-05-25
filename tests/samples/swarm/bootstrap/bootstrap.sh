@@ -64,6 +64,10 @@ echo "[swarm] shipping workload build contexts to node-1"
 ssh_node "${PUB[0]}" "rm -rf ~/swarm-bench && mkdir -p ~/swarm-bench"
 scp -r "${SSH_OPTS[@]}" "$SAMPLES_DIR/workload" "$SSH_USER@${PUB[0]}:~/swarm-bench/workload"
 scp "${SSH_OPTS[@]}" "$SWARM_DIR/stack.yml" "$SSH_USER@${PUB[0]}:~/swarm-bench/"
+# Caddyfile rides next to stack.yml — `configs.file: ./Caddyfile` resolves
+# relative to the deploy CWD (~/swarm-bench), so `docker stack deploy` creates
+# the Swarm config from it.
+scp "${SSH_OPTS[@]}" "$SWARM_DIR/Caddyfile" "$SSH_USER@${PUB[0]}:~/swarm-bench/"
 
 echo "[swarm] building + pushing workload images on node-1 -> $REGISTRY"
 ssh_node "${PUB[0]}" "
@@ -99,7 +103,8 @@ ssh_node "${PUB[0]}" "sed -i 's|[\$]{REGISTRY:-jaco-1:5000}|$REGISTRY|g' ~/swarm
 ssh_node "${PUB[0]}" "cd ~/swarm-bench && sudo docker stack deploy --detach=true -c stack.yml bench"
 
 echo
-echo "[swarm] done. Ingress is served on :80 across all nodes via the routing"
-echo "[swarm]   mesh (behind the LB). Swarm has no TLS terminator — bench over"
-echo "[swarm]   HTTP: BENCH_TARGET=http://<lb-ip> BENCH_HOST_HEADER=jaco.sh"
+echo "[swarm] done. Caddy terminates TLS for jaco.sh (ACME staging) and proxies"
+echo "[swarm]   to web; :80/:443 are published on all nodes via the routing mesh"
+echo "[swarm]   (behind the LB). Bench over HTTPS, same as JACO:"
+echo "[swarm]   BENCH_TARGET=https://jaco.sh  (k6 uses insecureSkipTLSVerify)"
 echo "[swarm] check rollout:  ssh $SSH_USER@${PUB[0]} 'sudo docker stack services bench'"

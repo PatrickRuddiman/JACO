@@ -11,6 +11,7 @@ the [JACO sample](../jaco) — only the orchestration differs.
 ```
 swarm/
 ├── stack.yml             # compose-v3 stack: services + deploy (replicas, limits, placement)
+├── Caddyfile             # Caddy ingress config: TLS for jaco.sh via ACME staging → web
 └── bootstrap/
     ├── bootstrap.sh      # operator-side: install + registry + build/push + swarm init/join + deploy
     └── install-node.sh   # runs on each node: docker + insecure registry
@@ -39,19 +40,28 @@ into `stack.yml` and `docker stack deploy`s it.
 | replicas / limits | `jaco.yaml` + compose `deploy.resources` | `stack.yml` `deploy.replicas` + `deploy.resources.limits` |
 | service discovery | per-deployment bridge + embedded DNS | overlay network + per-service VIP (same `127.0.0.11` DNS — web image unchanged) |
 | pg primary/replica on different nodes | `placement: hosts [jaco-2]/[jaco-3]` | `deploy.placement.constraints: node.hostname == jaco-2 / jaco-3` |
-| north-south ingress | Caddy route → web (TLS) | routing mesh publishes `web:80` on every node |
+| north-south ingress | Caddy route → web (TLS) | Caddy ingress → web (TLS, ACME staging), `:80`/`:443` via routing mesh |
 
 ## Ingress / TLS
 
-Swarm has no built-in TLS terminator, so `web` is published on **:80** via the
-routing mesh (reachable on any node behind the testbed LB). Bench it over HTTP —
-keep this constant across stacks for a fair comparison (see
-[RUBRIC.md](../bench/RUBRIC.md)):
+Swarm has no built-in TLS terminator, so the stack runs its own **Caddy** service
+([`Caddyfile`](Caddyfile)) that terminates TLS for `jaco.sh` and reverse-proxies
+to `web` — the same shape as JACO's embedded Caddy, so **both stacks are benched
+over HTTPS** (apples-to-apples, per [RUBRIC.md](../bench/RUBRIC.md)). Caddy is a
+single replica behind the routing mesh (`:80`/`:443` on every node, all routed to
+the one task), which keeps the ACME HTTP-01 challenge on the instance that ordered
+the cert — no multi-instance cert coordination (the problem JACO solves with its
+raft-backed shared cert store).
+
+ACME is pinned to **Let's Encrypt staging** (`acme_ca` in the Caddyfile): this is a
+throwaway bench and prod LE has tight duplicate limits. Staging certs aren't
+browser-trusted, so the bench's k6 runs with `insecureSkipTLSVerify` — same as the
+JACO run. `jaco.sh` resolves to the testbed LB, so the target is identical to JACO:
 
 ```sh
 cd tests/samples/bench
 export BENCH_PUBLIC_IPS="..." BENCH_PRIVATE_IPS="..."
-export BENCH_TARGET="http://<lb-ip>" BENCH_HOST_HEADER="jaco.sh"
+export BENCH_TARGET="https://jaco.sh"
 ./run.sh swarm
 ./collect.sh
 ```
@@ -59,9 +69,9 @@ export BENCH_TARGET="http://<lb-ip>" BENCH_HOST_HEADER="jaco.sh"
 ## Verify
 
 ```sh
-ssh azureuser@<n1-pub> 'sudo docker stack services bench'   # all replicas converged
-curl -s -H 'Host: jaco.sh' http://<lb-ip>/api/notes          # JSON list (reads a redis replica)
-curl -s -H 'Host: jaco.sh' http://<lb-ip>/api/metrics        # Prometheus metrics (incl. pg replica lag)
+ssh azureuser@<n1-pub> 'sudo docker stack services bench'   # all replicas converged (incl. caddy 1/1)
+curl -sk https://jaco.sh/api/notes      # JSON list (reads a redis replica)
+curl -sk https://jaco.sh/api/metrics    # Prometheus metrics (incl. pg replica lag)
 ```
 
 > The `node.hostname` placement constraints assume the default `jaco-1/2/3`
