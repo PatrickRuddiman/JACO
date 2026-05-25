@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -335,7 +335,7 @@ func TestReconcile_ApplyFailureLogsStatusUpdateError(t *testing.T) {
 		Audit:        aud.fn(),
 		UpdateStatus: stat.fn(),
 		Render:       goodInput,
-		Logger:       log.New(&logBuf, "", 0),
+		Logger:       slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
 	err := r.Tick(context.Background())
 	if err == nil {

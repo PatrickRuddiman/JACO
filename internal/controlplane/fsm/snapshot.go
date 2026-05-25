@@ -32,8 +32,10 @@ func (f *FSM) Snapshot() (hraft.FSMSnapshot, error) {
 	}
 	data, err := proto.Marshal(snap)
 	if err != nil {
+		f.log().Error("snapshot marshal failed", "error", err)
 		return nil, fmt.Errorf("fsm: marshal snapshot: %w", err)
 	}
+	f.log().Info("snapshot taken", "bytes", len(data), "nodes", len(snap.GetNodes()), "deployments", len(snap.GetDeployments()))
 	return &fsmSnapshot{data: data}, nil
 }
 
@@ -49,8 +51,11 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 	}
 	snap := &pb.FSMSnapshot{}
 	if err := proto.Unmarshal(data, snap); err != nil {
+		// Corruption / wire-incompatible snapshot — ERROR (state divergence).
+		f.log().Error("snapshot unmarshal failed (state may be corrupt)", "bytes", len(data), "error", err)
 		return fmt.Errorf("fsm: unmarshal snapshot: %w", err)
 	}
+	f.log().Info("restoring state from snapshot", "bytes", len(data))
 
 	if c := snap.GetCluster(); c != nil {
 		f.State.Cluster.Set(c, 0)

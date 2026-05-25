@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"os/exec"
 	"sort"
@@ -15,6 +15,7 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -73,7 +74,7 @@ type Syncer struct {
 	State        *state.State
 	SelfHostname string
 	PrivateKey   wgtypes.Key
-	Logger       *log.Logger
+	Logger       *slog.Logger
 
 	// loggedConfigError suppresses repeat ConfigureDevice warnings — the
 	// most common reason it fails (no such device / permission denied) is
@@ -87,6 +88,12 @@ type Syncer struct {
 
 	// loggedMeshError suppresses repeat mesh-address/route warnings.
 	loggedMeshError bool
+
+	// peerCountKnown / lastPeerCount track the configured peer count so
+	// membership changes (peer add/remove) log at INFO without spamming on
+	// every steady tick.
+	peerCountKnown bool
+	lastPeerCount  int
 }
 
 // Run blocks until ctx is cancelled. Each tick computes the desired
@@ -96,7 +103,7 @@ type Syncer struct {
 // spawning this goroutine via IsKernelAvailable, but stay defensive.
 func (s *Syncer) Run(ctx context.Context) error {
 	if s.Logger == nil {
-		s.Logger = log.Default()
+		s.Logger = logging.Discard()
 	}
 	if s.Iface == "" {
 		s.Iface = DefaultInterface
@@ -110,7 +117,7 @@ func (s *Syncer) Run(ctx context.Context) error {
 
 	client, err := wgctrl.New()
 	if err != nil {
-		s.Logger.Printf("wgmesh.Syncer.Run: wgctrl unavailable (%v), exiting cleanly", err)
+		s.Logger.Warn("wgctrl unavailable, exiting cleanly", "error", err)
 		return nil
 	}
 	defer client.Close()
@@ -134,7 +141,7 @@ func (s *Syncer) Run(ctx context.Context) error {
 func (s *Syncer) tick(client *wgctrl.Client) {
 	cfg, err := BuildConfig(s.State, s.SelfHostname, s.PrivateKey)
 	if err != nil {
-		s.Logger.Printf("wgmesh build config: %v", err)
+		s.Logger.Error("build config failed", "error", err)
 		return
 	}
 	if err := client.ConfigureDevice(s.Iface, cfg); err != nil {
@@ -142,9 +149,14 @@ func (s *Syncer) tick(client *wgctrl.Client) {
 		// lacks CAP_NET_ADMIN) or "no such device" (operator hasn't
 		// created jaco0 yet) — both repeat every tick. Log once.
 		if !s.loggedConfigError {
-			s.Logger.Printf("wgmesh ConfigureDevice %s: %v (mesh disabled; only logged once)", s.Iface, err)
+			s.Logger.Warn("ConfigureDevice failed, mesh disabled (only logged once)", "iface", s.Iface, "error", err)
 			s.loggedConfigError = true
 		}
+	} else if !s.peerCountKnown || s.lastPeerCount != len(cfg.Peers) {
+		// Membership changed (peer added or removed) — log at INFO.
+		s.Logger.Info("wireguard peer set reconciled", "peers", len(cfg.Peers), "iface", s.Iface)
+		s.peerCountKnown = true
+		s.lastPeerCount = len(cfg.Peers)
 	}
 	s.reconcileRoutes()
 }
@@ -159,7 +171,7 @@ func (s *Syncer) reconcileRoutes() {
 	current, err := listRoutes(s.Iface)
 	if err != nil {
 		if !s.loggedRouteError {
-			s.Logger.Printf("wgmesh route list %s: %v (route reconcile disabled; only logged once)", s.Iface, err)
+			s.Logger.Warn("route list failed, route reconcile disabled (only logged once)", "iface", s.Iface, "error", err)
 			s.loggedRouteError = true
 		}
 		return
@@ -179,7 +191,7 @@ func (s *Syncer) reconcileRoutes() {
 	src := SlotIP(s.SelfHostname).String()
 	for _, cidr := range desired {
 		if out, rerr := exec.Command("ip", "route", "replace", cidr, "dev", s.Iface, "src", src).CombinedOutput(); rerr != nil {
-			s.Logger.Printf("wgmesh route replace %s dev %s src %s: %v: %s", cidr, s.Iface, src, rerr, string(out))
+			s.Logger.Warn("route replace failed", "cidr", cidr, "iface", s.Iface, "src", src, "error", rerr, "output", strings.TrimSpace(string(out)))
 		}
 	}
 	for _, cidr := range del {
@@ -187,7 +199,7 @@ func (s *Syncer) reconcileRoutes() {
 			continue // the mesh route is managed by ensureMeshAddr, not a peer /24
 		}
 		if out, rerr := exec.Command("ip", "route", "del", cidr, "dev", s.Iface).CombinedOutput(); rerr != nil {
-			s.Logger.Printf("wgmesh route del %s dev %s: %v: %s", cidr, s.Iface, rerr, string(out))
+			s.Logger.Warn("route del failed", "cidr", cidr, "iface", s.Iface, "error", rerr, "output", strings.TrimSpace(string(out)))
 		}
 	}
 }
@@ -203,7 +215,7 @@ func (s *Syncer) ensureMeshAddr() {
 	_ = exec.Command("ip", "addr", "add", ip+"/32", "dev", s.Iface).Run() // ignore "File exists"
 	if out, rerr := exec.Command("ip", "route", "replace", MeshNetwork, "dev", s.Iface).CombinedOutput(); rerr != nil {
 		if !s.loggedMeshError {
-			s.Logger.Printf("wgmesh mesh route %s dev %s: %v: %s (only logged once)", MeshNetwork, s.Iface, rerr, string(out))
+			s.Logger.Warn("mesh route replace failed (only logged once)", "network", MeshNetwork, "iface", s.Iface, "error", rerr, "output", strings.TrimSpace(string(out)))
 			s.loggedMeshError = true
 		}
 	}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/admission"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/backup"
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -35,6 +36,7 @@ func (c *clusterServer) Backup(_ *pb.BackupRequest, stream pb.Cluster_BackupServ
 		JacoVersion: backupJacoVersion,
 		Identity:    admission.IdentityFromContext(stream.Context()),
 		Writer:      &buf,
+		Logger:      logging.Subsystem(logging.FromContext(stream.Context(), nil), "backup"),
 	}); err != nil {
 		return errorStatus(codes.Internal, "backup_failed", err.Error())
 	}

@@ -44,6 +44,7 @@ func restoreCmd() *cobra.Command {
 			Reader:      f,
 			LocalID:     name,
 			JacoVersion: "0.0.1-dev",
+			Logger:      Logger(),
 		}); err != nil {
 			return err
 		}

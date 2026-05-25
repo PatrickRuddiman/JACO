@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -27,6 +28,7 @@ import (
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -54,6 +56,8 @@ type ExportOptions struct {
 	JacoVersion string
 	Identity    string // for the BACKUP_TAKEN audit event
 	Writer      io.Writer
+	// Logger logs export start/finish at INFO. nil → discard.
+	Logger *slog.Logger
 }
 
 // Export triggers a raft snapshot, then writes a tar.gz containing
@@ -69,6 +73,11 @@ func Export(opts ExportOptions) error {
 	if opts.Writer == nil {
 		return fmt.Errorf("Writer is required")
 	}
+	logger := opts.Logger
+	if logger == nil {
+		logger = logging.Discard()
+	}
+	logger.Info("backup export started", "cluster_id", opts.ClusterID)
 
 	snapF := opts.Raft.Raft.Snapshot()
 	if err := snapF.Error(); err != nil {
@@ -138,6 +147,8 @@ func Export(opts ExportOptions) error {
 		}
 	}
 
+	logger.Info("backup export finished",
+		"cluster_id", opts.ClusterID, "snapshot_index", snapMeta.Index, "bytes", len(snapshotBytes))
 	return nil
 }
 
@@ -147,6 +158,9 @@ type ImportOptions struct {
 	Reader      io.Reader
 	LocalID     string // hostname / raft local-id for the restoring node
 	JacoVersion string // running binary version for compatibility check
+	// Logger logs restore start/finish at INFO (with bytes-written). nil →
+	// discard.
+	Logger *slog.Logger
 }
 
 // Import untars opts.Reader, validates meta.json's schema_version, primes a
@@ -163,6 +177,11 @@ func Import(opts ImportOptions) error {
 	if opts.LocalID == "" {
 		return fmt.Errorf("LocalID is required")
 	}
+	logger := opts.Logger
+	if logger == nil {
+		logger = logging.Discard()
+	}
+	logger.Info("backup restore started", "data_dir", opts.DataDir, logging.KeyNode, opts.LocalID)
 
 	metaBytes, snapshotBytes, err := untar(opts.Reader)
 	if err != nil {
@@ -248,6 +267,8 @@ func Import(opts ImportOptions) error {
 	if err := os.WriteFile(markerPath, []byte(markerContents), 0o600); err != nil {
 		return fmt.Errorf("write restore marker: %w", err)
 	}
+	logger.Info("backup restore finished",
+		"cluster_id", meta.ClusterID, "snapshot_index", meta.SnapshotIndex, "bytes", len(snapshotBytes))
 	return nil
 }
 

@@ -9,11 +9,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 )
 
 // DebounceWindow batches bursts of watch events into one rebuild pass.
@@ -33,6 +35,9 @@ type Reloader struct {
 	build   Builder
 	load    Loader
 
+	// Logger is the ingress subsystem logger. nil → a discard logger.
+	Logger *slog.Logger
+
 	mu      sync.Mutex
 	lastCfg []byte
 
@@ -44,6 +49,15 @@ type Reloader struct {
 // New constructs a Reloader.
 func New(brokers *watch.Registry, build Builder, load Loader) *Reloader {
 	return &Reloader{brokers: brokers, build: build, load: load}
+}
+
+// log returns the configured logger, or a discard logger when none was set
+// (e.g. tests that construct a bare Reloader).
+func (r *Reloader) log() *slog.Logger {
+	if r.Logger == nil {
+		return logging.Discard()
+	}
+	return r.Logger
 }
 
 // Rebuild forces an immediate rebuild + load pass. Returns nil when the
@@ -63,12 +77,14 @@ func (r *Reloader) Rebuild(ctx context.Context) error {
 		return nil
 	}
 	if err := r.load(ctx, cfg); err != nil {
+		r.log().Error("caddy config reload failed", "bytes", len(cfg), "error", err)
 		return fmt.Errorf("caddy load: %w", err)
 	}
 	r.mu.Lock()
 	r.lastCfg = cfg
 	r.mu.Unlock()
 	r.loads.Add(1)
+	r.log().Info("caddy config reloaded", "bytes", len(cfg))
 	return nil
 }
 
@@ -130,4 +146,3 @@ func resetTimer(t *time.Timer, d time.Duration) {
 	}
 	t.Reset(d)
 }
-

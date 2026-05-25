@@ -13,12 +13,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/bridge"
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/compose"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/health"
@@ -73,7 +74,7 @@ type Reconciler struct {
 	watcher      *health.Watcher
 	submit       health.SubmitFn
 	ensureSubnet EnsureSubnetFn
-	logger       *log.Logger
+	logger       *slog.Logger
 }
 
 // New constructs a Reconciler. submit is the function the per-replica
@@ -81,16 +82,17 @@ type Reconciler struct {
 // control plane (raft.Apply on the leader, Internal.Submit on followers).
 // ensureSubnet allocates the per-host /24 for a replica's networks before its
 // bridges are created.
-func New(docker dockerx.Docker, st *state.State, brokers *watch.Registry, hostname string, submit health.SubmitFn, ensureSubnet EnsureSubnetFn, logger *log.Logger) *Reconciler {
-	if logger == nil {
-		logger = log.Default()
-	}
+func New(docker dockerx.Docker, st *state.State, brokers *watch.Registry, hostname string, submit health.SubmitFn, ensureSubnet EnsureSubnetFn, logger *slog.Logger) *Reconciler {
+	base := logger
+	logger = logging.Subsystem(base, "runtime/reconciler").With(logging.KeyNode, hostname)
+	watcher := health.NewWatcher(docker, submit, nil, nil)
+	watcher.Logger = logging.Subsystem(base, "runtime/health").With(logging.KeyNode, hostname)
 	return &Reconciler{
 		docker:       docker,
 		state:        st,
 		brokers:      brokers,
 		hostname:     hostname,
-		watcher:      health.NewWatcher(docker, submit, nil, nil),
+		watcher:      watcher,
 		submit:       submit,
 		ensureSubnet: ensureSubnet,
 		logger:       logger,
@@ -169,7 +171,7 @@ func (r *Reconciler) orphanSweep(ctx context.Context) error {
 		return err
 	}
 	for _, rid := range removed {
-		r.logger.Printf("orphan-swept container replica_id=%s", rid)
+		r.logger.Info("orphan-swept container", logging.KeyReplicaID, rid)
 		r.watcher.Stop(rid)
 	}
 	return nil
@@ -186,7 +188,8 @@ func (r *Reconciler) resync(ctx context.Context) {
 			continue
 		}
 		if err := r.startReplica(ctx, rep); err != nil {
-			r.logger.Printf("start replica %s: %v", rep.GetId(), err)
+			r.logger.Error("start replica failed",
+				logging.KeyReplicaID, rep.GetId(), logging.KeyDeployment, rep.GetDeployment(), "error", err)
 		}
 	}
 }
@@ -204,7 +207,8 @@ func (r *Reconciler) handle(ctx context.Context, ev watch.Event[*pb.ReplicaDesir
 			return
 		}
 		if err := r.startReplica(ctx, rep); err != nil {
-			r.logger.Printf("start replica %s: %v", rep.GetId(), err)
+			r.logger.Error("start replica failed",
+				logging.KeyReplicaID, rep.GetId(), logging.KeyDeployment, rep.GetDeployment(), "error", err)
 		}
 	case watch.KindRemoved:
 		rep := ev.Before
@@ -283,8 +287,9 @@ func (r *Reconciler) startReplica(ctx context.Context, rep *pb.ReplicaDesired) e
 			// the watch / 30s safety tick retries.
 			return fmt.Errorf("ensureSubnet %s/%s on %s: %w", rep.GetDeployment(), netSuffix, r.hostname, err)
 		}
-		if _, err := bridge.Ensure(ctx, r.docker, rep.GetDeployment(), netSuffix, cidr, clusterID); err != nil {
-			r.logger.Printf("bridge.Ensure %s/%s: %v", rep.GetDeployment(), netSuffix, err)
+		if _, err := bridge.Ensure(ctx, r.docker, rep.GetDeployment(), netSuffix, cidr, clusterID, r.logger); err != nil {
+			r.logger.Error("bridge.Ensure failed",
+				logging.KeyReplicaID, rep.GetId(), logging.KeyDeployment, rep.GetDeployment(), "network", netSuffix, "error", err)
 		}
 	}
 
@@ -299,6 +304,9 @@ func (r *Reconciler) startReplica(ctx context.Context, rep *pb.ReplicaDesired) e
 	if err != nil {
 		return fmt.Errorf("lifecycle.Start: %w", err)
 	}
+	r.logger.Info("replica container started",
+		logging.KeyReplicaID, rep.GetId(), logging.KeyDeployment, rep.GetDeployment(),
+		"service", rep.GetService(), "container_id", containerID)
 	r.watcher.Start(ctx, rep.GetId(), containerID, spec.Healthcheck != nil)
 	return nil
 }
@@ -307,7 +315,9 @@ func (r *Reconciler) startReplica(ctx context.Context, rep *pb.ReplicaDesired) e
 // operator sees the offending replica (and the scheduler stops retrying it
 // forever). Used when subnet allocation can't be satisfied.
 func (r *Reconciler) failReplica(ctx context.Context, rep *pb.ReplicaDesired, network, code string) {
-	r.logger.Printf("startReplica %s: %s on %s/%s — marking FAILED", rep.GetId(), code, rep.GetDeployment(), network)
+	r.logger.Warn("marking replica FAILED",
+		logging.KeyReplicaID, rep.GetId(), logging.KeyDeployment, rep.GetDeployment(),
+		"network", network, "code", code)
 	if r.submit == nil {
 		return
 	}
@@ -322,7 +332,7 @@ func (r *Reconciler) failReplica(ctx context.Context, rep *pb.ReplicaDesired, ne
 			"host":       r.hostname,
 		},
 	}); err != nil {
-		r.logger.Printf("failReplica submit %s: %v", rep.GetId(), err)
+		r.logger.Error("failReplica submit failed", logging.KeyReplicaID, rep.GetId(), "error", err)
 	}
 }
 
@@ -330,11 +340,13 @@ func (r *Reconciler) failReplica(ctx context.Context, rep *pb.ReplicaDesired, ne
 // stop+removes the container.
 func (r *Reconciler) stopReplica(ctx context.Context, rep *pb.ReplicaDesired) {
 	r.watcher.Stop(rep.GetId())
+	r.logger.Info("stopping replica container",
+		logging.KeyReplicaID, rep.GetId(), logging.KeyDeployment, rep.GetDeployment())
 	if err := lifecycle.Stop(ctx, r.docker, rep.GetId(), 10); err != nil {
-		r.logger.Printf("lifecycle.Stop %s: %v", rep.GetId(), err)
+		r.logger.Error("lifecycle.Stop failed", logging.KeyReplicaID, rep.GetId(), "error", err)
 	}
 	if err := lifecycle.Remove(ctx, r.docker, rep.GetId()); err != nil {
-		r.logger.Printf("lifecycle.Remove %s: %v", rep.GetId(), err)
+		r.logger.Error("lifecycle.Remove failed", logging.KeyReplicaID, rep.GetId(), "error", err)
 	}
 }
 

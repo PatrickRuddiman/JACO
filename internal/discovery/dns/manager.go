@@ -3,7 +3,7 @@ package dns
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
@@ -13,6 +13,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/bridge"
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -32,7 +33,7 @@ const ListenPort = 53
 type Manager struct {
 	State    *state.State
 	Brokers  *watch.Registry
-	Logger   *log.Logger
+	Logger   *slog.Logger
 	Hostname string
 
 	mu        sync.Mutex
@@ -60,7 +61,7 @@ func (e *listenerEntry) stop() {
 // changes.
 func (m *Manager) Run(ctx context.Context) error {
 	if m.Logger == nil {
-		m.Logger = log.Default()
+		m.Logger = logging.Discard()
 	}
 	if m.listeners == nil {
 		m.listeners = map[string]*listenerEntry{}
@@ -124,11 +125,14 @@ func (m *Manager) ensure(ctx context.Context, sn *pb.Subnet) {
 
 	gw, err := bridge.GatewayIP(sn.GetCidr())
 	if err != nil {
-		m.Logger.Printf("dns.Manager: subnet %s/%s bad CIDR %q: %v", sn.GetDeployment(), sn.GetNetwork(), sn.GetCidr(), err)
+		m.Logger.Error("subnet bad CIDR",
+			logging.KeyDeployment, sn.GetDeployment(), "network", sn.GetNetwork(),
+			"cidr", sn.GetCidr(), "error", err)
 		return
 	}
 	scope := Scope{Deployment: sn.GetDeployment(), Network: sn.GetNetwork()}
 	resp := New(scope, ServiceMap{}, LookupHost)
+	resp.Logger = m.Logger
 
 	addr := fmt.Sprintf("%s:%d", gw, ListenPort)
 	udp := &dns.Server{Addr: addr, Net: "udp", Handler: dnsHandlerFunc(resp.Handle)}
@@ -172,7 +176,8 @@ func (m *Manager) serveWithRetry(ctx context.Context, srv *dns.Server, done <-ch
 			return // clean shutdown without done set (shouldn't happen, but stop)
 		}
 		if !logged {
-			m.Logger.Printf("dns.Manager: %s/%s %s listen failed (%v); retrying until the bridge gateway is up", dep, network, proto, err)
+			m.Logger.Warn("listen failed; retrying until the bridge gateway is up",
+				logging.KeyDeployment, dep, "network", network, "proto", proto, "error", err)
 			logged = true
 		}
 		select {

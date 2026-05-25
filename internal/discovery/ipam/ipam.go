@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"sort"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -57,6 +59,17 @@ type IPAM struct {
 	// mu serializes the read-nextFree-apply sequence so concurrent
 	// EnsureSubnet calls on the leader can't pick the same /24.
 	mu sync.Mutex
+
+	// Logger logs allocate/release at DEBUG and pool exhaustion at ERROR.
+	// nil → discard. Set by the daemon after construction.
+	Logger *slog.Logger
+}
+
+func (i *IPAM) log() *slog.Logger {
+	if i.Logger == nil {
+		return logging.Discard()
+	}
+	return i.Logger
 }
 
 // New constructs an IPAM allocator. poolCIDR must be a /16; pass
@@ -95,6 +108,10 @@ func (i *IPAM) Allocate(deployment, network, host string) (*pb.Subnet, error) {
 
 	cidr, err := i.nextFree()
 	if err != nil {
+		if IsExhausted(err) {
+			i.log().Error("ipam pool exhausted",
+				logging.KeyDeployment, deployment, "network", network, "host", host)
+		}
 		return nil, err
 	}
 
@@ -117,6 +134,8 @@ func (i *IPAM) Allocate(deployment, network, host string) (*pb.Subnet, error) {
 	}
 
 	allocated, _ := i.state.Subnets.Get(state.SubnetKey(deployment, network, host))
+	i.log().Debug("ipam allocated subnet",
+		logging.KeyDeployment, deployment, "network", network, "host", host, "cidr", cidr)
 	return allocated, nil
 }
 
@@ -141,7 +160,12 @@ func (i *IPAM) Free(deployment, network, host string) error {
 	if err != nil {
 		return err
 	}
-	return i.apply(data)
+	if err := i.apply(data); err != nil {
+		return err
+	}
+	i.log().Debug("ipam released subnet",
+		logging.KeyDeployment, deployment, "network", network, "host", host)
+	return nil
 }
 
 // nextFree returns the next unused /24 inside the pool. Walks the existing

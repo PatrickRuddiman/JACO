@@ -9,7 +9,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -33,6 +33,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/discovery/wgmesh"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/rebuild"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/storage"
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/health"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/reconciler"
@@ -83,9 +84,14 @@ type Server struct {
 	subsystemsCancel context.CancelFunc
 	subsystemsWG     sync.WaitGroup
 
-	// logger receives subsystem errors so they surface in jacod's stderr
-	// instead of disappearing into goroutine panics. nil → log.Default().
-	logger *log.Logger
+	// logger is the BARE root logger (no subsystem attr). Subsystems derive
+	// their own via logging.Subsystem(s.logger, "<name>"); the server's own
+	// lifecycle logs go through srvLog. nil → a discard logger.
+	logger *slog.Logger
+
+	// srvLog is the server's own logger, tagged subsystem=daemon/grpc. Used
+	// for the goroutine-exit / wiring lifecycle lines startSubsystems emits.
+	srvLog *slog.Logger
 
 	// docker is the optional runtime engine handle. nil → no runtime
 	// reconciler is spawned in startSubsystems.
@@ -147,9 +153,9 @@ type Options struct {
 	// production leaves it empty.
 	Hostname string
 
-	// Logger receives subsystem errors. nil → log.Default(). Tests pass a
-	// log.Logger writing to an io.Discard to suppress noise.
-	Logger *log.Logger
+	// Logger receives subsystem errors. nil → a discard logger. Tests pass
+	// a logger writing to an io.Discard (or none) to suppress noise.
+	Logger *slog.Logger
 
 	// Docker is the runtime engine handle. nil → skip runtime wiring (the
 	// daemon still runs the control plane + scheduler, but doesn't create
@@ -234,15 +240,25 @@ func New(opts Options) (*Server, error) {
 		}
 		return cpadmission.StreamInterceptor(st)(srv, ss, info, handler)
 	}
-	gs := grpc.NewServer(
-		grpc.UnaryInterceptor(gate.UnaryInterceptor(lazyUnary)),
-		grpc.StreamInterceptor(gate.StreamInterceptor(lazyStream)),
-	)
-
 	logger := opts.Logger
 	if logger == nil {
-		logger = log.Default()
+		logger = logging.Discard()
 	}
+
+	// Interceptor order: the logging interceptor runs FIRST so it can mint a
+	// request_id and attach request_id/method/peer to the context logger;
+	// the existing gate + admission interceptors run inside it, so their
+	// log lines (and every downstream handler's) carry the request_id.
+	gs := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(
+			logging.UnaryServerInterceptor(logging.Subsystem(logger, "daemon/grpc")),
+			gate.UnaryInterceptor(lazyUnary),
+		),
+		grpc.ChainStreamInterceptor(
+			logging.StreamServerInterceptor(logging.Subsystem(logger, "daemon/grpc")),
+			gate.StreamInterceptor(lazyStream),
+		),
+	)
 
 	// Optional cross-host TCP listener. Empty ListenAddr → single-node
 	// daemon (unix socket only). We open this NOW so a failure surfaces
@@ -284,6 +300,7 @@ func New(opts Options) (*Server, error) {
 		tcpAddr:      tcpAddr,
 		tcpAdvertise: tcpAdvertise,
 		logger:       logger,
+		srvLog:       logging.Subsystem(logger, "daemon/grpc"),
 		docker:       opts.Docker,
 		tlsDyn:       dynTLS,
 		ipamPool:     ipamPoolOrDefault(opts.IPAMPool),
@@ -341,8 +358,11 @@ func (s *Server) OpenRaft(hostname, bindAddr, advertiseAddr string) error {
 	}
 
 	brokers := watch.NewRegistry()
+	brokers.SetLogger(logging.Subsystem(s.logger, "watch").With(logging.KeyNode, hostname))
 	st := state.New(brokers)
+	st.Logger = logging.Subsystem(s.logger, "state").With(logging.KeyNode, hostname)
 	f := fsm.New(st, brokers)
+	f.Logger = logging.Subsystem(s.logger, "fsm").With(logging.KeyNode, hostname)
 
 	node, err := raftnode.New(raftnode.Config{
 		DataDir:       s.cluster.dataDir,
@@ -351,6 +371,7 @@ func (s *Server) OpenRaft(hostname, bindAddr, advertiseAddr string) error {
 		LocalID:       hostname,
 		Bootstrap:     false, // raft state already on disk
 		FSM:           f,
+		Logger:        logging.Subsystem(s.logger, "raft").With(logging.KeyNode, hostname),
 	})
 	if err != nil {
 		return fmt.Errorf("raftnode.New: %w", err)
@@ -370,7 +391,7 @@ func (s *Server) OpenRaft(hostname, bindAddr, advertiseAddr string) error {
 		if cert, err := clusterNodeCert(s.cluster.dataDir, hostname); err == nil {
 			s.tlsDyn.swap(cert)
 		} else {
-			s.logger.Printf("rebindTLS: %v (keeping bootstrap cert)", err)
+			s.srvLog.Warn("rebindTLS failed, keeping bootstrap cert", "error", err)
 		}
 	}
 
@@ -402,8 +423,9 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 	// EnsureSubnet RPC handler and the reconciler's ensureSubnet closure
 	// both use this instance so allocations serialize on one mutex.
 	if allocator, err := ipam.New(st, apply, s.ipamPool); err != nil {
-		s.logger.Printf("ipam allocator init: %v (per-host subnet allocation disabled)", err)
+		s.srvLog.Warn("ipam allocator init failed, per-host subnet allocation disabled", "error", err)
 	} else {
+		allocator.Logger = logging.Subsystem(s.logger, "ipam").With(logging.KeyNode, hostname)
 		s.ipamAllocator = allocator
 	}
 
@@ -425,11 +447,11 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 				}
 				n, err := purgeHostlessSubnets(st, apply)
 				if err != nil {
-					s.logger.Printf("subnet migration: %v", err)
+					s.srvLog.Error("subnet migration failed", "error", err)
 					return
 				}
 				if n > 0 {
-					s.logger.Printf("subnet migration: purged %d pre-#28 host-less subnet(s)", n)
+					s.srvLog.Info("subnet migration purged pre-#28 host-less subnets", "count", n)
 				}
 				return
 			}
@@ -437,21 +459,24 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 	}()
 
 	rollouts := rollout.New(st, apply, nil)
+	rollouts.Logger = logging.Subsystem(s.logger, "scheduler/rollout").With(logging.KeyNode, hostname)
 	sched := scheduler.New(st, brokers, node, apply, rollouts)
+	sched.Logger = logging.Subsystem(s.logger, "scheduler").With(logging.KeyNode, hostname)
 	s.subsystemsWG.Add(1)
 	go func() {
 		defer s.subsystemsWG.Done()
 		if err := sched.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			s.logger.Printf("scheduler.Run exited: %v", err)
+			s.srvLog.Error("scheduler.Run exited", "error", err)
 		}
 	}()
 
 	restarter := schedhealth.New(st, brokers, node, apply)
+	restarter.Logger = logging.Subsystem(s.logger, "scheduler/health").With(logging.KeyNode, hostname)
 	s.subsystemsWG.Add(1)
 	go func() {
 		defer s.subsystemsWG.Done()
 		if err := restarter.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			s.logger.Printf("scheduler/health.Restarter.Run exited: %v", err)
+			s.srvLog.Error("scheduler/health.Restarter.Run exited", "error", err)
 		}
 	}()
 
@@ -461,13 +486,13 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 	if err := wgmesh.IsKernelAvailable(); err == nil {
 		privKey, pubKey, err := wgmesh.LoadOrGenerateKeypair(s.cluster.dataDir)
 		if err != nil {
-			s.logger.Printf("wgmesh keypair: %v (mesh sync skipped)", err)
+			s.srvLog.Warn("wgmesh keypair load failed, mesh sync skipped", "error", err)
 		} else {
 			// Bring up the wg interface if it doesn't exist yet. Skips
 			// gracefully without CAP_NET_ADMIN — Syncer's tick logs the
 			// resulting ConfigureDevice failure once.
 			if err := wgmesh.EnsureInterface(wgmesh.DefaultInterface); err != nil {
-				s.logger.Printf("wgmesh.EnsureInterface: %v (mesh sync best-effort)", err)
+				s.srvLog.Warn("wgmesh.EnsureInterface failed, mesh sync best-effort", "error", err)
 			}
 			// Publish our wireguard pubkey + gRPC address through raft so
 			// peers see them after a restart / initial Init. Bug 011:
@@ -484,18 +509,18 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 				State:        st,
 				SelfHostname: hostname,
 				PrivateKey:   privKey,
-				Logger:       s.logger,
+				Logger:       logging.Subsystem(s.logger, "wgmesh").With(logging.KeyNode, hostname),
 			}
 			s.subsystemsWG.Add(1)
 			go func() {
 				defer s.subsystemsWG.Done()
 				if err := syncer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-					s.logger.Printf("wgmesh.Syncer.Run exited: %v", err)
+					s.srvLog.Error("wgmesh.Syncer.Run exited", "error", err)
 				}
 			}()
 		}
 	} else {
-		s.logger.Printf("wgmesh kernel unavailable (%v), mesh sync skipped", err)
+		s.srvLog.Info("wgmesh kernel unavailable, mesh sync skipped", "error", err)
 	}
 
 	// Discovery: nftables firewall reconciler. Skipped when `nft` isn't
@@ -556,29 +581,29 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 			Pool:          s.ipamPool,
 			EnsureSNAT:    firewall.EnsureSNATExempt,
 			EnsureOverlay: firewall.EnsureOverlayExempt,
-			Logger:        s.logger,
+			Logger:        logging.Subsystem(s.logger, "firewall").With(logging.KeyNode, hostname),
 		}
 		s.subsystemsWG.Add(1)
 		go func() {
 			defer s.subsystemsWG.Done()
 			if err := fw.Loop(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				s.logger.Printf("firewall.Reconciler.Loop exited: %v", err)
+				s.srvLog.Error("firewall.Reconciler.Loop exited", "error", err)
 			}
 		}()
 	} else {
-		s.logger.Printf("firewall unavailable (%v), drift detector skipped", err)
+		s.srvLog.Info("firewall unavailable, drift detector skipped", "error", err)
 	}
 
 	// Discovery: per-bridge DNS Manager. Spawns a UDP+TCP listener per
 	// (deployment, network) subnet on the bridge gateway IP. Skips
 	// gracefully when listeners can't bind (no docker bridge yet, or
 	// missing CAP_NET_BIND_SERVICE).
-	dnsMgr := &dnsmgr.Manager{State: st, Brokers: brokers, Logger: s.logger, Hostname: hostname}
+	dnsMgr := &dnsmgr.Manager{State: st, Brokers: brokers, Logger: logging.Subsystem(s.logger, "dns").With(logging.KeyNode, hostname), Hostname: hostname}
 	s.subsystemsWG.Add(1)
 	go func() {
 		defer s.subsystemsWG.Done()
 		if err := dnsMgr.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			s.logger.Printf("dns.Manager.Run exited: %v", err)
+			s.srvLog.Error("dns.Manager.Run exited", "error", err)
 		}
 	}()
 
@@ -596,16 +621,18 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 
 		// ACME email empty until we plumb config; operators set it via
 		// the future jacod.yaml.acme_email field.
-		rl := rebuild.New(brokers, ingressBuilder(st, ""), ingressLoader())
+		ingressLog := logging.Subsystem(s.logger, "ingress").With(logging.KeyNode, hostname)
+		rl := rebuild.New(brokers, ingressBuilder(st, "", ingressLog), ingressLoader(ingressLog))
+		rl.Logger = ingressLog
 		s.subsystemsWG.Add(1)
 		go func() {
 			defer s.subsystemsWG.Done()
 			if err := rl.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				s.logger.Printf("ingress.Reloader.Run exited: %v", err)
+				s.srvLog.Error("ingress.Reloader.Run exited", "error", err)
 			}
 		}()
 	} else {
-		s.logger.Printf("caddy binary not found on PATH, ingress reload loop skipped")
+		s.srvLog.Info("caddy binary not found on PATH, ingress reload loop skipped")
 	}
 
 	// Runtime reconciler: skipped when no Docker handle was injected (the
@@ -634,7 +661,7 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 				return nil
 			} else if !errors.Is(applyErr, hraft.ErrNotLeader) {
 				submitErrLogOnce.Do(func() {
-					s.logger.Printf("submit raft.Apply (non-leader path): %v", applyErr)
+					s.srvLog.Error("submit raft.Apply failed (non-leader path)", "error", applyErr)
 				})
 				return applyErr
 			}
@@ -644,14 +671,14 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 			leaderAddr := leaderGRPCAddr(st, node)
 			if leaderAddr == "" {
 				submitErrLogOnce.Do(func() {
-					s.logger.Printf("submit: no leader gRPC address known (state.Nodes lookup empty)")
+					s.srvLog.Warn("submit: no leader gRPC address known (state.Nodes lookup empty)")
 				})
 				return fmt.Errorf("submit: no leader gRPC address known")
 			}
 			conn, dialErr := grpc.NewClient(leaderAddr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})))
 			if dialErr != nil {
 				submitErrLogOnce.Do(func() {
-					s.logger.Printf("submit dial leader %s: %v", leaderAddr, dialErr)
+					s.srvLog.Error("submit: dial leader failed", "leader_addr", leaderAddr, "error", dialErr)
 				})
 				return fmt.Errorf("submit: dial leader %s: %w", leaderAddr, dialErr)
 			}
@@ -659,7 +686,7 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 			_, rpcErr := pb.NewInternalClient(conn).Submit(ctx, &pb.SubmitRequest{CommandBytes: data})
 			if rpcErr != nil {
 				submitErrLogOnce.Do(func() {
-					s.logger.Printf("submit Internal.Submit to %s: %v", leaderAddr, rpcErr)
+					s.srvLog.Error("submit: Internal.Submit to leader failed", "leader_addr", leaderAddr, "error", rpcErr)
 				})
 			}
 			return rpcErr
@@ -709,7 +736,7 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 		go func() {
 			defer s.subsystemsWG.Done()
 			if err := rec.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				s.logger.Printf("runtime.Reconciler.Run exited: %v", err)
+				s.srvLog.Error("runtime.Reconciler.Run exited", "error", err)
 			}
 		}()
 	}
@@ -806,7 +833,7 @@ func (s *Server) Stop(ctx context.Context) {
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
-			s.logger.Printf("subsystems shutdown timed out after 5s")
+			s.srvLog.Warn("subsystems shutdown timed out after 5s")
 		}
 	}
 
@@ -888,7 +915,7 @@ func (s *Server) publishSelfRetry(ctx context.Context, node *raftnode.Node, st *
 	for {
 		err := s.publishSelf(ctx, node, st, hostname, pubKey)
 		if err == nil {
-			s.logger.Printf("publishSelf succeeded for %s", hostname)
+			s.srvLog.Info("publishSelf succeeded", logging.KeyNode, hostname)
 			return
 		}
 		select {

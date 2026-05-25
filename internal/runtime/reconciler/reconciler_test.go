@@ -1,11 +1,12 @@
 package reconciler_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -344,7 +345,59 @@ func TestReconciler_OrphanSweepStopsContainerWhenDesiredMovedHosts(t *testing.T)
 // since the reconciler tests assert on docker state, not raft state.
 func noopSubmit(_ context.Context, _ *pb.ReplicaObserved) error { return nil }
 
-func silentLogger() *log.Logger { return log.New(io.Discard, "", 0) }
+func silentLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// bufLogger returns a DEBUG-level text logger writing into buf, for asserting
+// on emitted log lines.
+func bufLogger(buf *bytes.Buffer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// TestReconciler_StartLogIncludesReplicaAndDeployment is issue #38 acceptance
+// (b): reconciler logs carry replica_id and deployment.
+func TestReconciler_StartLogIncludesReplicaAndDeployment(t *testing.T) {
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	f := fsm.New(st, brokers)
+	d := newFakeDocker()
+	var raftIdx uint64
+	seedAll(t, f, &raftIdx)
+
+	var logBuf bytes.Buffer
+	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, okEnsureSubnet, bufLogger(&logBuf))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- rec.Run(ctx) }()
+
+	raftIdx++
+	apply(t, f, &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_ReplicaDesiredUpsert{
+		ReplicaDesiredUpsert: &pb.ReplicaDesiredUpsert{Replica: &pb.ReplicaDesired{
+			Id: "smoke-web-0", Deployment: "smoke", Service: "web", Index: 0, Host: "host-a", Image: "nginx:1.27",
+		}},
+	}}, raftIdx)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := d.snapshotByReplicaID()["smoke-web-0"]; ok {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "replica_id=smoke-web-0") {
+		t.Errorf("reconciler log missing replica_id: %q", logs)
+	}
+	if !strings.Contains(logs, "deployment=smoke") {
+		t.Errorf("reconciler log missing deployment: %q", logs)
+	}
+	if !strings.Contains(logs, "subsystem=runtime/reconciler") {
+		t.Errorf("reconciler log missing subsystem tag: %q", logs)
+	}
+}
 
 // Ensure the SubmitFn type satisfies health.SubmitFn at compile time.
 var _ health.SubmitFn = noopSubmit

@@ -10,6 +10,7 @@ package health
 
 import (
 	"context"
+	"log/slog"
 	"strconv"
 	"sync"
 
@@ -18,6 +19,7 @@ import (
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 	"github.com/PatrickRuddiman/jaco/internal/scheduler"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
@@ -40,11 +42,22 @@ type Restarter struct {
 	leader  scheduler.LeaderStatus
 	apply   Applier
 
+	// Logger logs restart decisions. nil → discard. Set by the daemon after
+	// construction; tests leave it nil.
+	Logger *slog.Logger
+
 	readyOnce sync.Once
 	ready     chan struct{}
 
 	handledMu sync.Mutex
 	handled   chan watch.Event[*pb.ReplicaObserved]
+}
+
+func (r *Restarter) log() *slog.Logger {
+	if r.Logger == nil {
+		return logging.Discard()
+	}
+	return r.Logger
 }
 
 // New constructs a Restarter.
@@ -136,6 +149,8 @@ func (r *Restarter) handleFailure(obs *pb.ReplicaObserved) {
 		nextFailures = existing.GetConsecutiveFailures() + 1
 	}
 	if nextFailures >= MaxConsecutiveFailures {
+		r.log().Warn("restart policy exhausted, marking replica failed",
+			logging.KeyReplicaID, obs.GetId(), "consecutive_failures", nextFailures)
 		// Mark restart_exhausted and stop. The FSM accepts this update via
 		// Command{ReplicaObservedUpdate}.
 		exhausted := &pb.ReplicaObserved{
@@ -156,6 +171,9 @@ func (r *Restarter) handleFailure(obs *pb.ReplicaObserved) {
 		return
 	}
 	// Bump counter + emit restart command (batched).
+	r.log().Info("restarting failed replica",
+		logging.KeyReplicaID, obs.GetId(), logging.KeyReason, "failed",
+		"consecutive_failures", nextFailures, "code", obs.GetCode())
 	batch := &pb.Batch{Children: []*pb.Command{
 		{
 			Identity: "restarter",
@@ -182,6 +200,8 @@ func (r *Restarter) handleFailure(obs *pb.ReplicaObserved) {
 }
 
 func (r *Restarter) handleDegraded(obs *pb.ReplicaObserved) {
+	r.log().Info("removing degraded replica from routing and restarting",
+		logging.KeyReplicaID, obs.GetId(), logging.KeyReason, "degraded")
 	// Pull from ingress rotation + restart.
 	batch := &pb.Batch{Children: []*pb.Command{
 		{
