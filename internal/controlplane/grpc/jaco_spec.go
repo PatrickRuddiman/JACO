@@ -2,7 +2,10 @@ package grpcsrv
 
 import (
 	"fmt"
+	"sort"
+	"strconv"
 
+	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"gopkg.in/yaml.v3"
 
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
@@ -13,7 +16,7 @@ import (
 // minimal — the moving parts (replicas, placement, ingress routes) live
 // here; the heavy compose semantics stay in the compose file.
 type JacoYAML struct {
-	Deployment string          `yaml:"deployment"`
+	Deployment string            `yaml:"deployment"`
 	Services   []JacoServiceDecl `yaml:"services"`
 	Routes     []JacoRouteDecl   `yaml:"routes"`
 }
@@ -168,6 +171,45 @@ func toServiceSpecs(decls []JacoServiceDecl) []*pb.ServiceSpec {
 			Networks:  append([]string(nil), d.Networks...),
 		})
 	}
+	return out
+}
+
+// toTCPRoutes derives the cluster-wide TCP ingress listeners from a compose
+// project's published ports. Only entries with a numeric published host port,
+// tcp protocol, and no host-IP scoping qualify; bare/ephemeral, UDP, and
+// 127.0.0.1-scoped entries are documentation and produce no listener. Output
+// is sorted by published port for determinism (the FSM + config builder both
+// rely on a stable order). Compose-go has already expanded port ranges into
+// individual entries by the time the project reaches here.
+func toTCPRoutes(deployment string, project *composetypes.Project) []*pb.TCPRoute {
+	if project == nil {
+		return nil
+	}
+	var out []*pb.TCPRoute
+	for _, svc := range project.Services {
+		for _, p := range svc.Ports {
+			if p.Published == "" {
+				continue // no host publish — internal/documentation only
+			}
+			if p.Protocol != "" && p.Protocol != "tcp" {
+				continue // UDP etc. out of scope
+			}
+			if p.HostIP != "" && p.HostIP != "0.0.0.0" {
+				continue // scoped to a specific host IP — not cluster-wide ingress
+			}
+			published, err := strconv.Atoi(p.Published)
+			if err != nil || published <= 0 {
+				continue
+			}
+			out = append(out, &pb.TCPRoute{
+				PublishedPort: int32(published),
+				Deployment:    deployment,
+				Service:       svc.Name,
+				ContainerPort: int32(p.Target),
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].GetPublishedPort() < out[j].GetPublishedPort() })
 	return out
 }
 

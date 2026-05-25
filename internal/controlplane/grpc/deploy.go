@@ -68,6 +68,28 @@ func (d *deployServer) Apply(ctx context.Context, req *pb.ApplyRequest) (*pb.App
 		}
 	}
 
+	// Derive the TCP ingress listeners from compose published ports and reject
+	// host-port collisions before anything is applied. A node binds a published
+	// port once, so the port is cluster-global.
+	tcpRoutes := toTCPRoutes(jacoSpec.Deployment, composeProject)
+	seenPort := map[int32]string{}
+	for _, r := range tcpRoutes {
+		if prev, dup := seenPort[r.GetPublishedPort()]; dup {
+			return nil, errorStatus(codes.InvalidArgument, "port_conflict",
+				fmt.Sprintf("services %q and %q both publish host port %d in this deployment",
+					prev, r.GetService(), r.GetPublishedPort()))
+		}
+		seenPort[r.GetPublishedPort()] = r.GetService()
+	}
+	for _, r := range tcpRoutes {
+		if existing, ok := d.state.TCPRoutes.Get(state.TCPRouteKey(r.GetPublishedPort())); ok &&
+			existing.GetDeployment() != jacoSpec.Deployment {
+			return nil, errorStatus(codes.InvalidArgument, "port_conflict",
+				fmt.Sprintf("host port %d is already published by deployment %q",
+					r.GetPublishedPort(), existing.GetDeployment()))
+		}
+	}
+
 	currentRev := uint64(0)
 	if existing, ok := d.state.Deployments.Get(jacoSpec.Deployment); ok {
 		currentRev = existing.GetAppliedRevision()
@@ -98,6 +120,7 @@ func (d *deployServer) Apply(ctx context.Context, req *pb.ApplyRequest) (*pb.App
 			ComposeYaml: req.GetComposeYaml(),
 			Services:    toServiceSpecs(jacoSpec.Services),
 			Routes:      toRoutes(jacoSpec.Deployment, jacoSpec.Routes),
+			TcpRoutes:   tcpRoutes,
 		}},
 	}
 	if err := applyRaftCommand(d.raft, cmd); err != nil {
