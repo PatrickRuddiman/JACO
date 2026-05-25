@@ -77,6 +77,13 @@ func TestBuildCaddyConfig_HealthyTwoOfThree(t *testing.T) {
 		t.Errorf("upstreams len = %d, want 2 (degraded replica excluded)", len(upstreams))
 	}
 
+	// Positive case for the #41 automatic_https fix: with tls:auto policies
+	// present, automatic_https must NOT be disabled — otherwise Caddy never
+	// issues. Guards the fix from over-correcting (disabling automation always).
+	if ah, ok := jaco["automatic_https"].(map[string]any); ok && ah["disable"] == true {
+		t.Errorf("automatic_https disabled despite tls:auto policies present: %v", ah)
+	}
+
 	want := loadGolden(t, "healthy-2of3.golden.json", got)
 	if !bytes.Equal(got, want) {
 		t.Errorf("output diverges from golden\n--- got:\n%s\n--- want:\n%s", got, want)
