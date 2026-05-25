@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 
@@ -35,6 +36,17 @@ const (
 	DefaultWGPort      = 51820
 	DefaultLogLevel    = "info"
 	DefaultIPAMPool    = "10.244.0.0/16"
+
+	// DefaultACMECA is the Let's Encrypt production ACME directory — the CA
+	// JACO issues against unless the operator pins acme_ca to staging (or any
+	// other ACME provider). Stage-first issuance (issue #41) runs against
+	// ACMEStagingCA before flipping to this URL.
+	DefaultACMECA = "https://acme-v02.api.letsencrypt.org/directory"
+	// ACMEStagingCA is the Let's Encrypt staging directory used for the
+	// stage-first dry run. Staging has far looser rate limits, so a
+	// DNS/firewall misconfig burns a cheap staging failure instead of a prod
+	// rate-limit hit.
+	ACMEStagingCA = "https://acme-staging-v02.api.letsencrypt.org/directory"
 )
 
 // Config is the typed view of jacod.yaml.
@@ -52,10 +64,42 @@ type Config struct {
 	WGPort int `yaml:"wg_port"`
 	// ACMEEmail is the contact address registered with ACME. Empty disables.
 	ACMEEmail string `yaml:"acme_email"`
+	// ACMECA is the ACME directory URL the issuer targets. Empty → LE prod
+	// (DefaultACMECA). Operators pin staging here for a dev/test cluster.
+	ACMECA string `yaml:"acme_ca"`
+	// ACMEEnabled is the cluster-wide ACME switch. When false the daemon does
+	// not register the ACME issuer and the rendered Caddy config carries no
+	// tls.automation block — verifiable without any outbound ACME call. nil
+	// (key absent) defaults to true; an explicit `acme_enabled: false` opts
+	// the whole cluster out so an operator can plug in their own cert pipeline.
+	ACMEEnabled *bool `yaml:"acme_enabled"`
+	// ACMESkipStaging opts out of the stage-first dry run (issue #41). When
+	// false (default) new domains issue against LE staging first, then flip to
+	// prod on success. Automatically skipped when ACMECA is already non-prod.
+	ACMESkipStaging bool `yaml:"acme_skip_staging"`
 	// LogLevel is one of debug | info | warn | error.
 	LogLevel string `yaml:"log_level"`
 	// IPAMPool is the per-deployment subnet allocator CIDR (must be /16).
 	IPAMPool string `yaml:"ipam_pool"`
+}
+
+// ACMEEnabledOrDefault returns the effective cluster-wide ACME switch. The
+// key is a *bool so "absent" (default true) is distinguishable from an
+// explicit "acme_enabled: false".
+func (c Config) ACMEEnabledOrDefault() bool {
+	if c.ACMEEnabled == nil {
+		return true
+	}
+	return *c.ACMEEnabled
+}
+
+// ACMECAOrDefault returns the configured ACME directory URL, or LE prod when
+// the operator left acme_ca unset.
+func (c Config) ACMECAOrDefault() string {
+	if c.ACMECA == "" {
+		return DefaultACMECA
+	}
+	return c.ACMECA
 }
 
 // Defaults returns a Config populated with the documented defaults.
@@ -133,6 +177,12 @@ func (c Config) Validate() error {
 	case "debug", "info", "warn", "error":
 	default:
 		return fmt.Errorf("log_level %q must be debug|info|warn|error", c.LogLevel)
+	}
+	if c.ACMECA != "" {
+		u, err := url.Parse(c.ACMECA)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("acme_ca %q must be an https URL", c.ACMECA)
+		}
 	}
 	if c.IPAMPool == "" {
 		return fmt.Errorf("ipam_pool is required")

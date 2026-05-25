@@ -25,4 +25,9 @@ message FSMSnapshot {
   repeated ReplicaCounter replica_counters = 13;
   repeated RestartCounter restart_counters = 14;
   repeated AuditEvent audit_events = 15;
+  // cert_blobs carries the certmagic-managed cert/key payloads so a fresh
+  // node that installs a raft snapshot picks up already-issued certs without
+  // re-issuance against the ACME CA (issue #41). Without this the snapshot
+  // path silently dropped every cert blob.
+  repeated CertBlob cert_blobs = 16;
 }

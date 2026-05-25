@@ -92,6 +92,10 @@ func run(ctx context.Context, configPath string, logOut io.Writer) error {
 		ClusterAdvertiseAddr: clusterAdvertise,
 		Docker:               docker,
 		IPAMPool:             cfg.IPAMPool,
+		ACMEEmail:            cfg.ACMEEmail,
+		ACMECA:               cfg.ACMECAOrDefault(),
+		ACMEEnabled:          cfg.ACMEEnabledOrDefault(),
+		ACMESkipStaging:      cfg.ACMESkipStaging,
 	})
 	if err != nil {
 		return fmt.Errorf("gRPC server: %w", err)

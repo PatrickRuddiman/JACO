@@ -156,6 +156,21 @@ message DeployStatusResponse {
   repeated Deployment deployments = 1;
   repeated ReplicaObserved replicas = 2;
   repeated Route routes = 3;
+  // certs reports per-domain ACME cert state for the routes in scope
+  // (issue #41): which environment the cert was issued against, when it
+  // expires, and when it was last renewed/issued.
+  repeated CertState certs = 4;
+}
+
+// CertState is the operator-facing view of one domain's managed TLS cert.
+// Derived from the raft-replicated cert blob (expiry) + the latest cert
+// audit event (environment + last renewal).
+message CertState {
+  string domain = 1;
+  // environment is "staging" | "prod" | "" (unknown — no audit event yet).
+  string environment = 2;
+  google.protobuf.Timestamp not_after = 3;
+  google.protobuf.Timestamp last_renewal_at = 4;
 }
 
 message LogsRequest {
