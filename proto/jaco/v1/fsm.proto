@@ -25,4 +25,5 @@ message FSMSnapshot {
   repeated ReplicaCounter replica_counters = 13;
   repeated RestartCounter restart_counters = 14;
   repeated AuditEvent audit_events = 15;
+  repeated TCPRoute tcp_routes = 16;
 }

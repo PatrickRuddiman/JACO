@@ -150,6 +150,18 @@ message Route {
   string path = 6;
 }
 
+// TCPRoute is a raw-TCP (L4) ingress listener derived from a compose
+// `ports:` entry that publishes a host port. Every node listens on
+// published_port and forwards to a healthy replica of (deployment, service)
+// on container_port, wherever that replica runs. Keyed cluster-wide by
+// published_port — two deployments cannot publish the same host port.
+message TCPRoute {
+  int32 published_port = 1;
+  string deployment = 2;
+  string service = 3;
+  int32 container_port = 4;
+}
+
 // ----- Ingress entities -----
 
 message Cert {

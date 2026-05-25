@@ -248,6 +248,7 @@ message SubscribeEvent {
     RolloutPlanEvent rollout_plan = 12;
     ReplicaCounterEvent replica_counter = 13;
     RestartCounterEvent restart_counter = 14;
+    TCPRouteEvent tcp_route = 15;
   }
 }
 

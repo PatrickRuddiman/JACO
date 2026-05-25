@@ -53,6 +53,13 @@ message RouteEvent {
   uint64 raft_index = 4;
 }
 
+message TCPRouteEvent {
+  EventKind kind = 1;
+  TCPRoute before = 2;
+  TCPRoute after = 3;
+  uint64 raft_index = 4;
+}
+
 message CertEvent {
   EventKind kind = 1;
   Cert before = 2;

@@ -12,6 +12,7 @@ type Registry struct {
 	ReplicasDesired  *Broker[*pb.ReplicaDesired]
 	ReplicasObserved *Broker[*pb.ReplicaObserved]
 	Routes           *Broker[*pb.Route]
+	TCPRoutes        *Broker[*pb.TCPRoute]
 	Certs            *Broker[*pb.Cert]
 	CertBlobs        *Broker[*pb.CertBlob]
 	ChallengeTokens  *Broker[*pb.ChallengeToken]
@@ -33,6 +34,7 @@ func NewRegistry() *Registry {
 		ReplicasDesired:  NewBroker[*pb.ReplicaDesired](DefaultBuffer),
 		ReplicasObserved: NewBroker[*pb.ReplicaObserved](DefaultBuffer),
 		Routes:           NewBroker[*pb.Route](DefaultBuffer),
+		TCPRoutes:        NewBroker[*pb.TCPRoute](DefaultBuffer),
 		Certs:            NewBroker[*pb.Cert](DefaultBuffer),
 		CertBlobs:        NewBroker[*pb.CertBlob](DefaultBuffer),
 		ChallengeTokens:  NewBroker[*pb.ChallengeToken](DefaultBuffer),

@@ -1050,6 +1050,7 @@ type DeploymentApply struct {
 	ComposeYaml   []byte                 `protobuf:"bytes,4,opt,name=compose_yaml,json=composeYaml,proto3" json:"compose_yaml,omitempty"`
 	Services      []*ServiceSpec         `protobuf:"bytes,5,rep,name=services,proto3" json:"services,omitempty"`
 	Routes        []*Route               `protobuf:"bytes,6,rep,name=routes,proto3" json:"routes,omitempty"`
+	TcpRoutes     []*TCPRoute            `protobuf:"bytes,7,rep,name=tcp_routes,json=tcpRoutes,proto3" json:"tcp_routes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1122,6 +1123,13 @@ func (x *DeploymentApply) GetServices() []*ServiceSpec {
 func (x *DeploymentApply) GetRoutes() []*Route {
 	if x != nil {
 		return x.Routes
+	}
+	return nil
+}
+
+func (x *DeploymentApply) GetTcpRoutes() []*TCPRoute {
+	if x != nil {
+		return x.TcpRoutes
 	}
 	return nil
 }
@@ -2447,7 +2455,7 @@ const file_jaco_v1_commands_proto_rawDesc = "" +
 	"\x0eNodeUpdateSelf\x12\x1a\n" +
 	"\bhostname\x18\x01 \x01(\tR\bhostname\x12)\n" +
 	"\x10wireguard_pubkey\x18\x02 \x01(\fR\x0fwireguardPubkey\x12!\n" +
-	"\fgrpc_address\x18\x03 \x01(\tR\vgrpcAddress\"\xe7\x01\n" +
+	"\fgrpc_address\x18\x03 \x01(\tR\vgrpcAddress\"\x99\x02\n" +
 	"\x0fDeploymentApply\x12\x1e\n" +
 	"\n" +
 	"deployment\x18\x01 \x01(\tR\n" +
@@ -2456,7 +2464,9 @@ const file_jaco_v1_commands_proto_rawDesc = "" +
 	"\tjaco_yaml\x18\x03 \x01(\fR\bjacoYaml\x12!\n" +
 	"\fcompose_yaml\x18\x04 \x01(\fR\vcomposeYaml\x120\n" +
 	"\bservices\x18\x05 \x03(\v2\x14.jaco.v1.ServiceSpecR\bservices\x12&\n" +
-	"\x06routes\x18\x06 \x03(\v2\x0e.jaco.v1.RouteR\x06routes\"P\n" +
+	"\x06routes\x18\x06 \x03(\v2\x0e.jaco.v1.RouteR\x06routes\x120\n" +
+	"\n" +
+	"tcp_routes\x18\a \x03(\v2\x11.jaco.v1.TCPRouteR\ttcpRoutes\"P\n" +
 	"\x12DeploymentRollback\x12\x1e\n" +
 	"\n" +
 	"deployment\x18\x01 \x01(\tR\n" +
@@ -2606,13 +2616,14 @@ var file_jaco_v1_commands_proto_goTypes = []any{
 	(NodeStatus)(0),                  // 37: jaco.v1.NodeStatus
 	(*ServiceSpec)(nil),              // 38: jaco.v1.ServiceSpec
 	(*Route)(nil),                    // 39: jaco.v1.Route
-	(DeploymentStatus)(0),            // 40: jaco.v1.DeploymentStatus
-	(*ReplicaDesired)(nil),           // 41: jaco.v1.ReplicaDesired
-	(*ReplicaObserved)(nil),          // 42: jaco.v1.ReplicaObserved
-	(*RolloutPlan)(nil),              // 43: jaco.v1.RolloutPlan
-	(*ChallengeToken)(nil),           // 44: jaco.v1.ChallengeToken
-	(*CertBlob)(nil),                 // 45: jaco.v1.CertBlob
-	(*AuditEvent)(nil),               // 46: jaco.v1.AuditEvent
+	(*TCPRoute)(nil),                 // 40: jaco.v1.TCPRoute
+	(DeploymentStatus)(0),            // 41: jaco.v1.DeploymentStatus
+	(*ReplicaDesired)(nil),           // 42: jaco.v1.ReplicaDesired
+	(*ReplicaObserved)(nil),          // 43: jaco.v1.ReplicaObserved
+	(*RolloutPlan)(nil),              // 44: jaco.v1.RolloutPlan
+	(*ChallengeToken)(nil),           // 45: jaco.v1.ChallengeToken
+	(*CertBlob)(nil),                 // 46: jaco.v1.CertBlob
+	(*AuditEvent)(nil),               // 47: jaco.v1.AuditEvent
 }
 var file_jaco_v1_commands_proto_depIdxs = []int32{
 	36, // 0: jaco.v1.Command.ts:type_name -> google.protobuf.Timestamp
@@ -2653,23 +2664,24 @@ var file_jaco_v1_commands_proto_depIdxs = []int32{
 	34, // 35: jaco.v1.NodeStatusUpdate.details:type_name -> jaco.v1.NodeStatusUpdate.DetailsEntry
 	38, // 36: jaco.v1.DeploymentApply.services:type_name -> jaco.v1.ServiceSpec
 	39, // 37: jaco.v1.DeploymentApply.routes:type_name -> jaco.v1.Route
-	40, // 38: jaco.v1.DeploymentStatusUpdate.status:type_name -> jaco.v1.DeploymentStatus
-	35, // 39: jaco.v1.DeploymentStatusUpdate.details:type_name -> jaco.v1.DeploymentStatusUpdate.DetailsEntry
-	41, // 40: jaco.v1.ReplicaDesiredUpsert.replica:type_name -> jaco.v1.ReplicaDesired
-	42, // 41: jaco.v1.ReplicaObservedUpdate.replica:type_name -> jaco.v1.ReplicaObserved
-	43, // 42: jaco.v1.RolloutPlanUpdate.plan:type_name -> jaco.v1.RolloutPlan
-	0,  // 43: jaco.v1.RestartCounterUpdate.action:type_name -> jaco.v1.RestartCounterUpdate.Action
-	39, // 44: jaco.v1.RouteUpsert.route:type_name -> jaco.v1.Route
-	36, // 45: jaco.v1.CertLock.until:type_name -> google.protobuf.Timestamp
-	44, // 46: jaco.v1.ChallengeTokenStore.token:type_name -> jaco.v1.ChallengeToken
-	45, // 47: jaco.v1.CertBlobUpsert.blob:type_name -> jaco.v1.CertBlob
-	36, // 48: jaco.v1.JoinTokenIssue.expires_at:type_name -> google.protobuf.Timestamp
-	46, // 49: jaco.v1.AuditAppend.event:type_name -> jaco.v1.AuditEvent
-	50, // [50:50] is the sub-list for method output_type
-	50, // [50:50] is the sub-list for method input_type
-	50, // [50:50] is the sub-list for extension type_name
-	50, // [50:50] is the sub-list for extension extendee
-	0,  // [0:50] is the sub-list for field type_name
+	40, // 38: jaco.v1.DeploymentApply.tcp_routes:type_name -> jaco.v1.TCPRoute
+	41, // 39: jaco.v1.DeploymentStatusUpdate.status:type_name -> jaco.v1.DeploymentStatus
+	35, // 40: jaco.v1.DeploymentStatusUpdate.details:type_name -> jaco.v1.DeploymentStatusUpdate.DetailsEntry
+	42, // 41: jaco.v1.ReplicaDesiredUpsert.replica:type_name -> jaco.v1.ReplicaDesired
+	43, // 42: jaco.v1.ReplicaObservedUpdate.replica:type_name -> jaco.v1.ReplicaObserved
+	44, // 43: jaco.v1.RolloutPlanUpdate.plan:type_name -> jaco.v1.RolloutPlan
+	0,  // 44: jaco.v1.RestartCounterUpdate.action:type_name -> jaco.v1.RestartCounterUpdate.Action
+	39, // 45: jaco.v1.RouteUpsert.route:type_name -> jaco.v1.Route
+	36, // 46: jaco.v1.CertLock.until:type_name -> google.protobuf.Timestamp
+	45, // 47: jaco.v1.ChallengeTokenStore.token:type_name -> jaco.v1.ChallengeToken
+	46, // 48: jaco.v1.CertBlobUpsert.blob:type_name -> jaco.v1.CertBlob
+	36, // 49: jaco.v1.JoinTokenIssue.expires_at:type_name -> google.protobuf.Timestamp
+	47, // 50: jaco.v1.AuditAppend.event:type_name -> jaco.v1.AuditEvent
+	51, // [51:51] is the sub-list for method output_type
+	51, // [51:51] is the sub-list for method input_type
+	51, // [51:51] is the sub-list for extension type_name
+	51, // [51:51] is the sub-list for extension extendee
+	0,  // [0:51] is the sub-list for field type_name
 }
 
 func init() { file_jaco_v1_commands_proto_init() }
