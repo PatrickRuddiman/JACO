@@ -24,7 +24,7 @@ log "snapshotting docker stats across ${#PUB[@]} nodes into $RUNDIR"
 for i in "${!PUB[@]}"; do
   node="node$((i+1))"
   ssh_node "${PUB[$i]}" \
-    "docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}'" \
+    "sudo docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}'" \
     >"$RUNDIR/docker-stats-$node.txt" 2>/dev/null \
     || log "WARN: could not collect docker stats from $node (stack may not use docker)"
 done

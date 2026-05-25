@@ -46,7 +46,13 @@ resolve_nodes() {
 # non-zero on timeout. Used to measure time-to-ready (TTL).
 wait_http_ready() {
   local url="$1" host="${2:-}" timeout="${3:-300}"
-  local start now code
+  # Require N consecutive successes, not just one. The ingress LB round-robins
+  # across every node, so a single 200 only proves ONE backend is up — a fresh
+  # multi-node deploy can answer on the leader while followers are still warming
+  # (e.g. TLS/cert propagation). Demanding a streak makes "ready" mean "the
+  # whole fleet serves," so the bench doesn't start measuring a half-up cluster.
+  local need="${BENCH_READY_STREAK:-5}"
+  local start now code streak=0
   start="$(date +%s)"
   local curl_args=(-sk -o /dev/null -w '%{http_code}' --max-time 5)
   [[ -n "$host" ]] && curl_args+=(-H "Host: $host")
@@ -55,17 +61,20 @@ wait_http_ready() {
     (( now - start >= timeout )) && { echo "$timeout"; return 1; }
     code="$(curl "${curl_args[@]}" "$url" 2>/dev/null || echo 000)"
     if [[ "$code" =~ ^[23] ]]; then
-      echo "$(( now - start ))"
-      return 0
+      streak=$((streak + 1))
+      (( streak >= need )) && { echo "$(( now - start ))"; return 0; }
+    else
+      streak=0
     fi
-    sleep 3
+    sleep 2
   done
 }
 
 # Rough, automated "ease of setup" proxy: total lines across a stack's
 # bootstrap scripts (fewer lines ⇒ easier). Manual 1–5 scores live in RUBRIC.md.
 setup_loc() {
-  local stack="$1" dir="$SAMPLES_DIR/$stack/bootstrap"
+  local stack="$1"
+  local dir="$SAMPLES_DIR/$stack/bootstrap"
   [[ -d "$dir" ]] || { echo 0; return; }
   find "$dir" -type f \( -name '*.sh' -o -name '*.yaml' -o -name '*.yml' \) -exec cat {} + 2>/dev/null | wc -l | tr -d ' '
 }

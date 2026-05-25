@@ -54,9 +54,10 @@ ssh_node() { ssh "${SSH_OPTS[@]}" "$SSH_USER@$1" "$2"; }
 
 # --- 1. build the .deb (unless provided) ------------------------------------
 if [[ -z "${DEB:-}" ]]; then
-  echo "[bootstrap] building jaco .deb (make package — needs nfpm)"
-  ( cd "$REPO_ROOT" && make package )
-  DEB="$(ls -t "$REPO_ROOT"/dist/*amd64.deb 2>/dev/null | head -1)"
+  echo "[bootstrap] building jaco .deb (make package — needs nfpm on PATH)"
+  ( cd "$REPO_ROOT" && PATH="$HOME/go/bin:$PATH" make package )
+  # nfpm writes to dist/package/<arch>/, so search recursively (not dist/*.deb).
+  DEB="$(find "$REPO_ROOT/dist" -name '*amd64.deb' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)"
 fi
 [[ -f "$DEB" ]] || { echo "[bootstrap] no .deb found ($DEB); set DEB=path" >&2; exit 1; }
 echo "[bootstrap] using package: $DEB"
@@ -71,7 +72,9 @@ done
 
 # --- 3. in-cluster registry + image build/push (on node-1) ------------------
 echo "[bootstrap] starting registry on node-1"
-ssh_node "${PUB[0]}" "docker inspect registry >/dev/null 2>&1 || docker run -d --restart=always --name registry -p 5000:5000 registry:2"
+# docker runs as root on the nodes (azureuser isn't in the docker group; only
+# the jaco service user is), so every node-side docker call goes through sudo.
+ssh_node "${PUB[0]}" "sudo docker inspect registry >/dev/null 2>&1 || sudo docker run -d --restart=always --name registry -p 5000:5000 registry:2"
 
 echo "[bootstrap] shipping workload build contexts to node-1"
 ssh_node "${PUB[0]}" "rm -rf ~/bench && mkdir -p ~/bench"
@@ -81,22 +84,22 @@ scp -r "${SSH_OPTS[@]}" "$JACO_DIR/jaco.yaml" "$JACO_DIR/docker-compose.yml" "$S
 echo "[bootstrap] building + pushing workload images on node-1 -> $REGISTRY"
 ssh_node "${PUB[0]}" "
   set -e
-  docker build -t '$REGISTRY/bench-web:latest' ~/bench/workload/web
-  docker build -t '$REGISTRY/bench-api:latest' ~/bench/workload/api
-  docker push '$REGISTRY/bench-web:latest'
-  docker push '$REGISTRY/bench-api:latest'
+  sudo docker build -t '$REGISTRY/bench-web:latest' ~/bench/workload/web
+  sudo docker build -t '$REGISTRY/bench-api:latest' ~/bench/workload/api
+  sudo docker push '$REGISTRY/bench-web:latest'
+  sudo docker push '$REGISTRY/bench-api:latest'
 "
 
 # --- 4. form the cluster -----------------------------------------------------
 echo "[bootstrap] initializing cluster on node-1"
 ssh_node "${PUB[0]}" "sudo jaco cluster init || true"
 
-echo "[bootstrap] issuing join token on node-1"
-TOKEN="$(ssh_node "${PUB[0]}" "sudo jaco node issue-join-token" | grep -oE 'token=[^ ]+' | head -1 | cut -d= -f2)"
-[[ -n "$TOKEN" ]] || { echo "[bootstrap] failed to capture join token" >&2; exit 1; }
-
+# Join tokens are single-use — issue a fresh one for each joining node.
 for i in "${!PUB[@]}"; do
   [[ "$i" -eq 0 ]] && continue
+  echo "[bootstrap] issuing join token for node$((i+1))"
+  TOKEN="$(ssh_node "${PUB[0]}" "sudo jaco node issue-join-token" | grep -oE 'token=[^ ]+' | head -1 | cut -d= -f2)"
+  [[ -n "$TOKEN" ]] || { echo "[bootstrap] failed to capture join token" >&2; exit 1; }
   echo "[bootstrap] joining node$((i+1)) -> ${NODE1_PRIV}:7000"
   ssh_node "${PUB[$i]}" "sudo jaco node join --peer='${NODE1_PRIV}:7000' --token='$TOKEN'"
 done
@@ -106,7 +109,7 @@ ssh_node "${PUB[0]}" "sudo jaco cluster status" || true
 
 # --- 5. deploy the workload --------------------------------------------------
 echo "[bootstrap] applying the workload (REGISTRY=$REGISTRY)"
-ssh_node "${PUB[0]}" "cd ~/bench && sudo REGISTRY='$REGISTRY' jaco apply --jaco jaco.yaml --compose docker-compose.yml"
+ssh_node "${PUB[0]}" "cd ~/bench && sudo REGISTRY='$REGISTRY' jaco apply jaco.yaml --compose docker-compose.yml"
 
 echo
 echo "[bootstrap] done. Ingress is served at the LB public IP (jaco.sh) on 80/443."
