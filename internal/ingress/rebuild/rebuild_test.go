@@ -136,6 +136,32 @@ func TestRun_DebouncesBurstsIntoSingleRebuild(t *testing.T) {
 	}
 }
 
+func TestRun_TCPRouteEventTriggersRebuild(t *testing.T) {
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+
+	var rebuilds atomic.Int64
+	build := func() ([]byte, error) {
+		rebuilds.Add(1)
+		return []byte(fmt.Sprintf("v%d", rebuilds.Load())), nil
+	}
+	load := func(context.Context, []byte) error { return nil }
+	r := rebuild.New(brokers, build, load)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = r.Run(ctx) }()
+	time.Sleep(50 * time.Millisecond) // let the initial pass complete
+
+	before := rebuilds.Load()
+	st.TCPRoutes.Apply(&pb.TCPRoute{PublishedPort: 5432, Deployment: "data", Service: "db", ContainerPort: 5432}, 1)
+	time.Sleep(rebuild.DebounceWindow + 150*time.Millisecond)
+
+	if got := rebuilds.Load(); got != before+1 {
+		t.Errorf("rebuilds after TCPRoute event = %d, want %d (one debounced rebuild)", got, before+1)
+	}
+}
+
 func TestRun_HandlesRoutesObservedCertsTokens(t *testing.T) {
 	// Verify each subscribed broker triggers a rebuild.
 	brokers := watch.NewRegistry()

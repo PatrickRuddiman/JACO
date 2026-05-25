@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,12 +94,44 @@ func ingressBuilder(st *state.State, acmeEmail string) func() ([]byte, error) {
 			}
 		}
 
-		cfg, err := config.BuildCaddyConfig(routes, nil, replicas, services, config.BuildOpts{
+		// TCP ingress listeners derived from state.TCPRoutes. Upstream IPs come
+		// from the same `services` map as HTTP; BuildCaddyConfig dials each
+		// replica's overlay IP on the container port over the WG mesh. A port
+		// that can't bind on this node (an operator service already holds it) is
+		// dropped so it can't fail the atomic caddy.Load and stall all ingress.
+		var tcpRoutes []config.TCPRoute
+		for _, r := range st.TCPRoutes.List() {
+			port := int(r.GetPublishedPort())
+			if err := probeTCPBind(port); err != nil {
+				log.Printf("ingress: tcp port %d unbindable on this node, skipping (degraded): %v", port, err)
+				continue
+			}
+			tcpRoutes = append(tcpRoutes, config.TCPRoute{
+				PublishedPort: port,
+				Deployment:    r.GetDeployment(),
+				Service:       r.GetService(),
+				ContainerPort: int(r.GetContainerPort()),
+			})
+		}
+
+		cfg, err := config.BuildCaddyConfig(routes, tcpRoutes, replicas, services, config.BuildOpts{
 			ACMEEmail: acmeEmail,
 		})
-		log.Printf("ingress: built caddy config (%d routes, %d observed replicas, %d bytes, err=%v)", len(routes), len(replicas), len(cfg), err)
+		log.Printf("ingress: built caddy config (%d routes, %d tcp routes, %d observed replicas, %d bytes, err=%v)", len(routes), len(tcpRoutes), len(replicas), len(cfg), err)
 		return cfg, err
 	}
+}
+
+// probeTCPBind reports whether this node can bind the published TCP port now.
+// It test-binds and immediately closes; a persistent conflict (an operator's
+// own service) is thus skipped from the config. The probe→load gap is a small
+// race the Reloader's last-good retain + next-rebuild re-probe converge over.
+func probeTCPBind(port int) error {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return err
+	}
+	return ln.Close()
 }
 
 // ingressLoader is the rebuild.Loader concrete impl. Default mode is
@@ -113,17 +146,24 @@ func ingressLoader() func(ctx context.Context, cfg []byte) error {
 	return ingressLoaderEmbedded()
 }
 
-// ingressLoaderEmbedded calls caddy.Load on configs that carry at least
-// one reverse_proxy route. With zero routes the rendered config is just
-// the fallback 404 + ACME stub — equivalent to "caddy not running" —
-// so we skip Load entirely to avoid the bug-009 once-per-second admin
-// restart loop. Once a Route lands in state.Routes, subsequent loads
-// fire normally.
+// configHasLoadableRoute reports whether the rendered config carries a real
+// forwarding route — an HTTP reverse_proxy or a layer4 (TCP) server. With
+// neither, the config is just the fallback 404 + ACME stub, equivalent to
+// "caddy not running", so the embedded loader skips caddy.Load to avoid the
+// bug-009 once-per-second admin restart loop. The apps.layer4 key is only
+// present when a TCP server has upstreams, so its presence alone is loadable.
+func configHasLoadableRoute(cfg []byte) bool {
+	return bytes.Contains(cfg, []byte("reverse_proxy")) || bytes.Contains(cfg, []byte(`"layer4"`))
+}
+
+// ingressLoaderEmbedded calls caddy.Load on configs that carry at least one
+// forwarding route (HTTP reverse_proxy or TCP layer4). Once such a route lands
+// in state, subsequent loads fire normally.
 func ingressLoaderEmbedded() func(ctx context.Context, cfg []byte) error {
 	var started atomic.Bool
 	return func(_ context.Context, cfg []byte) error {
-		if !bytes.Contains(cfg, []byte("reverse_proxy")) {
-			log.Printf("ingress: skipping caddy.Load (no reverse_proxy route yet)")
+		if !configHasLoadableRoute(cfg) {
+			log.Printf("ingress: skipping caddy.Load (no reverse_proxy or layer4 route yet)")
 			return nil
 		}
 		if err := caddy.Load(cfg, false); err != nil {
