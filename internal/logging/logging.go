@@ -10,9 +10,10 @@
 //     derives child loggers with Subsystem / .With. Reaching for
 //     slog.Default()/log.Default() in a subsystem is a bug — see the
 //     forbid-default lint test in this package.
-//   - jacod logs JSON to stderr so the systemd journal can index fields, with
-//     SYSLOG_IDENTIFIER=jacod and a journal PRIORITY derived from the slog
-//     level. When not running under systemd (no INVOCATION_ID) it falls back
+//   - jacod sends records to the systemd journal's native socket so PRIORITY,
+//     SYSLOG_IDENTIFIER=jacod, and every attr are real, queryable journal
+//     fields (journalctl -p err, FIELD=value). With no reachable journal socket
+//     it emits JSON to stderr; outside systemd (no INVOCATION_ID) it falls back
 //     to a human-readable text handler.
 //   - jaco (the CLI) logs human-readable text to stderr, default WARN.
 //
@@ -26,6 +27,8 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+
+	"github.com/coreos/go-systemd/v22/journal"
 )
 
 // Attribute keys used across subsystems. Centralized so every subsystem
@@ -85,25 +88,29 @@ func underSystemd() bool {
 	return os.Getenv("INVOCATION_ID") != ""
 }
 
-// NewDaemon builds jacod's ROOT logger. Under systemd it emits one JSON
-// object per line to out (normally os.Stderr) so journald indexes fields;
-// each record carries SYSLOG_IDENTIFIER=jacod and a journal PRIORITY derived
-// from the slog level (debug=7, info=6, warn=4, error=3). When not under
-// systemd it falls back to a human-readable text handler for local runs.
+// NewDaemon builds jacod's ROOT logger.
+//
+//   - Under systemd with the journal socket reachable, it sends records to the
+//     journal's NATIVE protocol so PRIORITY (debug=7, info=6, warn=4, error=3),
+//     SYSLOG_IDENTIFIER=jacod, and every slog attr become real, queryable
+//     journal fields — `journalctl -p err`, `journalctl SUBSYSTEM=raft`, etc.
+//   - Under systemd but with no reachable journal socket, it emits one JSON
+//     object per line to out so journald still captures structured messages.
+//   - Outside systemd, it falls back to a human-readable text handler.
 //
 // The returned logger carries NO subsystem attribute — cmd/jacod derives its
 // own (Subsystem(root, "jacod")) for main-level lifecycle logs, and passes
 // this bare root to the gRPC server so each subsystem sets its own subsystem
 // exactly once via Subsystem (avoiding duplicate subsystem keys).
 func NewDaemon(out *os.File, level slog.Level) *slog.Logger {
-	var h slog.Handler
+	if underSystemd() && journal.Enabled() {
+		return slog.New(newJournalHandler(level))
+	}
 	opts := &slog.HandlerOptions{Level: level}
 	if underSystemd() {
-		h = newJournalHandler(out, opts)
-	} else {
-		h = slog.NewTextHandler(out, opts)
+		return slog.New(slog.NewJSONHandler(out, opts))
 	}
-	return slog.New(h)
+	return slog.New(slog.NewTextHandler(out, opts))
 }
 
 // NewCLI builds jaco's ROOT logger: a human-readable text handler to out

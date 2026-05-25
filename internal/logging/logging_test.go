@@ -3,10 +3,10 @@ package logging
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -53,49 +53,64 @@ func TestPriorityForLevel(t *testing.T) {
 	}
 }
 
-// TestJournalHandler_JSONOneObjectPerLine asserts the daemon's journal handler
-// emits exactly one JSON object per line, each carrying PRIORITY (mapped from
-// the slog level) and SYSLOG_IDENTIFIER=jacod (issue #38 acceptance).
-func TestJournalHandler_JSONOneObjectPerLine(t *testing.T) {
-	var buf bytes.Buffer
-	h := newJournalHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
-	logger := slog.New(h).With(KeySubsystem, "jacod")
+// TestJournalHandler_VarsAreRealJournalFields asserts the native journal
+// handler flattens accumulated (.With) and per-record attrs into uppercase
+// journal field names plus SYSLOG_IDENTIFIER=jacod — the map that becomes real,
+// queryable journal fields via journal.Send (issue #38). This is what makes
+// `journalctl -p err` / `journalctl SUBSYSTEM=raft` work, unlike emitting the
+// fields inside an opaque JSON MESSAGE.
+func TestJournalHandler_VarsAreRealJournalFields(t *testing.T) {
+	base := newJournalHandler(slog.LevelDebug).(*journalHandler)
+	// Derive like a subsystem logger: .With(subsystem, …) then per-record attrs.
+	h := base.WithAttrs([]slog.Attr{
+		slog.String(KeySubsystem, "raft"),
+		slog.String(KeyNode, "jaco-1"),
+	}).(*journalHandler)
 
-	logger.Info("starting", KeyVersion, "1.2.3")
-	logger.Error("boom", "error", "kaboom")
+	r := slog.NewRecord(time.Time{}, slog.LevelInfo, "leadership change", 0)
+	r.AddAttrs(slog.String(KeyRequestID, "abc-123"), slog.Int("term", 7))
 
-	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("want 2 log lines, got %d: %q", len(lines), buf.String())
+	v := h.vars(r)
+	want := map[string]string{
+		"SYSLOG_IDENTIFIER": "jacod",
+		"SUBSYSTEM":         "raft",
+		"NODE":              "jaco-1",
+		"REQUEST_ID":        "abc-123",
+		"TERM":              "7",
 	}
-
-	var first map[string]any
-	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
-		t.Fatalf("line 0 is not valid JSON: %v (%q)", err, lines[0])
-	}
-	if first["msg"] != "starting" {
-		t.Errorf("msg = %v, want starting", first["msg"])
-	}
-	if first["subsystem"] != "jacod" {
-		t.Errorf("subsystem = %v, want jacod", first["subsystem"])
-	}
-	if first["version"] != "1.2.3" {
-		t.Errorf("version = %v, want 1.2.3", first["version"])
-	}
-	if first["SYSLOG_IDENTIFIER"] != "jacod" {
-		t.Errorf("SYSLOG_IDENTIFIER = %v, want jacod", first["SYSLOG_IDENTIFIER"])
-	}
-	// JSON numbers decode to float64.
-	if pr, ok := first["PRIORITY"].(float64); !ok || int(pr) != priInfo {
-		t.Errorf("PRIORITY = %v, want %d (info)", first["PRIORITY"], priInfo)
+	for k, w := range want {
+		if v[k] != w {
+			t.Errorf("vars[%q] = %q; want %q (full: %v)", k, v[k], w, v)
+		}
 	}
 
-	var second map[string]any
-	if err := json.Unmarshal([]byte(lines[1]), &second); err != nil {
-		t.Fatalf("line 1 is not valid JSON: %v", err)
+	// PRIORITY maps from the slog level and equals the journal constant.
+	if int(journalPriority(slog.LevelError)) != priErr {
+		t.Errorf("journalPriority(error) = %d; want %d", journalPriority(slog.LevelError), priErr)
 	}
-	if pr, ok := second["PRIORITY"].(float64); !ok || int(pr) != priErr {
-		t.Errorf("error PRIORITY = %v, want %d", second["PRIORITY"], priErr)
+}
+
+// TestJournalHandler_GroupAndKeyNormalization checks group folding and key
+// normalization into valid journal field names.
+func TestJournalHandler_GroupAndKeyNormalization(t *testing.T) {
+	g := newJournalHandler(slog.LevelDebug).(*journalHandler).WithGroup("http").(*journalHandler)
+	r := slog.NewRecord(time.Time{}, slog.LevelWarn, "x", 0)
+	r.AddAttrs(slog.String("status-code", "429"))
+	if v := g.vars(r); v["HTTP_STATUS_CODE"] != "429" {
+		t.Errorf("group/normalized key missing: %v", v)
+	}
+
+	cases := map[string]string{
+		"subsystem":   "SUBSYSTEM",
+		"request_id":  "REQUEST_ID",
+		"status-code": "STATUS_CODE",
+		"9lives":      "X9LIVES", // journald fields must start with a letter
+		"":            "X",
+	}
+	for in, want := range cases {
+		if got := journalKey(in); got != want {
+			t.Errorf("journalKey(%q) = %q; want %q", in, got, want)
+		}
 	}
 }
 
