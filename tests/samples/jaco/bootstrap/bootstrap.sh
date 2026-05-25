@@ -84,10 +84,12 @@ scp -r "${SSH_OPTS[@]}" "$JACO_DIR/jaco.yaml" "$JACO_DIR/docker-compose.yml" "$S
 echo "[bootstrap] building + pushing workload images on node-1 -> $REGISTRY"
 ssh_node "${PUB[0]}" "
   set -e
-  sudo docker build -t '$REGISTRY/bench-web:latest' ~/bench/workload/web
-  sudo docker build -t '$REGISTRY/bench-api:latest' ~/bench/workload/api
+  sudo docker build -t '$REGISTRY/bench-web:latest'      ~/bench/workload/web
+  sudo docker build -t '$REGISTRY/bench-api:latest'      ~/bench/workload/api
+  sudo docker build -t '$REGISTRY/bench-postgres:latest' ~/bench/workload/postgres
   sudo docker push '$REGISTRY/bench-web:latest'
   sudo docker push '$REGISTRY/bench-api:latest'
+  sudo docker push '$REGISTRY/bench-postgres:latest'
 "
 
 # --- 4. form the cluster -----------------------------------------------------

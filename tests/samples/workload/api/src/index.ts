@@ -1,14 +1,26 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { hostname } from "node:os";
 import { createClient, type RedisClientType } from "redis";
+import pkg from "pg";
+const { Pool } = pkg;
+type PgPool = InstanceType<typeof Pool>;
 
 // ---------------------------------------------------------------------------
 // Config. The app writes to REDIS_PRIMARY and reads from REDIS_REPLICA so the
 // benchmark exercises primary→replica replication and the orchestrator's
 // service load-balancing (REDIS_REPLICA resolves to N replica instances).
+//
+// Postgres is optional and used only to measure cross-node streaming
+// replication: when PG_PRIMARY/PG_REPLICA are set, the api drives a heartbeat
+// and publishes the primary→replica replay lag (bench_pg_replica_lag_seconds).
 // ---------------------------------------------------------------------------
 const REDIS_PRIMARY = process.env.REDIS_PRIMARY ?? "redis-primary:6379";
 const REDIS_REPLICA = process.env.REDIS_REPLICA ?? "redis-replica:6379";
+const PG_PRIMARY = process.env.PG_PRIMARY ?? "";
+const PG_REPLICA = process.env.PG_REPLICA ?? "";
+const PG_DB = process.env.PG_DB ?? "bench";
+const PG_USER = process.env.PG_USER ?? "bench";
+const PG_PASSWORD = process.env.PG_PASSWORD ?? "";
 const LISTEN_PORT = Number(process.env.LISTEN_PORT ?? 8080);
 const INSTANCE = process.env.HOSTNAME || hostname();
 
@@ -123,9 +135,11 @@ const httpRequests = new Counter("bench_http_requests_total", "HTTP requests han
 const httpDuration = new Histogram("bench_http_request_duration_seconds", "HTTP request latency.", HTTP_BUCKETS, ["method", "route"]);
 const redisDuration = new Histogram("bench_redis_op_duration_seconds", "Redis op latency.", REDIS_BUCKETS, ["op", "role"]);
 const redisErrors = new Counter("bench_redis_errors_total", "Redis ops that errored.", ["op", "role"]);
-const replicaLag = new Gauge("bench_replica_lag_seconds", "Observed primary→replica lag from the heartbeat probe.", []);
+const replicaLag = new Gauge("bench_replica_lag_seconds", "Observed Redis primary→replica lag from the heartbeat probe.", []);
 const buildInfo = new Gauge("bench_build_info", "Static info; value is always 1.", ["instance"]);
 const redisUp = new Gauge("bench_redis_up", "1 if the role's last op succeeded, else 0.", ["role"]);
+const pgReplicaLag = new Gauge("bench_pg_replica_lag_seconds", "Postgres primary→replica streaming replay lag (cross-node), from pg_stat_replication.", []);
+const pgUp = new Gauge("bench_pg_up", "1 if the Postgres role's last query succeeded, else 0.", ["role"]);
 
 buildInfo.set({ instance: INSTANCE }, 1);
 
@@ -138,6 +152,8 @@ function renderMetrics(): string {
       redisErrors,
       replicaLag,
       redisUp,
+      pgReplicaLag,
+      pgUp,
       buildInfo,
     ]
       .map((m) => m.render())
@@ -330,6 +346,73 @@ function startHeartbeat(): NodeJS.Timeout {
   }, 1000);
 }
 
+// --- Postgres streaming-replication probe (optional) -----------------------
+function newPgPool(addr: string): PgPool {
+  const [host, portStr] = addr.split(":");
+  return new Pool({
+    host,
+    port: Number(portStr || "5432"),
+    database: PG_DB,
+    user: PG_USER,
+    password: PG_PASSWORD || undefined,
+    max: 4,
+    connectionTimeoutMillis: 5000,
+  });
+}
+
+async function pgConnectWithRetry(pool: PgPool, label: string): Promise<void> {
+  for (let i = 0; i < 120; i++) {
+    try {
+      await pool.query("SELECT 1");
+      console.log(`connected to ${label}`);
+      return;
+    } catch (err) {
+      console.log(`${label} not ready (${(err as Error).message}); retrying in 1s`);
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+  throw new Error(`timed out connecting to ${label}`);
+}
+
+async function pgEnsureSchema(pgPrimary: PgPool): Promise<void> {
+  await pgPrimary.query(
+    "CREATE TABLE IF NOT EXISTS bench_heartbeat (id int PRIMARY KEY, ts timestamptz NOT NULL DEFAULT clock_timestamp())",
+  );
+  await pgPrimary.query(
+    "INSERT INTO bench_heartbeat (id, ts) VALUES (1, clock_timestamp()) ON CONFLICT (id) DO NOTHING",
+  );
+}
+
+// Write a timestamp on the primary every second (generating WAL), then read the
+// primary→replica replay lag straight from pg_stat_replication — Postgres' own
+// measurement, so no cross-node clock skew enters the number. Primary and
+// replica are pinned to different nodes, so this is mesh replication time.
+function startPgHeartbeat(pgPrimary: PgPool, pgReplica: PgPool): NodeJS.Timeout {
+  return setInterval(() => {
+    void (async () => {
+      try {
+        await pgPrimary.query("UPDATE bench_heartbeat SET ts = clock_timestamp() WHERE id = 1");
+        const r = await pgPrimary.query(
+          "SELECT EXTRACT(EPOCH FROM replay_lag)::float8 AS lag FROM pg_stat_replication ORDER BY replay_lag DESC NULLS LAST LIMIT 1",
+        );
+        pgUp.set({ role: "primary" }, 1);
+        const lag = r.rows[0]?.lag;
+        if (typeof lag === "number" && Number.isFinite(lag)) {
+          pgReplicaLag.set({}, lag >= 0 ? lag : 0);
+        }
+      } catch {
+        pgUp.set({ role: "primary" }, 0);
+      }
+      try {
+        await pgReplica.query("SELECT 1");
+        pgUp.set({ role: "replica" }, 1);
+      } catch {
+        pgUp.set({ role: "replica" }, 0);
+      }
+    })();
+  }, 1000);
+}
+
 async function main(): Promise<void> {
   await connectWithRetry(primary, `primary ${REDIS_PRIMARY}`);
   await connectWithRetry(replica, `replica ${REDIS_REPLICA}`);
@@ -347,12 +430,39 @@ async function main(): Promise<void> {
 
   server.listen(LISTEN_PORT, () => console.log(`api listening on :${LISTEN_PORT} (instance ${INSTANCE})`));
 
+  // Postgres is a measurement-only side tier — set it up in the BACKGROUND so a
+  // slow/absent replica never blocks the HTTP server (and thus the healthcheck).
+  let pgHeartbeat: NodeJS.Timeout | undefined;
+  let pgPrimaryPool: PgPool | undefined;
+  let pgReplicaPool: PgPool | undefined;
+  if (PG_PRIMARY && PG_REPLICA) {
+    void (async () => {
+      try {
+        pgPrimaryPool = newPgPool(PG_PRIMARY);
+        pgReplicaPool = newPgPool(PG_REPLICA);
+        await pgConnectWithRetry(pgPrimaryPool, `pg primary ${PG_PRIMARY}`);
+        await pgConnectWithRetry(pgReplicaPool, `pg replica ${PG_REPLICA}`);
+        await pgEnsureSchema(pgPrimaryPool);
+        pgHeartbeat = startPgHeartbeat(pgPrimaryPool, pgReplicaPool);
+        console.log(`postgres replication probe enabled (primary ${PG_PRIMARY}, replica ${PG_REPLICA})`);
+      } catch (err) {
+        console.error(`postgres probe disabled: ${(err as Error).message}`);
+      }
+    })();
+  }
+
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => {
       console.log(`${signal} received, shutting down`);
       clearInterval(heartbeat);
+      if (pgHeartbeat) clearInterval(pgHeartbeat);
       server.close(() => {
-        Promise.allSettled([primary.quit(), replica.quit()]).finally(() => process.exit(0));
+        Promise.allSettled([
+          primary.quit(),
+          replica.quit(),
+          pgPrimaryPool?.end() ?? Promise.resolve(),
+          pgReplicaPool?.end() ?? Promise.resolve(),
+        ]).finally(() => process.exit(0));
       });
     });
   }

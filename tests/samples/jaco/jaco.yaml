@@ -6,6 +6,19 @@ services:
   - name: redis-replica
     replicas: 2
     networks: [stack]
+  # Postgres streaming-replication pair, pinned to DIFFERENT nodes so the WAL
+  # stream crosses the WireGuard mesh — that's the cross-node replication the
+  # api measures (bench_pg_replica_lag_seconds). Adjust host names per cluster.
+  - name: pg-primary
+    replicas: 1
+    placement: hosts
+    hosts: [jaco-2]
+    networks: [stack]
+  - name: pg-replica
+    replicas: 1
+    placement: hosts
+    hosts: [jaco-3]
+    networks: [stack]
   - name: api
     replicas: 2
     networks: [stack]
