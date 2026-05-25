@@ -148,7 +148,7 @@ Out:
 - An L4 load balancer or DNS service in front of the cluster. Operators are responsible for pointing DNS at one or more cluster node addresses.
 - Authentication of end-user HTTP traffic. JACO routes; it does not authenticate ingress.
 - A web UI in v1. All cluster and deployment operations are CLI-only.
-- Resource quotas (CPU, memory, IO limits beyond what compose `ulimits` and `tmpfs` express).
+- Resource quotas beyond per-replica CPU/memory limits. JACO honors compose `deploy.resources.{limits,reservations}` and the legacy top-level keys (`cpus`, `mem_limit`, `mem_reservation`, `pids_limit`, `cpu_shares`, `cpuset`), plus `ulimits`/`tmpfs`. Still out of scope: IO/block-device limits, and capacity-aware scheduling — per-container limits constrain a replica but do not prevent the cluster from overcommitting a node.
 - Secret management beyond what compose `environment` and `env_file` provide.
 
 ## §4 Quality bars

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc/metadata"
 
 	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	grpcsrv "github.com/PatrickRuddiman/jaco/internal/controlplane/grpc"
@@ -25,27 +24,20 @@ func init() {
 		Short: "Query the cluster audit log",
 	}
 	var (
-		server, opToken, caCertPath string
-		since                       string
-		typesFlag                   string
-		follow                      bool
+		server, opToken, caCertPath, socket string
+		since                               string
+		typesFlag                           string
+		follow                              bool
 	)
-	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
-	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN)")
+	c.Flags().StringVar(&server, "server", "", "leader address (host:port); off-node only — omit to use the local socket")
+	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN); required with --server")
 	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
+	c.Flags().StringVar(&socket, "socket", socketDefault(), "local jacod unix socket (used when --server is omitted)")
 	c.Flags().StringVar(&since, "since", "", "only events newer than this duration (e.g. 1h, 30m)")
 	c.Flags().StringVar(&typesFlag, "type", "", "comma list of audit types to include (e.g. apply,token_revoke)")
 	c.Flags().BoolVarP(&follow, "follow", "f", false, "stream new events as they arrive")
-	_ = c.MarkFlagRequired("server")
 
 	c.RunE = func(_ *cobra.Command, _ []string) error {
-		if opToken == "" {
-			opToken = os.Getenv("JACO_TOKEN")
-		}
-		if opToken == "" {
-			return fmt.Errorf("--token or JACO_TOKEN env is required")
-		}
-
 		req := &pb.AuditQueryRequest{Follow: follow}
 		if since != "" {
 			d, err := time.ParseDuration(since)
@@ -66,18 +58,14 @@ func init() {
 			req.Types = append(req.Types, t)
 		}
 
-		caCertPEM, err := readCACert(caCertPath)
-		if err != nil {
-			return err
-		}
-		conn, err := dialServer(server, caCertPEM)
+		conn, withAuth, err := dialOperator(operatorAuth{server: server, token: opToken, caCert: caCertPath, socket: socket})
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
 		ctx, cancel := contextForStream(follow)
 		defer cancel()
-		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+opToken)
+		ctx = withAuth(ctx)
 
 		stream, err := pb.NewAuditClient(conn).Query(ctx, req)
 		if err != nil {

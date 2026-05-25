@@ -39,38 +39,37 @@ func nodeIssueJoinTokenCmd() *cobra.Command {
 		server string
 		token  string
 		caCert string
+		socket string
 		showCA bool
 	)
-	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
-	c.Flags().StringVar(&token, "token", "", "operator bearer token (or JACO_TOKEN); required")
+	c.Flags().StringVar(&server, "server", "", "leader address (host:port); off-node only — omit to use the local socket")
+	c.Flags().StringVar(&token, "token", "", "operator bearer token (or JACO_TOKEN); required with --server")
 	c.Flags().StringVar(&caCert, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
+	c.Flags().StringVar(&socket, "socket", socketDefault(), "local jacod unix socket (used when --server is omitted)")
 	c.Flags().BoolVar(&showCA, "show-ca", false, "append the cluster CA certificate to the output")
-	_ = c.MarkFlagRequired("server")
 
 	c.RunE = func(cmd *cobra.Command, _ []string) error {
-		if token == "" {
-			token = os.Getenv("JACO_TOKEN")
-		}
-		if token == "" {
-			return fmt.Errorf("--token or JACO_TOKEN env is required")
-		}
-		caCertPEM, err := readCACert(caCert)
-		if err != nil {
-			return err
-		}
-		conn, err := dialServer(server, caCertPEM)
+		conn, withAuth, err := dialOperator(operatorAuth{server: server, token: token, caCert: caCert, socket: socket})
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
+		ctx = withAuth(ctx)
 		resp, err := pb.NewClusterClient(conn).IssueJoinToken(ctx, &pb.IssueJoinTokenRequest{})
 		if err != nil {
 			return cliclient.FormatError(err)
 		}
-		fmt.Fprint(cmd.OutOrStdout(), formatIssueJoinToken(server, resp.GetToken(), 24*time.Hour, string(resp.GetCaCert()), showCA))
+		// The join instructions reference the peer address joining nodes will
+		// dial. Over the socket we have no --server to echo, so fall back to a
+		// placeholder the operator must fill in with this node's reachable
+		// address.
+		peerAddr := server
+		if peerAddr == "" {
+			peerAddr = "<this-node-host:port>"
+		}
+		fmt.Fprint(cmd.OutOrStdout(), formatIssueJoinToken(peerAddr, resp.GetToken(), 24*time.Hour, string(resp.GetCaCert()), showCA))
 		return nil
 	}
 	return c
@@ -158,34 +157,24 @@ func nodeRemoveCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 	}
 	var (
-		server, token, caCertPath string
-		force                     bool
+		server, token, caCertPath, socket string
+		force                             bool
 	)
-	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
-	c.Flags().StringVar(&token, "token", "", "operator bearer token (or JACO_TOKEN)")
+	c.Flags().StringVar(&server, "server", "", "leader address (host:port); off-node only — omit to use the local socket")
+	c.Flags().StringVar(&token, "token", "", "operator bearer token (or JACO_TOKEN); required with --server")
 	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
+	c.Flags().StringVar(&socket, "socket", socketDefault(), "local jacod unix socket (used when --server is omitted)")
 	c.Flags().BoolVar(&force, "force", false, "skip drain enforcement")
-	_ = c.MarkFlagRequired("server")
 
 	c.RunE = func(_ *cobra.Command, args []string) error {
-		if token == "" {
-			token = os.Getenv("JACO_TOKEN")
-		}
-		if token == "" {
-			return fmt.Errorf("--token or JACO_TOKEN env is required")
-		}
-		caCertPEM, err := readCACert(caCertPath)
-		if err != nil {
-			return err
-		}
-		conn, err := dialServer(server, caCertPEM)
+		conn, withAuth, err := dialOperator(operatorAuth{server: server, token: token, caCert: caCertPath, socket: socket})
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
+		ctx = withAuth(ctx)
 		if _, err := pb.NewClusterClient(conn).NodeRemove(ctx, &pb.NodeRemoveRequest{
 			Hostname: args[0], Force: force,
 		}); err != nil {

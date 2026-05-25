@@ -212,6 +212,91 @@ func TestClassify_ExhaustiveTable(t *testing.T) {
 	}
 }
 
+func TestLocalIPs_ReturnsAllUsableIPsExcludingLoopbackAndLinkLocal(t *testing.T) {
+	ifaces := []net.Interface{
+		mkIface("lo", net.FlagUp|net.FlagLoopback),
+		mkIface("eth0", net.FlagUp),
+		mkIface("tailscale0", net.FlagUp),
+		mkIface("eth1", net.FlagUp),
+		mkIface("docker0", net.FlagUp), // container bridge — excluded
+		mkIface("down0", 0),            // down — excluded
+	}
+	addrs := map[string][]net.Addr{
+		"lo":         mkAddrs("127.0.0.1"),
+		"eth0":       mkAddrs("192.168.1.10", "169.254.5.5", "fe80::1"), // RFC1918 + link-local + IPv6
+		"tailscale0": mkAddrs("100.96.1.2"),                             // tailscale CGNAT
+		"eth1":       mkAddrs("8.8.8.8"),                                // public — excluded
+		"docker0":    mkAddrs("172.17.0.1"),                             // docker bridge — excluded
+		"down0":      mkAddrs("10.9.9.9"),                               // on a down iface
+	}
+
+	got := localIPsFromInterfaces(ifaces, lookup(addrs))
+
+	gotSet := make(map[string]bool, len(got))
+	for _, ip := range got {
+		gotSet[ip.String()] = true
+	}
+
+	// SANs follow classify()'s boundary: private LAN + overlay only. Public
+	// (8.8.8.8) and the docker bridge (172.17.0.1) are excluded — a pinned
+	// public advertise addr is still SAN'd via the explicit listen/cluster IP
+	// at the call site, not via auto-detect.
+	want := []string{"192.168.1.10", "100.96.1.2"}
+	for _, w := range want {
+		if !gotSet[w] {
+			t.Errorf("LocalIPs missing %s; got %v", w, got)
+		}
+	}
+	excluded := []string{"8.8.8.8", "172.17.0.1", "127.0.0.1", "169.254.5.5", "fe80::1", "10.9.9.9"}
+	for _, e := range excluded {
+		if gotSet[e] {
+			t.Errorf("LocalIPs should exclude %s; got %v", e, got)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("LocalIPs returned %d addrs (%v); want %d", len(got), got, len(want))
+	}
+}
+
+func TestLocalIPs_DedupesAndSorts(t *testing.T) {
+	// Same IP reachable via two interfaces (e.g. a bridge + its member) must
+	// appear once. Output must be sorted by IP string for determinism.
+	ifaces := []net.Interface{
+		mkIface("eth0", net.FlagUp),
+		mkIface("br0", net.FlagUp),
+	}
+	addrs := map[string][]net.Addr{
+		"eth0": mkAddrs("10.0.0.5", "192.168.1.10"),
+		"br0":  mkAddrs("10.0.0.5"), // duplicate of eth0's first addr
+	}
+
+	got := localIPsFromInterfaces(ifaces, lookup(addrs))
+
+	want := []string{"10.0.0.5", "192.168.1.10"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v; want %v", got, want)
+	}
+	for i, w := range want {
+		if got[i].String() != w {
+			t.Errorf("got[%d] = %s; want %s (sorted, deduped)", i, got[i], w)
+		}
+	}
+}
+
+func TestLocalIPs_NoUsableIPs_ReturnsNil(t *testing.T) {
+	ifaces := []net.Interface{
+		mkIface("lo", net.FlagUp|net.FlagLoopback),
+		mkIface("eth0", 0), // down
+	}
+	addrs := map[string][]net.Addr{
+		"lo":   mkAddrs("127.0.0.1"),
+		"eth0": mkAddrs("192.168.1.10"),
+	}
+	if got := localIPsFromInterfaces(ifaces, lookup(addrs)); got != nil {
+		t.Errorf("got %v; want nil", got)
+	}
+}
+
 // lookup returns an addrsOf function backed by a static map. Map miss
 // returns an empty slice, mirroring how net.Interface.Addrs behaves on
 // hostless interfaces.

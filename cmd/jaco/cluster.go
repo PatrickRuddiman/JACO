@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 
 	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
@@ -148,4 +149,63 @@ func dialDaemon(socketPath string) (*grpc.ClientConn, error) {
 			return net.Dial("unix", strings.TrimPrefix(addr, "unix://"))
 		}),
 	)
+}
+
+// operatorAuth carries the flag values shared by every operator command that
+// can dial either the local unix socket or a remote leader over TCP.
+type operatorAuth struct {
+	server string // --server (host:port); when set, dial TCP + bearer
+	token  string // --token / JACO_TOKEN; only consulted on the TCP path
+	caCert string // --ca-cert path; only consulted on the TCP path
+	socket string // --socket / JACO_SOCKET; the on-node unix socket
+}
+
+// dialOperator resolves the transport for an operator command, honoring the
+// locked design: if --server is set, dial TCP and require a bearer token
+// (unchanged from v0); otherwise, if the local unix socket exists, dial it
+// with NO token (the socket perms are the auth boundary); otherwise return a
+// clear error telling the operator how to proceed.
+//
+// It returns the connection and a function that decorates an outgoing context
+// with the bearer token when (and only when) the TCP path is in use. The
+// caller is responsible for closing the returned conn.
+func dialOperator(a operatorAuth) (*grpc.ClientConn, func(context.Context) context.Context, error) {
+	if a.server != "" {
+		token := a.token
+		if token == "" {
+			token = os.Getenv("JACO_TOKEN")
+		}
+		if token == "" {
+			return nil, nil, fmt.Errorf("--token or JACO_TOKEN env is required when --server is set")
+		}
+		caCertPEM, err := readCACert(a.caCert)
+		if err != nil {
+			return nil, nil, err
+		}
+		conn, err := dialServer(a.server, caCertPEM)
+		if err != nil {
+			return nil, nil, err
+		}
+		withAuth := func(ctx context.Context) context.Context {
+			return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
+		}
+		return conn, withAuth, nil
+	}
+
+	socket := a.socket
+	if socket == "" {
+		socket = socketDefault()
+	}
+	if _, err := os.Stat(socket); err != nil {
+		return nil, nil, fmt.Errorf(
+			"no --server given and local socket %s is not available: pass --server (host:port) with --token, or run this command on a cluster node with the jaco daemon socket",
+			socket)
+	}
+	conn, err := dialDaemon(socket)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Over the unix socket the daemon trusts the peer by socket perms; no
+	// bearer token is attached.
+	return conn, func(ctx context.Context) context.Context { return ctx }, nil
 }

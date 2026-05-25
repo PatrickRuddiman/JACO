@@ -121,7 +121,7 @@ Container update (image change):
 
 - Cross-host volume sync (spec §3 Out).
 - Image building (spec §3 Out).
-- Container resource quotas beyond compose `ulimits`/`tmpfs` (spec §3 Out).
+- Container resource quotas beyond per-replica CPU/memory limits (the runtime now projects compose `deploy.resources` and the legacy top-level keys into docker `container.Resources`; `ulimits`/`tmpfs` unchanged). IO/block-device limits remain out of scope (spec §3 Out).
 - Network setup beyond attaching to the JACO-managed bridge (lives in discovery slice).
 - TLS cert mounting into containers (no spec promise; certs are for ingress only).
 - Authoritative scheduling decisions (lives in scheduler slice).

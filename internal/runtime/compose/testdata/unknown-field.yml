@@ -1,10 +1,6 @@
 services:
   web:
     image: nginx:1.27
-    deploy:
-      replicas: 3
-      placement:
-        constraints:
-          - node.role==worker
+    cgroup_parent: /custom.slice
 networks:
   default: {}

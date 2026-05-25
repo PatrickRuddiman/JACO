@@ -184,3 +184,56 @@ func TestBuildConfig_WithSingleNetwork(t *testing.T) {
 		t.Errorf("aliases = %v, want %v", ep.Aliases, want)
 	}
 }
+
+// TestBuildConfig_PopulatesResourceLimits — the resolved CPU/memory limits on
+// the spec (issue #49) map straight onto docker's container.Resources, while
+// Ulimits keep working alongside them.
+func TestBuildConfig_PopulatesResourceLimits(t *testing.T) {
+	pids := int64(100)
+	spec := compose.ContainerSpec{
+		Image:                  "nginx:1.27",
+		NanoCPUs:               1_500_000_000,
+		MemoryBytes:            256 * 1024 * 1024,
+		MemoryReservationBytes: 128 * 1024 * 1024,
+		CPUShares:              512,
+		CpusetCpus:             "0,1",
+		PidsLimit:              &pids,
+		Ulimits:                map[string]compose.Ulimit{"nofile": {Soft: 1024, Hard: 4096}},
+	}
+	_, hc, _ := buildConfig(spec)
+	r := hc.Resources
+	if r.NanoCPUs != 1_500_000_000 {
+		t.Errorf("NanoCPUs = %d, want 1500000000", r.NanoCPUs)
+	}
+	if r.Memory != 256*1024*1024 {
+		t.Errorf("Memory = %d, want %d", r.Memory, 256*1024*1024)
+	}
+	if r.MemoryReservation != 128*1024*1024 {
+		t.Errorf("MemoryReservation = %d, want %d", r.MemoryReservation, 128*1024*1024)
+	}
+	if r.CPUShares != 512 {
+		t.Errorf("CPUShares = %d, want 512", r.CPUShares)
+	}
+	if r.CpusetCpus != "0,1" {
+		t.Errorf("CpusetCpus = %q, want 0,1", r.CpusetCpus)
+	}
+	if r.PidsLimit == nil || *r.PidsLimit != 100 {
+		t.Errorf("PidsLimit = %v, want 100", r.PidsLimit)
+	}
+	if len(r.Ulimits) != 1 {
+		t.Errorf("Ulimits = %v, want 1 entry", r.Ulimits)
+	}
+}
+
+// TestBuildConfig_NoResourceLimitsStayZero — a spec with no resource fields
+// leaves docker's Resources at zero/nil so the engine applies its defaults.
+func TestBuildConfig_NoResourceLimitsStayZero(t *testing.T) {
+	_, hc, _ := buildConfig(compose.ContainerSpec{Image: "nginx"})
+	r := hc.Resources
+	if r.NanoCPUs != 0 || r.Memory != 0 || r.MemoryReservation != 0 || r.CPUShares != 0 || r.CpusetCpus != "" {
+		t.Errorf("expected zero resources, got %+v", r)
+	}
+	if r.PidsLimit != nil {
+		t.Errorf("PidsLimit = %v, want nil", r.PidsLimit)
+	}
+}

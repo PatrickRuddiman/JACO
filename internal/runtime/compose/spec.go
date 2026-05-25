@@ -40,7 +40,93 @@ func ToContainerSpec(svc types.ServiceConfig, opts SpecOptions) ContainerSpec {
 	spec.Healthcheck = healthcheckFromCompose(svc.HealthCheck)
 	spec.Networks = networksFromCompose(svc.Networks, opts.Deployment)
 	spec.Ports = portsFromCompose(svc.Ports)
+
+	res := resolveResources(svc)
+	spec.NanoCPUs = res.NanoCPUs
+	spec.MemoryBytes = res.MemoryBytes
+	spec.MemoryReservationBytes = res.MemoryReservationBytes
+	spec.CPUShares = res.CPUShares
+	spec.CpusetCpus = res.CpusetCpus
+	spec.PidsLimit = res.PidsLimit
 	return spec
+}
+
+// resolvedResources is the small, source-resolved view of a service's CPU and
+// memory limits. Fields use the same units the ContainerSpec exposes.
+type resolvedResources struct {
+	NanoCPUs               int64
+	MemoryBytes            int64
+	MemoryReservationBytes int64
+	CPUShares              int64
+	CpusetCpus             string
+	PidsLimit              *int64
+}
+
+// resolveResources decides UP FRONT which source supplies a service's resource
+// limits and reads only that source — it is deliberately NOT a field-by-field
+// merge. Compose's modern `deploy.resources` block wins outright whenever it is
+// present (any limits or reservations declared); otherwise JACO falls back to
+// the legacy top-level keys (`cpus`, `mem_limit`, … — issue #49). cpu_shares /
+// cpuset have no modern `deploy.resources` equivalent, so they are read from
+// the legacy keys regardless of which path supplied cpus/memory.
+func resolveResources(svc types.ServiceConfig) resolvedResources {
+	var r resolvedResources
+
+	// cpu_shares and cpuset live only at the top level in compose; carry them
+	// through on either path.
+	r.CPUShares = svc.CPUShares
+	r.CpusetCpus = svc.CPUSet
+
+	if modern := deployResources(svc); modern != nil {
+		if lim := modern.Limits; lim != nil {
+			r.NanoCPUs = coresToNanoCPUs(float32(lim.NanoCPUs))
+			r.MemoryBytes = int64(lim.MemoryBytes)
+			r.PidsLimit = positivePidsLimit(lim.Pids)
+		}
+		if res := modern.Reservations; res != nil {
+			r.MemoryReservationBytes = int64(res.MemoryBytes)
+		}
+		return r
+	}
+
+	// Legacy top-level keys.
+	r.NanoCPUs = coresToNanoCPUs(svc.CPUS)
+	r.MemoryBytes = int64(svc.MemLimit)
+	r.MemoryReservationBytes = int64(svc.MemReservation)
+	r.PidsLimit = positivePidsLimit(svc.PidsLimit)
+	return r
+}
+
+// deployResources returns the service's modern resource block when it carries
+// any limits or reservations, or nil so the resolver falls back to legacy keys.
+func deployResources(svc types.ServiceConfig) *types.Resources {
+	if svc.Deploy == nil {
+		return nil
+	}
+	res := svc.Deploy.Resources
+	if res.Limits == nil && res.Reservations == nil {
+		return nil
+	}
+	return &res
+}
+
+// coresToNanoCPUs converts compose's cores (e.g. 1.5) into docker's NanoCPUs
+// quota (cores × 1e9). Zero/negative stays zero so docker applies no limit.
+func coresToNanoCPUs(cores float32) int64 {
+	if cores <= 0 {
+		return 0
+	}
+	return int64(float64(cores) * 1e9)
+}
+
+// positivePidsLimit returns a pointer only when a positive pids limit was
+// declared; otherwise nil so docker treats it as "no change".
+func positivePidsLimit(pids int64) *int64 {
+	if pids <= 0 {
+		return nil
+	}
+	v := pids
+	return &v
 }
 
 // ContainerName is the conventional docker container name JACO assigns to

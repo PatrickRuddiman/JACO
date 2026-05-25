@@ -46,6 +46,24 @@ var allowedServiceFields = map[string]bool{
 	// `name` is harmless — compose lets you set a container name; JACO
 	// overrides it with the replica id, but accepting it as input is fine.
 	"name": true,
+
+	// `deploy` is accepted wholesale: JACO reads only its `resources.{limits,
+	// reservations}` subtree to enforce per-replica CPU/memory cgroup limits
+	// (issue #49). The non-resource subkeys (`replicas`, `placement`,
+	// `restart_policy`, `update_config`, …) are parsed-but-ignored, mirroring
+	// the top-level `restart:` treatment — the scheduler owns those decisions.
+	"deploy": true,
+
+	// Legacy (v2-style) top-level resource keys are accepted as a fallback for
+	// compose files that predate `deploy.resources` (issue #49). When both a
+	// modern `deploy.resources` block and these legacy keys are present, the
+	// modern block wins (see compose.resolveResources).
+	"cpus":            true,
+	"mem_limit":       true,
+	"mem_reservation": true,
+	"pids_limit":      true,
+	"cpu_shares":      true,
+	"cpuset":          true,
 }
 
 // Validate walks the raw compose YAML and rejects any service-level field
