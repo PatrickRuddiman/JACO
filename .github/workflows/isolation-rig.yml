@@ -12,7 +12,7 @@ on:
       - "design.md"
       - "slices/discovery.md"
       - "scripts/test/isolation-rig.sh"
-      - "testdata/isolation/**"
+      - "tests/isolation/**"
       - ".github/workflows/isolation-rig.yml"
 
 jobs:

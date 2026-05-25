@@ -1,0 +1,135 @@
+# Shared workload, expressed for JACO (and a single-host `docker compose`
+# dry-run). JACO pulls every image from a registry and never builds; the
+# build: stanzas are accepted-and-ignored by JACO and used only by the local
+# dry-run. Override the registry with REGISTRY=... (default: the in-cluster
+# registry the JACO bootstrap stands up on node-1).
+#
+# deploy.resources.limits give every service an identical CPU/memory budget so
+# the cross-stack comparison is fair — the same caps are applied on k8s, k3s,
+# and swarm. JACO honors these per-replica (issue #49).
+
+services:
+  redis-primary:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--protected-mode", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    networks: [stack]
+
+  redis-replica:
+    image: redis:7-alpine
+    command: ["redis-server", "--replicaof", "redis-primary", "6379", "--replica-read-only", "yes", "--save", "", "--appendonly", "no", "--protected-mode", "no"]
+    depends_on: [redis-primary]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    networks: [stack]
+
+  # Postgres streaming-replication pair (jaco.yaml pins them to different nodes).
+  # The api measures cross-node replay lag between these two.
+  pg-primary:
+    image: ${REGISTRY:-jaco-1:5000}/bench-postgres:latest
+    build: ../workload/postgres
+    environment:
+      PG_ROLE: primary
+      POSTGRES_USER: bench
+      POSTGRES_PASSWORD: bench
+      POSTGRES_DB: bench
+      POSTGRES_HOST_AUTH_METHOD: trust
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bench -d bench"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    networks: [stack]
+
+  pg-replica:
+    image: ${REGISTRY:-jaco-1:5000}/bench-postgres:latest
+    build: ../workload/postgres
+    environment:
+      PG_ROLE: replica
+      PG_PRIMARY_HOST: pg-primary
+      POSTGRES_USER: bench
+      POSTGRES_PASSWORD: bench
+    depends_on: [pg-primary]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bench"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    networks: [stack]
+
+  api:
+    image: ${REGISTRY:-jaco-1:5000}/bench-api:latest
+    build: ../workload/api
+    environment:
+      REDIS_PRIMARY: redis-primary:6379
+      REDIS_REPLICA: redis-replica:6379
+      PG_PRIMARY: pg-primary:5432
+      PG_REPLICA: pg-replica:5432
+      PG_DB: bench
+      PG_USER: bench
+      PG_PASSWORD: bench
+      LISTEN_PORT: "8080"
+      NODE_ENV: production
+    depends_on: [redis-primary, redis-replica, pg-primary, pg-replica]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    networks: [stack]
+
+  web:
+    image: ${REGISTRY:-jaco-1:5000}/bench-web:latest
+    build: ../workload/web
+    depends_on: [api]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+    networks: [stack]
+
+networks:
+  stack: {}
