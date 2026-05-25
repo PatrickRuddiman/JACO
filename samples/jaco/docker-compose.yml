@@ -1,0 +1,84 @@
+# Shared workload, expressed for JACO (and a single-host `docker compose`
+# dry-run). JACO pulls every image from a registry and never builds; the
+# build: stanzas are accepted-and-ignored by JACO and used only by the local
+# dry-run. Override the registry with REGISTRY=... (default: the in-cluster
+# registry the JACO bootstrap stands up on node-1).
+#
+# deploy.resources.limits give every service an identical CPU/memory budget so
+# the cross-stack comparison is fair — the same caps are applied on k8s, k3s,
+# and swarm. JACO honors these per-replica (issue #49).
+
+services:
+  redis-primary:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--protected-mode", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    networks: [stack]
+
+  redis-replica:
+    image: redis:7-alpine
+    command: ["redis-server", "--replicaof", "redis-primary", "6379", "--replica-read-only", "yes", "--save", "", "--appendonly", "no", "--protected-mode", "no"]
+    depends_on: [redis-primary]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    networks: [stack]
+
+  api:
+    image: ${REGISTRY:-jaco-1:5000}/bench-api:latest
+    build: ../workload/api
+    environment:
+      REDIS_PRIMARY: redis-primary:6379
+      REDIS_REPLICA: redis-replica:6379
+      LISTEN_PORT: "8080"
+      NODE_ENV: production
+    depends_on: [redis-primary, redis-replica]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    networks: [stack]
+
+  web:
+    image: ${REGISTRY:-jaco-1:5000}/bench-web:latest
+    build: ../workload/web
+    depends_on: [api]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+    networks: [stack]
+
+networks:
+  stack: {}

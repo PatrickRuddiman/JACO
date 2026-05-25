@@ -5,12 +5,16 @@
 *.out
 coverage.*
 
-# Local secrets (Tailscale auth keys, Azure creds, etc).
-test_infra/.env.local
+# Benchmark testbed local secrets (Azure creds + SSH key). The rest of
+# testbed/ is the tracked, sanitized infra.
+testbed/.env.local
 
-# Local Azure VM provisioning (cloud-init template renders secrets at deploy
-# time; whole dir stays untracked until a sanitized infra layout lands).
-test_infra/
+# Benchmark run output (summaries, scraped metrics, bundles).
+samples/bench/results/
+
+# Node build artifacts in the sample workload (package-lock.json is tracked).
+node_modules/
+samples/workload/api/dist/
 
 # Editor / agent metadata.
 .agents/

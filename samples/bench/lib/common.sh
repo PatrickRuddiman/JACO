@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Shared helpers for the bench harness. Sourced by run.sh, scorecard.sh, and the
+# per-stack adapters. No side effects on source beyond defining functions/vars.
+
+# --- paths ------------------------------------------------------------------
+BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SAMPLES_DIR="$(cd "$BENCH_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SAMPLES_DIR/.." && pwd)"
+RESULTS_DIR="$BENCH_DIR/results"
+
+# --- ssh contract (shared with samples/<stack>/bootstrap) -------------------
+SSH_USER="${SSH_USER:-azureuser}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/jaco}"
+SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -o UserKnownHostsFile=/dev/null)
+
+log()  { printf '[bench] %s\n' "$*" >&2; }
+die()  { printf '[bench] ERROR: %s\n' "$*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+ssh_node() { ssh "${SSH_OPTS[@]}" "$SSH_USER@$1" "$2"; }
+
+# Resolve node addressing into the PUB / PRIV arrays (node-1 first). Honors
+# BENCH_PUBLIC_IPS / BENCH_PRIVATE_IPS, else queries Azure via RESOURCE_GROUP.
+resolve_nodes() {
+  read -r -a PUB <<<"${BENCH_PUBLIC_IPS:-}"
+  read -r -a PRIV <<<"${BENCH_PRIVATE_IPS:-}"
+  if [[ ${#PUB[@]} -eq 0 || ${#PRIV[@]} -eq 0 ]]; then
+    [[ -n "${RESOURCE_GROUP:-}" ]] || die "set BENCH_PUBLIC_IPS+BENCH_PRIVATE_IPS or RESOURCE_GROUP"
+    have az || die "az CLI required to resolve nodes from RESOURCE_GROUP"
+    local prefix="${VM_NAME_PREFIX:-jaco}"
+    mapfile -t PUB < <(az vm list-ip-addresses -g "$RESOURCE_GROUP" -o json \
+      | jq -r --arg p "$prefix" '[.[] | select(.virtualMachine.name|startswith($p))] | sort_by(.virtualMachine.name)[] | .virtualMachine.network.publicIpAddresses[0].ipAddress')
+    mapfile -t PRIV < <(az vm list-ip-addresses -g "$RESOURCE_GROUP" -o json \
+      | jq -r --arg p "$prefix" '[.[] | select(.virtualMachine.name|startswith($p))] | sort_by(.virtualMachine.name)[] | .virtualMachine.network.privateIpAddresses[0]')
+  fi
+  [[ ${#PUB[@]} -ge 1 && ${#PUB[@]} -eq ${#PRIV[@]} ]] || die "could not resolve matching public/private node IPs"
+  export PUB PRIV
+}
+
+# Poll an HTTP(S) endpoint until it returns 2xx/3xx or the timeout elapses.
+# Echoes the elapsed seconds to ready (or the timeout on failure) and returns
+# non-zero on timeout. Used to measure time-to-ready (TTL).
+wait_http_ready() {
+  local url="$1" host="${2:-}" timeout="${3:-300}"
+  local start now code
+  start="$(date +%s)"
+  local curl_args=(-sk -o /dev/null -w '%{http_code}' --max-time 5)
+  [[ -n "$host" ]] && curl_args+=(-H "Host: $host")
+  while :; do
+    now="$(date +%s)"
+    (( now - start >= timeout )) && { echo "$timeout"; return 1; }
+    code="$(curl "${curl_args[@]}" "$url" 2>/dev/null || echo 000)"
+    if [[ "$code" =~ ^[23] ]]; then
+      echo "$(( now - start ))"
+      return 0
+    fi
+    sleep 3
+  done
+}
+
+# Rough, automated "ease of setup" proxy: total lines across a stack's
+# bootstrap scripts (fewer lines ⇒ easier). Manual 1–5 scores live in RUBRIC.md.
+setup_loc() {
+  local stack="$1" dir="$SAMPLES_DIR/$stack/bootstrap"
+  [[ -d "$dir" ]] || { echo 0; return; }
+  find "$dir" -type f \( -name '*.sh' -o -name '*.yaml' -o -name '*.yml' \) -exec cat {} + 2>/dev/null | wc -l | tr -d ' '
+}
+
+# Default ingress target. The user's jaco.sh A record points at the LB IP; for
+# stacks without TLS, set BENCH_TARGET=http://<lb-ip> and BENCH_HOST_HEADER.
+bench_target() { echo "${BENCH_TARGET:-https://jaco.sh}"; }

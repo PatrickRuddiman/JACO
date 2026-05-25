@@ -1,0 +1,22 @@
+deployment: bench
+services:
+  - name: redis-primary
+    replicas: 1
+    networks: [stack]
+  - name: redis-replica
+    replicas: 2
+    networks: [stack]
+  - name: api
+    replicas: 2
+    networks: [stack]
+  - name: web
+    replicas: 2
+    networks: [stack]
+# Single ingress route: jaco.sh → web:80. The web tier (nginx) reverse-proxies
+# /api/* to the api service itself, so no path-based route is needed here — the
+# same single-route shape ports cleanly to k8s/k3s/swarm ingress.
+routes:
+  - domain: jaco.sh
+    service: web
+    port: 80
+    tls: auto
