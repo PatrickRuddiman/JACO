@@ -58,14 +58,20 @@ func run(ctx context.Context, configPath string, logOut io.Writer) error {
 	logger.Printf("starting (version=%s data_dir=%s unix_socket=%s)",
 		version, cfg.DataDir, cfg.UnixSocket)
 
-	// Resolve advertise addresses. Bind can stay 0.0.0.0 (accepts on every
-	// interface); the *advertise* face has to be a routable IP so peers can
-	// dial back. When either listen_addr or cluster_addr is unspecified, we
-	// auto-detect one host IP and rebuild advertise strings from it.
-	listenAdvertise, clusterAdvertise, err := resolveAdvertise(cfg.ListenAddr, cfg.ClusterAddr, logger)
+	// Resolve advertise + bind addresses. When listen_addr / cluster_addr is
+	// unspecified (0.0.0.0 / ::), jacod auto-detects a private-LAN-first face
+	// and uses it for BOTH the advertise string (so peers can dial back) AND
+	// the actual bind — the gRPC + raft control/data plane must not listen on
+	// a world-reachable public face by default (issue #44). When the operator
+	// pinned an explicit address, it's honored verbatim for bind + advertise.
+	plan, err := resolveAdvertise(cfg.ListenAddr, cfg.ClusterAddr, logger)
 	if err != nil {
 		return err
 	}
+	listenBind := plan.listenBind
+	clusterBind := plan.clusterBind
+	listenAdvertise := plan.listenAdvertise
+	clusterAdvertise := plan.clusterAdvertise
 
 	// Best-effort docker connection. If the engine is unreachable, jacod
 	// keeps the control plane running but skips the runtime reconciler —
@@ -80,9 +86,9 @@ func run(ctx context.Context, configPath string, logOut io.Writer) error {
 	server, err := dgrpc.New(dgrpc.Options{
 		UnixSocketPath:       cfg.UnixSocket,
 		DataDir:              cfg.DataDir,
-		ListenAddr:           cfg.ListenAddr,
+		ListenAddr:           listenBind,
 		ListenAdvertiseAddr:  listenAdvertise,
-		ClusterAddr:          cfg.ClusterAddr,
+		ClusterAddr:          clusterBind,
 		ClusterAdvertiseAddr: clusterAdvertise,
 		Docker:               docker,
 		IPAMPool:             cfg.IPAMPool,
@@ -98,11 +104,11 @@ func run(ctx context.Context, configPath string, logOut io.Writer) error {
 		hostname, hErr := os.Hostname()
 		if hErr != nil {
 			logger.Printf("hostname for raft resume: %v (staying uninitialized)", hErr)
-		} else if err := server.OpenRaft(hostname, cfg.ClusterAddr, clusterAdvertise); err != nil {
+		} else if err := server.OpenRaft(hostname, clusterBind, clusterAdvertise); err != nil {
 			logger.Printf("auto-resume OpenRaft: %v (staying uninitialized)", err)
 		} else {
 			server.Gate().MarkInitialized()
-			logger.Printf("resumed existing raft state for %s on %s (advertise %s)", hostname, cfg.ClusterAddr, clusterAdvertise)
+			logger.Printf("resumed existing raft state for %s on %s (advertise %s)", hostname, clusterBind, clusterAdvertise)
 		}
 	} else {
 		logger.Printf("listening on %s (uninitialized — run `jaco cluster init` or `jaco node join`)",
@@ -152,40 +158,69 @@ func signalContext() (context.Context, context.CancelFunc) {
 	return ctx, cancel
 }
 
-// resolveAdvertise computes the host:port pair peers will dial for the
-// gRPC (listen) and raft (cluster) endpoints. When either is bound to an
-// unspecified address (0.0.0.0 or ::), it auto-detects a routable host
-// IP via netdetect and synthesizes <ip>:<port> from the bind's port.
-// When both are explicit, returns empty strings (the gRPC server falls
-// back to the bind addresses on its own).
+// advertisePlan carries the effective bind + advertise host:port pairs for
+// the gRPC (listen) and raft (cluster) endpoints, after resolving any
+// unspecified (0.0.0.0 / ::) bind against the auto-detected private face.
+//
+// For each endpoint:
+//   - When the operator pinned an explicit address, bind == advertise ==
+//     the configured value (honored verbatim).
+//   - When the configured bind is unspecified, both bind and advertise are
+//     rebuilt as <detected-private-ip>:<configured-port>. The bind follows
+//     the advertise face so the control/data plane is NOT exposed on a
+//     public NIC by default (issue #44).
+type advertisePlan struct {
+	listenBind       string
+	listenAdvertise  string // empty when listen bind was explicit (server falls back to bind)
+	clusterBind      string
+	clusterAdvertise string // empty when cluster bind was explicit
+}
+
+// resolveAdvertise computes the advertisePlan for the gRPC (listen) and
+// raft (cluster) endpoints. When either is bound to an unspecified address
+// (0.0.0.0 or ::), it auto-detects a private-LAN-first host IP via netdetect
+// and synthesizes <ip>:<port> from the configured port — using it for BOTH
+// the bind and the advertise string. When an endpoint is pinned to an
+// explicit address it's honored verbatim (bind == advertise == configured),
+// the documented escape hatch for overlay-only or multi-NIC topologies.
+//
+// netdetect never returns a public IP (issue #44): a host whose only
+// routable face is public yields ErrNoCandidate here, surfacing the
+// guidance below rather than silently exposing the cluster planes.
 //
 // Errors carry guidance pointing at /etc/jaco/jacod.yaml so the operator
 // knows where to set an explicit value.
-func resolveAdvertise(listenBind, clusterBind string, logger *log.Logger) (listenAdv, clusterAdv string, err error) {
+func resolveAdvertise(listenBind, clusterBind string, logger *log.Logger) (advertisePlan, error) {
+	plan := advertisePlan{listenBind: listenBind, clusterBind: clusterBind}
+
 	listenUnspec, listenPort, err := splitUnspecified(listenBind, "listen_addr")
 	if err != nil {
-		return "", "", err
+		return advertisePlan{}, err
 	}
 	clusterUnspec, clusterPort, err := splitUnspecified(clusterBind, "cluster_addr")
 	if err != nil {
-		return "", "", err
+		return advertisePlan{}, err
 	}
 	if !listenUnspec && !clusterUnspec {
-		// Operator pinned both — nothing to do.
-		return "", "", nil
+		// Operator pinned both — bind + advertise are the configured values.
+		return plan, nil
 	}
 	ip, iface, derr := netdetect.PickAdvertiseIP()
 	if derr != nil {
-		return "", "", fmt.Errorf("auto-detect advertise IP: %w; set listen_addr/cluster_addr in /etc/jaco/jacod.yaml to a routable host:port", derr)
+		return advertisePlan{}, fmt.Errorf("auto-detect advertise IP: %w; set listen_addr/cluster_addr in /etc/jaco/jacod.yaml to a routable host:port", derr)
 	}
-	logger.Printf("advertise=%s (auto-detected from %s) — used when bind is unspecified", ip, iface)
+	logger.Printf("advertise+bind=%s (auto-detected private face from %s) — control/data plane bound to this face, not 0.0.0.0", ip, iface)
 	if listenUnspec {
-		listenAdv = net.JoinHostPort(ip.String(), listenPort)
+		bind := net.JoinHostPort(ip.String(), listenPort)
+		plan.listenBind = bind
+		plan.listenAdvertise = bind
 	}
 	if clusterUnspec {
-		clusterAdv = net.JoinHostPort(ip.String(), clusterPort)
+		bind := net.JoinHostPort(ip.String(), clusterPort)
+		plan.clusterBind = bind
+		plan.clusterAdvertise = bind
 	}
-	return listenAdv, clusterAdv, nil
+	return plan, nil
 }
 
 // splitUnspecified returns whether addr's host part is an unspecified IP

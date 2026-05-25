@@ -22,7 +22,9 @@ func mkAddrs(ips ...string) []net.Addr {
 	return out
 }
 
-func TestPick_TailscaleByName_BeatsLAN(t *testing.T) {
+func TestPick_LANBeatsTailscaleByName(t *testing.T) {
+	// Private-LAN-first: a host with both an operator VNet (eth0) and a
+	// tailnet must advertise the VNet, not the tailscale face.
 	ifaces := []net.Interface{
 		mkIface("eth0", net.FlagUp),
 		mkIface("tailscale0", net.FlagUp),
@@ -35,13 +37,14 @@ func TestPick_TailscaleByName_BeatsLAN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pick: %v", err)
 	}
-	if ip.String() != "100.96.1.2" || name != "tailscale0" {
-		t.Errorf("got %s on %s; want 100.96.1.2 on tailscale0", ip, name)
+	if ip.String() != "192.168.1.10" || name != "eth0" {
+		t.Errorf("got %s on %s; want 192.168.1.10 on eth0 (private LAN beats tailscale)", ip, name)
 	}
 }
 
-func TestPick_TailscaleByCGNATRange_BeatsLAN(t *testing.T) {
-	// Interface NOT named tailscale*, but IP is in 100.64/10 — still class 1.
+func TestPick_LANBeatsTailscaleByCGNATRange(t *testing.T) {
+	// Interface NOT named tailscale*, but IP is in 100.64/10 — that's an
+	// overlay (class 2). The RFC1918 LAN still wins.
 	ifaces := []net.Interface{
 		mkIface("eth0", net.FlagUp),
 		mkIface("eth1", net.FlagUp),
@@ -54,56 +57,64 @@ func TestPick_TailscaleByCGNATRange_BeatsLAN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pick: %v", err)
 	}
-	if ip.String() != "100.127.5.5" || name != "eth1" {
-		t.Errorf("got %s on %s; want 100.127.5.5 on eth1", ip, name)
+	if ip.String() != "192.168.1.10" || name != "eth0" {
+		t.Errorf("got %s on %s; want 192.168.1.10 on eth0 (private LAN beats CGNAT overlay)", ip, name)
 	}
 }
 
-func TestPick_TunBeatsRFC1918(t *testing.T) {
+func TestPick_OverlayBeatsPublic(t *testing.T) {
+	// No private LAN present: the overlay (wg0) is the only safe fabric.
+	// The public IP must never be auto-picked.
 	ifaces := []net.Interface{
 		mkIface("eth0", net.FlagUp),
 		mkIface("wg0", net.FlagUp),
 	}
 	addrs := map[string][]net.Addr{
-		"eth0": mkAddrs("10.0.0.5"),
-		"wg0":  mkAddrs("10.244.1.1"), // also RFC1918, but wg0 is class 2
+		"eth0": mkAddrs("203.0.113.7"), // public — never auto-picked
+		"wg0":  mkAddrs("100.64.5.5"),  // overlay (CGNAT)
 	}
 	ip, name, err := pickFromInterfaces(ifaces, lookup(addrs))
 	if err != nil {
 		t.Fatalf("pick: %v", err)
 	}
-	if name != "wg0" {
-		t.Errorf("got %s on %s; want wg0", ip, name)
+	if name != "wg0" || ip.String() != "100.64.5.5" {
+		t.Errorf("got %s on %s; want 100.64.5.5 on wg0 (overlay beats public)", ip, name)
 	}
 }
 
-func TestPick_RFC1918BeatsPublic(t *testing.T) {
+func TestPick_PublicAndPrivate_PrivateWinsPublicNeverPicked(t *testing.T) {
+	// The headline #44 case: a host with both a public NIC and a private
+	// VNet must advertise the private face, and the public IP must never be
+	// selected (control/data plane stays off the world-reachable face).
 	ifaces := []net.Interface{
-		mkIface("eth0", net.FlagUp),
-		mkIface("eth1", net.FlagUp),
+		mkIface("eth0", net.FlagUp), // public
+		mkIface("eth1", net.FlagUp), // private VNet
 	}
 	addrs := map[string][]net.Addr{
-		"eth0": mkAddrs("8.8.8.8"),
-		"eth1": mkAddrs("172.20.5.5"),
+		"eth0": mkAddrs("198.51.100.7"),
+		"eth1": mkAddrs("10.10.0.4"),
 	}
 	ip, name, err := pickFromInterfaces(ifaces, lookup(addrs))
 	if err != nil {
 		t.Fatalf("pick: %v", err)
 	}
-	if ip.String() != "172.20.5.5" || name != "eth1" {
-		t.Errorf("got %s on %s; want 172.20.5.5 on eth1", ip, name)
+	if ip.String() != "10.10.0.4" || name != "eth1" {
+		t.Errorf("got %s on %s; want 10.10.0.4 on eth1 (private face wins)", ip, name)
+	}
+	if ip.String() == "198.51.100.7" {
+		t.Errorf("public IP was auto-picked; must never happen")
 	}
 }
 
-func TestPick_PublicOnly_FallsThroughToClass4(t *testing.T) {
+func TestPick_PublicOnly_ReturnsNoCandidate(t *testing.T) {
+	// A host whose only routable address is public yields ErrNoCandidate:
+	// jacod must NOT silently advertise/bind the mesh on a public face.
+	// The operator is forced to pin an explicit listen_addr/cluster_addr.
 	ifaces := []net.Interface{mkIface("eth0", net.FlagUp)}
 	addrs := map[string][]net.Addr{"eth0": mkAddrs("198.51.100.7")}
-	ip, name, err := pickFromInterfaces(ifaces, lookup(addrs))
-	if err != nil {
-		t.Fatalf("pick: %v", err)
-	}
-	if ip.String() != "198.51.100.7" || name != "eth0" {
-		t.Errorf("got %s on %s; want 198.51.100.7 on eth0", ip, name)
+	_, _, err := pickFromInterfaces(ifaces, lookup(addrs))
+	if !errors.Is(err, ErrNoCandidate) {
+		t.Errorf("err = %v; want ErrNoCandidate (public must never be auto-picked)", err)
 	}
 }
 
@@ -163,16 +174,30 @@ func TestClassify_ExhaustiveTable(t *testing.T) {
 		ip    string
 		want  int
 	}{
-		{"tailscale0", "100.96.1.2", 1},
-		{"eth0", "100.127.5.5", 1}, // CGNAT regardless of iface name
-		{"wg0", "10.244.0.1", 2},
+		// Class 2 — overlay (by name or CGNAT range).
+		{"tailscale0", "100.96.1.2", 2},
+		{"eth0", "100.127.5.5", 2}, // CGNAT regardless of iface name
+		{"wg0", "10.244.0.1", 2},   // overlay name wins over RFC1918 range
 		{"tun0", "10.0.0.1", 2},
 		{"tap0", "192.168.1.1", 2},
 		{"jaco0", "10.0.0.99", 2},
-		{"eth0", "10.0.0.5", 3},
-		{"eth0", "172.20.0.5", 3},
-		{"eth0", "192.168.1.5", 3},
-		{"eth0", "8.8.8.8", 4},
+		// Class 1 — private LAN on a non-overlay interface.
+		{"eth0", "10.0.0.5", 1},
+		{"eth0", "172.20.0.5", 1},
+		{"eth0", "192.168.1.5", 1},
+		// Class 0 — public is never auto-picked.
+		{"eth0", "8.8.8.8", 0},
+		{"eth0", "203.0.113.9", 0},
+		// Class 0 — container / virtual bridges, even on RFC1918 ranges.
+		// docker0 is 172.17.0.1 on every host; without this it would beat
+		// eth0 on the alphabetical tiebreak and bind to an unreachable face.
+		{"docker0", "172.17.0.1", 0},
+		{"docker_gwbridge", "172.18.0.1", 0},
+		{"br-3f9a2b1c4d5e", "10.244.0.1", 0}, // docker user-defined bridge
+		{"veth8a1b2c3", "10.244.0.2", 0},
+		{"virbr0", "192.168.122.1", 0},
+		{"br0", "192.168.1.5", 1}, // operator's own bridged NIC is NOT excluded
+		// Class 0 — non-routable / special.
 		{"eth0", "127.0.0.1", 0},   // loopback
 		{"eth0", "169.254.1.1", 0}, // link-local
 		{"eth0", "224.0.0.1", 0},   // multicast
@@ -193,13 +218,15 @@ func TestLocalIPs_ReturnsAllUsableIPsExcludingLoopbackAndLinkLocal(t *testing.T)
 		mkIface("eth0", net.FlagUp),
 		mkIface("tailscale0", net.FlagUp),
 		mkIface("eth1", net.FlagUp),
-		mkIface("down0", 0), // down — excluded
+		mkIface("docker0", net.FlagUp), // container bridge — excluded
+		mkIface("down0", 0),            // down — excluded
 	}
 	addrs := map[string][]net.Addr{
 		"lo":         mkAddrs("127.0.0.1"),
 		"eth0":       mkAddrs("192.168.1.10", "169.254.5.5", "fe80::1"), // RFC1918 + link-local + IPv6
 		"tailscale0": mkAddrs("100.96.1.2"),                             // tailscale CGNAT
-		"eth1":       mkAddrs("8.8.8.8"),                                // public
+		"eth1":       mkAddrs("8.8.8.8"),                                // public — excluded
+		"docker0":    mkAddrs("172.17.0.1"),                             // docker bridge — excluded
 		"down0":      mkAddrs("10.9.9.9"),                               // on a down iface
 	}
 
@@ -210,13 +237,17 @@ func TestLocalIPs_ReturnsAllUsableIPsExcludingLoopbackAndLinkLocal(t *testing.T)
 		gotSet[ip.String()] = true
 	}
 
-	want := []string{"192.168.1.10", "100.96.1.2", "8.8.8.8"}
+	// SANs follow classify()'s boundary: private LAN + overlay only. Public
+	// (8.8.8.8) and the docker bridge (172.17.0.1) are excluded — a pinned
+	// public advertise addr is still SAN'd via the explicit listen/cluster IP
+	// at the call site, not via auto-detect.
+	want := []string{"192.168.1.10", "100.96.1.2"}
 	for _, w := range want {
 		if !gotSet[w] {
 			t.Errorf("LocalIPs missing %s; got %v", w, got)
 		}
 	}
-	excluded := []string{"127.0.0.1", "169.254.5.5", "fe80::1", "10.9.9.9"}
+	excluded := []string{"8.8.8.8", "172.17.0.1", "127.0.0.1", "169.254.5.5", "fe80::1", "10.9.9.9"}
 	for _, e := range excluded {
 		if gotSet[e] {
 			t.Errorf("LocalIPs should exclude %s; got %v", e, got)

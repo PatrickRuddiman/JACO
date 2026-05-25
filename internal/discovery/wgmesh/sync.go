@@ -289,6 +289,15 @@ func BuildConfig(st *state.State, selfHostname string, selfPrivate wgtypes.Key) 
 		return wgtypes.Config{}, errors.New("BuildConfig: selfHostname is required")
 	}
 	port := DefaultListenPort
+	// NB (issue #44): WireGuard's UDP socket binds to all interfaces — the
+	// kernel module + wgctrl's wgtypes.Config expose only ListenPort, with no
+	// per-address bind seam, so we cannot constrain WG to the advertise/
+	// private face the way gRPC (7000) and raft (7001) are. WG is a data-
+	// plane transport authenticated by Curve25519 keys (an unknown peer's
+	// packets are dropped), and reaching a peer still requires its private/
+	// overlay endpoint, so the exposure is bounded. Operators who must hide
+	// the public-facing UDP port should scope it with an external firewall;
+	// the primary control-plane exposure (raft + gRPC) is constrained here.
 	cfg := wgtypes.Config{
 		PrivateKey:   &selfPrivate,
 		ListenPort:   &port,
