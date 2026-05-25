@@ -10,12 +10,12 @@ import "time"
 // HostConfig calls (task 17).
 type ContainerSpec struct {
 	// Identity / JACO labels
-	ClusterID     string
-	Deployment    string
-	Service       string
-	ReplicaID     string
-	ReplicaIndex  int
-	RaftIndex     uint64
+	ClusterID    string
+	Deployment   string
+	Service      string
+	ReplicaID    string
+	ReplicaIndex int
+	RaftIndex    uint64
 
 	// Image + process
 	Image      string
@@ -38,6 +38,22 @@ type ContainerSpec struct {
 	Sysctls  map[string]string
 	Ulimits  map[string]Ulimit
 	ReadOnly bool
+
+	// Resource limits (issue #49). Resolved from either compose's modern
+	// `deploy.resources.{limits,reservations}` block or the legacy top-level
+	// keys (modern wins when both are present — see resolveResources). Every
+	// host that runs a replica re-projects these into docker's
+	// container.Resources, so enforcement is per-replica on whichever node
+	// hosts the container. Zero values mean "unset" (docker default applies).
+	NanoCPUs               int64  // CPU quota in units of 1e-9 cores (cores × 1e9)
+	MemoryBytes            int64  // hard memory limit, in bytes
+	MemoryReservationBytes int64  // soft memory limit (reservation), in bytes
+	CPUShares              int64  // relative CPU weight vs. other containers
+	CpusetCpus             string // CPUs the container may run on, e.g. "0-2" or "0,1"
+	// PidsLimit caps the number of processes. A nil pointer means "no change"
+	// (docker's default); only set when a positive value was declared so we
+	// never accidentally pin a container to an unlimited/zero pids cgroup.
+	PidsLimit *int64
 
 	// Health
 	Healthcheck *Healthcheck
@@ -77,7 +93,7 @@ type Ulimit struct {
 // the host — kept for documentation / inspection only.
 type PortDecl struct {
 	Container int
-	Host      int // 0 when compose used `8080` without an explicit host side
+	Host      int    // 0 when compose used `8080` without an explicit host side
 	Protocol  string // "tcp" | "udp"
 }
 

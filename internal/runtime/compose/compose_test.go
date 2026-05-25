@@ -93,8 +93,8 @@ func TestValidate_UnknownFieldRejected(t *testing.T) {
 	if ve.Code != "validation_failed" {
 		t.Errorf("code = %q, want validation_failed", ve.Code)
 	}
-	if ve.Details["field"] != "deploy" {
-		t.Errorf("details.field = %q, want deploy", ve.Details["field"])
+	if ve.Details["field"] != "cgroup_parent" {
+		t.Errorf("details.field = %q, want cgroup_parent", ve.Details["field"])
 	}
 	if ve.Details["service"] != "web" {
 		t.Errorf("details.service = %q, want web", ve.Details["service"])
@@ -250,6 +250,151 @@ func TestToContainerSpec_NetworksUseDeploymentPrefix(t *testing.T) {
 		if !found[want] {
 			t.Errorf("Networks missing %q; got %v", want, spec.Networks)
 		}
+	}
+}
+
+// TestValidate_ResourcesFixturePasses — the resources fixture exercises both
+// the modern deploy.resources block (with ignored replicas/placement/
+// restart_policy subkeys) and the legacy top-level keys. Validate must accept
+// all of it (issue #49).
+func TestValidate_ResourcesFixturePasses(t *testing.T) {
+	body := loadFixture(t, "resources.yml")
+	if err := compose.Validate(body); err != nil {
+		t.Fatalf("Validate(resources): %v", err)
+	}
+}
+
+// TestToContainerSpec_ModernDeployResources — deploy.resources.limits projects
+// cpus→NanoCPUs (cores × 1e9), memory→bytes, pids→*PidsLimit, and
+// reservations.memory→MemoryReservationBytes.
+func TestToContainerSpec_ModernDeployResources(t *testing.T) {
+	project, _, err := compose.Load(filepath.Join("testdata", "resources.yml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	s, ok := lookupService(project, "modern")
+	if !ok {
+		t.Fatal("modern service missing")
+	}
+	spec := compose.ToContainerSpec(s, compose.SpecOptions{Deployment: "sample", Service: "modern"})
+
+	if want := int64(1.5 * 1e9); spec.NanoCPUs != want {
+		t.Errorf("NanoCPUs = %d, want %d", spec.NanoCPUs, want)
+	}
+	if want := int64(256 * 1024 * 1024); spec.MemoryBytes != want {
+		t.Errorf("MemoryBytes = %d, want %d", spec.MemoryBytes, want)
+	}
+	if want := int64(128 * 1024 * 1024); spec.MemoryReservationBytes != want {
+		t.Errorf("MemoryReservationBytes = %d, want %d", spec.MemoryReservationBytes, want)
+	}
+	if spec.PidsLimit == nil || *spec.PidsLimit != 100 {
+		t.Errorf("PidsLimit = %v, want 100", spec.PidsLimit)
+	}
+	// No legacy cpu_shares/cpuset on this service.
+	if spec.CPUShares != 0 {
+		t.Errorf("CPUShares = %d, want 0", spec.CPUShares)
+	}
+	if spec.CpusetCpus != "" {
+		t.Errorf("CpusetCpus = %q, want empty", spec.CpusetCpus)
+	}
+}
+
+// TestToContainerSpec_LegacyTopLevelResources — the legacy keys project
+// directly: cpus→NanoCPUs, mem_limit→MemoryBytes, mem_reservation→
+// MemoryReservationBytes, pids_limit→*PidsLimit, cpu_shares→CPUShares,
+// cpuset→CpusetCpus.
+func TestToContainerSpec_LegacyTopLevelResources(t *testing.T) {
+	project, _, err := compose.Load(filepath.Join("testdata", "resources.yml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	s, ok := lookupService(project, "legacy")
+	if !ok {
+		t.Fatal("legacy service missing")
+	}
+	spec := compose.ToContainerSpec(s, compose.SpecOptions{Deployment: "sample", Service: "legacy"})
+
+	if want := int64(0.5 * 1e9); spec.NanoCPUs != want {
+		t.Errorf("NanoCPUs = %d, want %d", spec.NanoCPUs, want)
+	}
+	if want := int64(128 * 1024 * 1024); spec.MemoryBytes != want {
+		t.Errorf("MemoryBytes = %d, want %d", spec.MemoryBytes, want)
+	}
+	if want := int64(64 * 1024 * 1024); spec.MemoryReservationBytes != want {
+		t.Errorf("MemoryReservationBytes = %d, want %d", spec.MemoryReservationBytes, want)
+	}
+	if spec.PidsLimit == nil || *spec.PidsLimit != 50 {
+		t.Errorf("PidsLimit = %v, want 50", spec.PidsLimit)
+	}
+	if spec.CPUShares != 512 {
+		t.Errorf("CPUShares = %d, want 512", spec.CPUShares)
+	}
+	if spec.CpusetCpus != "0,1" {
+		t.Errorf("CpusetCpus = %q, want 0,1", spec.CpusetCpus)
+	}
+}
+
+// TestToContainerSpec_ModernWinsOverLegacy — when a service declares BOTH a
+// deploy.resources block and legacy top-level keys, the modern block decides
+// cpus/memory/pids outright (no field-by-field merge). cpu_shares/cpuset have
+// no modern equivalent, so they still carry through from the legacy keys.
+func TestToContainerSpec_ModernWinsOverLegacy(t *testing.T) {
+	project, _, err := compose.Load(filepath.Join("testdata", "resources.yml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	s, ok := lookupService(project, "both")
+	if !ok {
+		t.Fatal("both service missing")
+	}
+	spec := compose.ToContainerSpec(s, compose.SpecOptions{Deployment: "sample", Service: "both"})
+
+	// Modern wins: 2.0 cores, 512Mi, 200 pids — NOT the legacy 9.0/999M/999.
+	if want := int64(2.0 * 1e9); spec.NanoCPUs != want {
+		t.Errorf("NanoCPUs = %d, want %d (modern should win)", spec.NanoCPUs, want)
+	}
+	if want := int64(512 * 1024 * 1024); spec.MemoryBytes != want {
+		t.Errorf("MemoryBytes = %d, want %d (modern should win)", spec.MemoryBytes, want)
+	}
+	if spec.PidsLimit == nil || *spec.PidsLimit != 200 {
+		t.Errorf("PidsLimit = %v, want 200 (modern should win)", spec.PidsLimit)
+	}
+	// Modern block has no reservations → MemoryReservationBytes stays 0 (the
+	// legacy mem_reservation is NOT merged in).
+	if spec.MemoryReservationBytes != 0 {
+		t.Errorf("MemoryReservationBytes = %d, want 0 (modern path, no reservations)", spec.MemoryReservationBytes)
+	}
+	// cpu_shares/cpuset have no modern equivalent → carried from legacy keys.
+	if spec.CPUShares != 256 {
+		t.Errorf("CPUShares = %d, want 256", spec.CPUShares)
+	}
+	if spec.CpusetCpus != "2,3" {
+		t.Errorf("CpusetCpus = %q, want 2,3", spec.CpusetCpus)
+	}
+}
+
+// TestToContainerSpec_NoResourcesLeavesZero — a service with no resource
+// fields must leave every resource field at its zero value (PidsLimit nil) so
+// docker applies its defaults.
+func TestToContainerSpec_NoResourcesLeavesZero(t *testing.T) {
+	project, err := compose.LoadBytes([]byte(`services:
+  bare:
+    image: nginx
+`), "memory.yml")
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	s, ok := lookupService(project, "bare")
+	if !ok {
+		t.Fatal("bare service missing")
+	}
+	spec := compose.ToContainerSpec(s, compose.SpecOptions{Deployment: "sample", Service: "bare"})
+	if spec.NanoCPUs != 0 || spec.MemoryBytes != 0 || spec.MemoryReservationBytes != 0 ||
+		spec.CPUShares != 0 || spec.CpusetCpus != "" {
+		t.Errorf("expected zero resources, got %+v", spec)
+	}
+	if spec.PidsLimit != nil {
+		t.Errorf("PidsLimit = %v, want nil", spec.PidsLimit)
 	}
 }
 
