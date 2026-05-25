@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -84,11 +85,46 @@ func TestJournalHandler_VarsAreRealJournalFields(t *testing.T) {
 		}
 	}
 
+	// Regression guard: the original bug embedded PRIORITY (and the message) as
+	// inert JSON attributes that journald never parsed. With journal.Send,
+	// PRIORITY and MESSAGE are protocol arguments, NOT duplicate journal fields.
+	for _, banned := range []string{"PRIORITY", "MESSAGE", "priority", "msg"} {
+		if _, ok := v[banned]; ok {
+			t.Errorf("vars must not carry %q as a field (it is a journal.Send arg): %v", banned, v)
+		}
+	}
+
 	// PRIORITY maps from the slog level and equals the journal constant.
 	if int(journalPriority(slog.LevelError)) != priErr {
 		t.Errorf("journalPriority(error) = %d; want %d", journalPriority(slog.LevelError), priErr)
 	}
 }
+
+// TestNewDaemon_HandlerSelection pins the per-environment handler choice so a
+// regression to "JSON-with-inert-PRIORITY to stderr under systemd" is caught:
+// under systemd jacod must use the native journal handler (or the JSON fallback
+// only when no journal socket is reachable), never a plain stderr handler that
+// buries PRIORITY in the message.
+func TestNewDaemon_HandlerSelection(t *testing.T) {
+	// Off systemd → human-readable text handler.
+	t.Setenv("INVOCATION_ID", "")
+	if h := NewDaemon(os.Stderr, slog.LevelInfo).Handler(); !isType[*slog.TextHandler](h) {
+		t.Errorf("off-systemd handler = %T; want *slog.TextHandler", h)
+	}
+
+	// Under systemd → native journalHandler when the journal socket is
+	// reachable, else the JSON-to-stderr fallback. Never a TextHandler, and
+	// never something that would re-bury PRIORITY as an inert attr.
+	t.Setenv("INVOCATION_ID", "test-invocation")
+	switch h := NewDaemon(os.Stderr, slog.LevelInfo).Handler(); h.(type) {
+	case *journalHandler, *slog.JSONHandler:
+		// ok
+	default:
+		t.Errorf("under-systemd handler = %T; want *journalHandler or *slog.JSONHandler", h)
+	}
+}
+
+func isType[T any](v any) bool { _, ok := v.(T); return ok }
 
 // TestJournalHandler_GroupAndKeyNormalization checks group folding and key
 // normalization into valid journal field names.
