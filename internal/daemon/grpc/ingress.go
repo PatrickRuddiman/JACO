@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,7 +103,8 @@ func (s *Server) runStageFirst(ctx context.Context, ctrl *stagefirst.Controller,
 	reconcile := func() {
 		if ctrl.Reconcile(ctx, tlsAutoDomains(st)) {
 			if err := rl.Rebuild(ctx); err != nil {
-				s.logger.Printf("stagefirst: rebuild after staging change: %v", err)
+				s.logger.Error("stagefirst rebuild after staging change failed",
+					"subsystem", "stagefirst", "error", err)
 			}
 		}
 	}
@@ -177,7 +178,7 @@ func prodCertIssued(st *state.State, domain string) bool {
 // ingressBuilder is the rebuild.Builder concrete impl. Reads state.Routes
 // + state.ReplicasObserved + state.Deployments, projects them into the
 // config package's typed views, and calls BuildCaddyConfig.
-func ingressBuilder(st *state.State, acme ingressACMEOpts) func() ([]byte, error) {
+func ingressBuilder(st *state.State, acme ingressACMEOpts, logger *slog.Logger) func() ([]byte, error) {
 	return func() ([]byte, error) {
 		var routes []config.Route
 		for _, r := range st.Routes.List() {
@@ -246,7 +247,13 @@ func ingressBuilder(st *state.State, acme ingressACMEOpts) func() ([]byte, error
 			ACMEStagingCA:  acme.StagingCA,
 			StagingDomains: stagingDomains,
 		})
-		log.Printf("ingress: built caddy config (%d routes, %d observed replicas, %d bytes, err=%v)", len(routes), len(replicas), len(cfg), err)
+		if err != nil {
+			logger.Error("build caddy config failed",
+				"routes", len(routes), "observed_replicas", len(replicas), "error", err)
+		} else {
+			logger.Debug("built caddy config",
+				"routes", len(routes), "observed_replicas", len(replicas), "bytes", len(cfg))
+		}
 		return cfg, err
 	}
 }
@@ -256,11 +263,11 @@ func ingressBuilder(st *state.State, acme ingressACMEOpts) func() ([]byte, error
 // deferral). JACO_INGRESS_EXEC=1 falls back to the v0 path that writes
 // /etc/caddy/jaco.json + execs `caddy reload`, useful when the operator
 // wants caddy crashes to stay isolated from jacod.
-func ingressLoader() func(ctx context.Context, cfg []byte) error {
+func ingressLoader(logger *slog.Logger) func(ctx context.Context, cfg []byte) error {
 	if os.Getenv("JACO_INGRESS_EXEC") == "1" {
 		return ingressLoaderExec()
 	}
-	return ingressLoaderEmbedded()
+	return ingressLoaderEmbedded(logger)
 }
 
 // ingressLoaderEmbedded calls caddy.Load on configs that carry at least
@@ -269,19 +276,19 @@ func ingressLoader() func(ctx context.Context, cfg []byte) error {
 // so we skip Load entirely to avoid the bug-009 once-per-second admin
 // restart loop. Once a Route lands in state.Routes, subsequent loads
 // fire normally.
-func ingressLoaderEmbedded() func(ctx context.Context, cfg []byte) error {
+func ingressLoaderEmbedded(logger *slog.Logger) func(ctx context.Context, cfg []byte) error {
 	var started atomic.Bool
 	return func(_ context.Context, cfg []byte) error {
 		if !bytes.Contains(cfg, []byte("reverse_proxy")) {
-			log.Printf("ingress: skipping caddy.Load (no reverse_proxy route yet)")
+			logger.Debug("skipping caddy.Load (no reverse_proxy route yet)")
 			return nil
 		}
 		if err := caddy.Load(cfg, false); err != nil {
-			log.Printf("ingress: caddy.Load FAILED: %v", err)
+			logger.Error("caddy.Load failed", "error", err)
 			return fmt.Errorf("caddy.Load: %w", err)
 		}
 		if started.CompareAndSwap(false, true) {
-			log.Printf("ingress: caddy loaded + listening on :80/:443")
+			logger.Info("caddy loaded and listening", "addrs", ":80/:443")
 		}
 		return nil
 	}

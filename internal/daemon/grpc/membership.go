@@ -66,8 +66,11 @@ func (c *clusterServer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*p
 	// yet. Non-voters receive log replication without affecting quorum,
 	// so the leader stays elected while the joiner catches up. Auto-
 	// promotion to voter once the joiner is replicating is a follow-up.
+	c.server.srvLog.Info("adding node to raft membership (non-voter)",
+		"joiner", req.GetName(), "advertise_addr", req.GetAdvertiseAddr())
 	addF := r.Raft.AddNonvoter(hraft.ServerID(req.GetName()), hraft.ServerAddress(req.GetAdvertiseAddr()), 0, 5*time.Second)
 	if err := addF.Error(); err != nil {
+		c.server.srvLog.Error("raft AddNonvoter failed", "joiner", req.GetName(), "error", err)
 		return nil, status.Errorf(codes.Internal, "raft_add_voter_failed: %v", err)
 	}
 
@@ -138,4 +141,3 @@ func (c *clusterServer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*p
 		PeerAddrs:  peerAddrs,
 	}, nil
 }
-

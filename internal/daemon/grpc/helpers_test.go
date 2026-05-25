@@ -2,12 +2,16 @@ package grpc
 
 import (
 	"bytes"
+	"log/slog"
 	"testing"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
+
+// testLogger is a discard slog logger for ingressBuilder calls in tests.
+func testLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
 // TestReplicaStateString_AllVariants — the enum-to-string adapter feeds
 // the ingress builder's ReplicaObservedView.State field. Every branch
@@ -163,7 +167,7 @@ func TestIngressBuilder_ACMEDisabledOmitsAutomation(t *testing.T) {
 	st := state.New(watch.NewRegistry())
 	st.Routes.Apply(&pb.Route{Domain: "web.example.com", Deployment: "s", Service: "web", Port: 80, TlsAuto: true}, 1)
 
-	build := ingressBuilder(st, ingressACMEOpts{Email: "ops@x.com", CA: "https://acme-v02.api.letsencrypt.org/directory", Enabled: false})
+	build := ingressBuilder(st, ingressACMEOpts{Email: "ops@x.com", CA: "https://acme-v02.api.letsencrypt.org/directory", Enabled: false}, testLogger())
 	cfg, err := build()
 	if err != nil {
 		t.Fatalf("build: %v", err)
@@ -183,7 +187,7 @@ func TestIngressBuilder_PlumbsEmailAndCA(t *testing.T) {
 		Email:   "ops@example.com",
 		CA:      "https://acme-staging-v02.api.letsencrypt.org/directory",
 		Enabled: true,
-	})
+	}, testLogger())
 	cfg, err := build()
 	if err != nil {
 		t.Fatalf("build: %v", err)

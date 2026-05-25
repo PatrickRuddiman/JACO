@@ -2,7 +2,7 @@ package stagefirst
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -41,8 +41,8 @@ type Controller struct {
 	// OnStageFail is called when a staging chain is present but fails the
 	// self-check. The daemon emits CERTIFICATE_FAILED{stage_failed_at:staging}.
 	OnStageFail func(domain string, err error)
-	// Logger receives structured progress lines. nil → log.Default().
-	Logger *log.Logger
+	// Logger receives structured progress lines. nil → a discard logger.
+	Logger *slog.Logger
 	// Now is the clock (tests pin it). nil → time.Now.
 	Now func() time.Time
 
@@ -65,11 +65,11 @@ func (c *Controller) now() time.Time {
 	return time.Now()
 }
 
-func (c *Controller) logger() *log.Logger {
+func (c *Controller) logger() *slog.Logger {
 	if c.Logger != nil {
 		return c.Logger
 	}
-	return log.Default()
+	return slog.New(slog.DiscardHandler)
 }
 
 // StagingDomains returns a snapshot of the domains currently in their staging
@@ -125,7 +125,8 @@ func (c *Controller) Reconcile(_ context.Context, domains []string) (changed boo
 				continue // still issuing against staging
 			}
 			if err := SelfCheck(domain, pem); err != nil {
-				c.logger().Printf("stagefirst: %s staging self-check FAILED: %v (NOT escalating to prod)", domain, err)
+				c.logger().Warn("staging self-check failed; not escalating to prod",
+					"domain", domain, "error", err)
 				delete(c.staging, domain)
 				c.backoff[domain] = now.Add(BackoffWindow)
 				if c.OnStageFail != nil {
@@ -134,7 +135,7 @@ func (c *Controller) Reconcile(_ context.Context, domains []string) (changed boo
 				changed = true
 				continue
 			}
-			c.logger().Printf("stagefirst: %s staging self-check passed; promoting to prod", domain)
+			c.logger().Info("staging self-check passed; promoting to prod", "domain", domain)
 			delete(c.staging, domain)
 			if c.OnPromote != nil {
 				c.OnPromote(domain)
@@ -159,7 +160,7 @@ func (c *Controller) Reconcile(_ context.Context, domains []string) (changed boo
 			}
 			delete(c.backoff, domain)
 		}
-		c.logger().Printf("stagefirst: %s — %s", domain, dec.Reason)
+		c.logger().Debug("staging decision", "domain", domain, "reason", dec.Reason)
 		c.staging[domain] = true
 		changed = true
 	}

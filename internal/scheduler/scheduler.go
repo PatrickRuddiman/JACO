@@ -13,6 +13,7 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/compose"
 	"github.com/PatrickRuddiman/jaco/internal/scheduler/counter"
 	"github.com/PatrickRuddiman/jaco/internal/scheduler/placement"
@@ -56,9 +58,20 @@ type Scheduler struct {
 	// just no formal plan / audit / rollback-on-failure).
 	rollouts *rollout.Rollout
 
+	// Logger logs reconcile milestones. nil → discard. Set by the daemon
+	// after construction; tests leave it nil.
+	Logger *slog.Logger
+
 	mu     sync.Mutex
 	active bool
 	cancel context.CancelFunc
+}
+
+func (s *Scheduler) log() *slog.Logger {
+	if s.Logger == nil {
+		return logging.Discard()
+	}
+	return s.Logger
 }
 
 // New constructs a Scheduler. rollouts may be nil for callers that don't
@@ -170,8 +183,10 @@ func (s *Scheduler) Reconcile(_ context.Context) {
 	}
 	data, err := proto.Marshal(combined)
 	if err != nil {
+		s.log().Error("scheduler marshal reconcile batch failed", "error", err)
 		return
 	}
+	s.log().Info("applying reconcile batch", "commands", len(batch))
 	_ = s.apply(data)
 }
 
@@ -283,7 +298,7 @@ func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, no
 		cmds = append(cmds, &pb.Command{
 			Identity: "scheduler",
 			Ts:       timestamppb.Now(),
-			Payload: &pb.Command_ReplicaDesiredRemove{ReplicaDesiredRemove: &pb.ReplicaDesiredRemove{Id: id}},
+			Payload:  &pb.Command_ReplicaDesiredRemove{ReplicaDesiredRemove: &pb.ReplicaDesiredRemove{Id: id}},
 		})
 	}
 

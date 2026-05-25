@@ -182,6 +182,8 @@ func dialOperator(a operatorAuth) (*grpc.ClientConn, func(context.Context) conte
 		if err != nil {
 			return nil, nil, err
 		}
+		// Never log the bearer token; only the selected transport + target.
+		Logger().Debug("dialing remote leader over TCP", "server", a.server)
 		conn, err := dialServer(a.server, caCertPEM)
 		if err != nil {
 			return nil, nil, err
@@ -201,6 +203,7 @@ func dialOperator(a operatorAuth) (*grpc.ClientConn, func(context.Context) conte
 			"no --server given and local socket %s is not available: pass --server (host:port) with --token, or run this command on a cluster node with the jaco daemon socket",
 			socket)
 	}
+	Logger().Debug("dialing local daemon over unix socket", "socket", socket)
 	conn, err := dialDaemon(socket)
 	if err != nil {
 		return nil, nil, err

@@ -18,13 +18,13 @@ import (
 // subnet-mismatch recreate path.
 type fakeDocker struct {
 	dockerx.Docker
-	mu              sync.Mutex
-	networks        map[string]*dnet.Summary
-	containers      map[string]string // containerID -> networkID it's attached to
-	stopped         []string
-	removed         []string
-	idSeq           int
-	containerIDSeq  int
+	mu             sync.Mutex
+	networks       map[string]*dnet.Summary
+	containers     map[string]string // containerID -> networkID it's attached to
+	stopped        []string
+	removed        []string
+	idSeq          int
+	containerIDSeq int
 }
 
 func newFakeDocker() *fakeDocker {
@@ -223,7 +223,7 @@ func TestGatewayIP_RejectsGarbage(t *testing.T) {
 
 func TestEnsure_CreatesNetworkWithLabelsAndIPAM(t *testing.T) {
 	d := newFakeDocker()
-	name, err := bridge.Ensure(context.Background(), d, "sample", "frontend", "10.244.5.0/24", "cluster-x")
+	name, err := bridge.Ensure(context.Background(), d, "sample", "frontend", "10.244.5.0/24", "cluster-x", nil)
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -264,10 +264,10 @@ func TestEnsure_CreatesNetworkWithLabelsAndIPAM(t *testing.T) {
 
 func TestEnsure_IsIdempotent(t *testing.T) {
 	d := newFakeDocker()
-	if _, err := bridge.Ensure(context.Background(), d, "sample", "frontend", "10.244.5.0/24", "cluster-x"); err != nil {
+	if _, err := bridge.Ensure(context.Background(), d, "sample", "frontend", "10.244.5.0/24", "cluster-x", nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := bridge.Ensure(context.Background(), d, "sample", "frontend", "10.244.5.0/24", "cluster-x"); err != nil {
+	if _, err := bridge.Ensure(context.Background(), d, "sample", "frontend", "10.244.5.0/24", "cluster-x", nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(d.networks) != 1 {
@@ -284,7 +284,7 @@ func TestEnsure_RecreatesOnSubnetMismatch(t *testing.T) {
 	d := newFakeDocker()
 	ctx := context.Background()
 	// Initial create with the old /24.
-	if _, err := bridge.Ensure(ctx, d, "sample", "frontend", "10.244.0.0/24", "cluster-x"); err != nil {
+	if _, err := bridge.Ensure(ctx, d, "sample", "frontend", "10.244.0.0/24", "cluster-x", nil); err != nil {
 		t.Fatalf("first Ensure: %v", err)
 	}
 	var oldID string
@@ -297,7 +297,7 @@ func TestEnsure_RecreatesOnSubnetMismatch(t *testing.T) {
 	removeCallsBefore := len(d.removed)
 
 	// Re-form in place: same (deployment, network, cluster_id) but a NEW /24.
-	if _, err := bridge.Ensure(ctx, d, "sample", "frontend", "10.244.5.0/24", "cluster-x"); err != nil {
+	if _, err := bridge.Ensure(ctx, d, "sample", "frontend", "10.244.5.0/24", "cluster-x", nil); err != nil {
 		t.Fatalf("second Ensure (mismatched cidr): %v", err)
 	}
 	if len(d.networks) != 1 {
@@ -331,7 +331,7 @@ func TestEnsure_RecreatesOnSubnetMismatch(t *testing.T) {
 
 	// Third call with the now-current CIDR is a no-op (idempotency preserved).
 	prevCount := len(d.networks)
-	if _, err := bridge.Ensure(ctx, d, "sample", "frontend", "10.244.5.0/24", "cluster-x"); err != nil {
+	if _, err := bridge.Ensure(ctx, d, "sample", "frontend", "10.244.5.0/24", "cluster-x", nil); err != nil {
 		t.Fatalf("third Ensure (matching cidr): %v", err)
 	}
 	if len(d.networks) != prevCount {
@@ -348,13 +348,13 @@ func TestEnsure_RecreatesOnClusterIDDrift(t *testing.T) {
 	d := newFakeDocker()
 	ctx := context.Background()
 	// First cluster: clusterID="old-cluster", CIDR=10.244.0.0/24.
-	if _, err := bridge.Ensure(ctx, d, "sample", "frontend", "10.244.0.0/24", "old-cluster"); err != nil {
+	if _, err := bridge.Ensure(ctx, d, "sample", "frontend", "10.244.0.0/24", "old-cluster", nil); err != nil {
 		t.Fatalf("first Ensure: %v", err)
 	}
 	// Re-form in place: NEW clusterID, SAME (deployment, network), even
 	// SAME CIDR — bridge must still be reclaimed (otherwise NetworkCreate
 	// would later fail with "already exists").
-	if _, err := bridge.Ensure(ctx, d, "sample", "frontend", "10.244.0.0/24", "new-cluster"); err != nil {
+	if _, err := bridge.Ensure(ctx, d, "sample", "frontend", "10.244.0.0/24", "new-cluster", nil); err != nil {
 		t.Fatalf("second Ensure (mismatched cluster_id): %v", err)
 	}
 	if len(d.networks) != 1 {
@@ -381,30 +381,30 @@ func TestEnsure_RefusesForeignDockerNetwork(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := bridge.Ensure(ctx, d, "sample", "frontend", "10.244.0.0/24", "cluster-x"); err == nil {
+	if _, err := bridge.Ensure(ctx, d, "sample", "frontend", "10.244.0.0/24", "cluster-x", nil); err == nil {
 		t.Errorf("Ensure should refuse a name-collision against a non-JACO network")
 	}
 }
 
 func TestEnsure_RejectsEmptyArgs(t *testing.T) {
 	d := newFakeDocker()
-	if _, err := bridge.Ensure(context.Background(), d, "", "frontend", "10.244.5.0/24", "cluster-x"); err == nil {
+	if _, err := bridge.Ensure(context.Background(), d, "", "frontend", "10.244.5.0/24", "cluster-x", nil); err == nil {
 		t.Errorf("empty deployment accepted")
 	}
-	if _, err := bridge.Ensure(context.Background(), d, "sample", "", "10.244.5.0/24", "cluster-x"); err == nil {
+	if _, err := bridge.Ensure(context.Background(), d, "sample", "", "10.244.5.0/24", "cluster-x", nil); err == nil {
 		t.Errorf("empty network accepted")
 	}
-	if _, err := bridge.Ensure(context.Background(), d, "sample", "frontend", "", "cluster-x"); err == nil {
+	if _, err := bridge.Ensure(context.Background(), d, "sample", "frontend", "", "cluster-x", nil); err == nil {
 		t.Errorf("empty cidr accepted")
 	}
-	if _, err := bridge.Ensure(context.Background(), d, "sample", "frontend", "10.244.5.0/24", ""); err == nil {
+	if _, err := bridge.Ensure(context.Background(), d, "sample", "frontend", "10.244.5.0/24", "", nil); err == nil {
 		t.Errorf("empty clusterID accepted")
 	}
 }
 
 func TestTeardown_RemovesNetwork(t *testing.T) {
 	d := newFakeDocker()
-	if _, err := bridge.Ensure(context.Background(), d, "sample", "frontend", "10.244.5.0/24", "cluster-x"); err != nil {
+	if _, err := bridge.Ensure(context.Background(), d, "sample", "frontend", "10.244.5.0/24", "cluster-x", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := bridge.Teardown(context.Background(), d, "sample", "frontend"); err != nil {

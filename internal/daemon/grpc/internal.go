@@ -7,6 +7,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/PatrickRuddiman/jaco/internal/discovery/ipam"
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -109,10 +110,12 @@ func (i *internalServer) logSubnetUtilization(used int, req *pb.EnsureSubnetRequ
 	pct := used * 100 / subnetPoolSize
 	switch {
 	case pct >= 90:
-		i.server.logger.Printf("ERROR subnet_pool_utilization %d%% (%d/%d) after %s/%s on %s",
-			pct, used, subnetPoolSize, req.GetDeployment(), req.GetNetwork(), req.GetHost())
+		i.server.srvLog.Error("subnet_pool_utilization critical",
+			"pct", pct, "used", used, "size", subnetPoolSize,
+			logging.KeyDeployment, req.GetDeployment(), "network", req.GetNetwork(), "host", req.GetHost())
 	case pct >= 75:
-		i.server.logger.Printf("WARN subnet_pool_utilization %d%% (%d/%d) after %s/%s on %s",
-			pct, used, subnetPoolSize, req.GetDeployment(), req.GetNetwork(), req.GetHost())
+		i.server.srvLog.Warn("subnet_pool_utilization high",
+			"pct", pct, "used", used, "size", subnetPoolSize,
+			logging.KeyDeployment, req.GetDeployment(), "network", req.GetNetwork(), "host", req.GetHost())
 	}
 }
