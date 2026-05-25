@@ -2,12 +2,34 @@
   "apps": {
     "http": {
       "servers": {
-        "jaco": {
+        "jaco_http": {
           "automatic_https": {
             "disable": true
           },
           "listen": [
-            ":80",
+            ":80"
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Server": [
+                      "jaco"
+                    ]
+                  },
+                  "status_code": 404
+                }
+              ]
+            }
+          ]
+        },
+        "jaco_https": {
+          "automatic_https": {
+            "disable": true
+          },
+          "listen": [
             ":443"
           ],
           "routes": [

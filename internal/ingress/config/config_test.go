@@ -68,7 +68,7 @@ func TestBuildCaddyConfig_HealthyTwoOfThree(t *testing.T) {
 		t.Fatalf("parse output: %v", err)
 	}
 	servers := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)
-	jaco := servers["jaco"].(map[string]any)
+	jaco := servers["jaco_https"].(map[string]any)
 	rts := jaco["routes"].([]any)
 	first := rts[0].(map[string]any)
 	handle := first["handle"].([]any)[0].(map[string]any)
@@ -87,6 +87,55 @@ func TestBuildCaddyConfig_HealthyTwoOfThree(t *testing.T) {
 	want := loadGolden(t, "healthy-2of3.golden.json", got)
 	if !bytes.Equal(got, want) {
 		t.Errorf("output diverges from golden\n--- got:\n%s\n--- want:\n%s", got, want)
+	}
+}
+
+// TestBuildCaddyConfig_TLSAutoRedirectsHTTP — a tls:auto domain gets a 308
+// HTTP→HTTPS redirect on the :80 server (jaco_http) that preserves host+URI and
+// excludes the ACME challenge path, while the :443 server (jaco_https)
+// reverse-proxies it (issue #46).
+func TestBuildCaddyConfig_TLSAutoRedirectsHTTP(t *testing.T) {
+	routes := []config.Route{
+		{Domain: "web.example.com", Deployment: "s", Service: "web", Port: 80, TLSAuto: true},
+	}
+	replicas := []config.ReplicaObservedView{
+		{ID: "s-web-0", Deployment: "s", Service: "web", State: "running", LastHealthAt: pinnedNow()},
+	}
+	services := map[string]config.ServiceMeta{
+		config.MetaKey("s", "web"): {Deployment: "s", Service: "web", ReplicaIPs: map[string]string{"s-web-0": "10.244.5.2"}},
+	}
+	got, err := config.BuildCaddyConfig(routes, replicas, services, opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	servers := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)
+
+	// :80 → 308 redirect for the domain.
+	red := servers["jaco_http"].(map[string]any)["routes"].([]any)[0].(map[string]any)
+	h := red["handle"].([]any)[0].(map[string]any)
+	if h["handler"] != "static_response" || int(h["status_code"].(float64)) != 308 {
+		t.Fatalf(":80 route is not a 308 redirect: %v", h)
+	}
+	if loc := h["headers"].(map[string]any)["Location"].([]any)[0]; loc != "https://{http.request.host}{http.request.uri}" {
+		t.Errorf("Location = %v; want host+uri-preserving https redirect", loc)
+	}
+	// Matches the host AND excludes the ACME challenge path.
+	m := red["match"].([]any)[0].(map[string]any)
+	if m["host"].([]any)[0] != "web.example.com" {
+		t.Errorf("redirect host = %v; want web.example.com", m["host"])
+	}
+	if np := m["not"].([]any)[0].(map[string]any)["path"].([]any)[0]; np != "/.well-known/acme-challenge/*" {
+		t.Errorf("redirect does not exclude acme-challenge path: %v", np)
+	}
+
+	// :443 → reverse_proxy for the domain (not a redirect).
+	hh := servers["jaco_https"].(map[string]any)["routes"].([]any)[0].(map[string]any)["handle"].([]any)[0].(map[string]any)
+	if hh["handler"] != "reverse_proxy" {
+		t.Errorf(":443 route handler = %v; want reverse_proxy", hh["handler"])
 	}
 }
 
@@ -118,6 +167,14 @@ func TestBuildCaddyConfig_TLSOffOmitsACME(t *testing.T) {
 	// automation policy. (Regression: omitting the tls block is not enough.)
 	assertAutomaticHTTPSDisabled(t, apps)
 
+	// And a tls:off domain must NOT be redirected on :80 — it proxies plain
+	// HTTP. The first :80 route is a reverse_proxy, not a 308 (#46).
+	httpRoutes := apps["http"].(map[string]any)["servers"].(map[string]any)["jaco_http"].(map[string]any)["routes"].([]any)
+	first80 := httpRoutes[0].(map[string]any)["handle"].([]any)[0].(map[string]any)
+	if first80["handler"] != "reverse_proxy" {
+		t.Errorf("tls:off domain :80 route = %v; want reverse_proxy (no redirect)", first80["handler"])
+	}
+
 	want := loadGolden(t, "tls-off.golden.json", got)
 	if !bytes.Equal(got, want) {
 		t.Errorf("output diverges from golden\n--- got:\n%s\n--- want:\n%s", got, want)
@@ -133,7 +190,7 @@ func TestBuildCaddyConfig_ZeroRoutesProducesFallbackOnly(t *testing.T) {
 	if err := json.Unmarshal(got, &parsed); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	jaco := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["jaco"].(map[string]any)
+	jaco := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["jaco_https"].(map[string]any)
 	routes := jaco["routes"].([]any)
 	if len(routes) != 1 {
 		t.Fatalf("routes = %d, want 1 (just fallback)", len(routes))
@@ -172,7 +229,7 @@ func TestBuildCaddyConfig_StaleHealthExcludesUpstream(t *testing.T) {
 	var parsed map[string]any
 	_ = json.Unmarshal(got, &parsed)
 	servers := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)
-	jaco := servers["jaco"].(map[string]any)
+	jaco := servers["jaco_https"].(map[string]any)
 	rts := jaco["routes"].([]any)
 	upstreams := rts[0].(map[string]any)["handle"].([]any)[0].(map[string]any)["upstreams"].([]any)
 	if len(upstreams) != 1 {
@@ -193,7 +250,7 @@ func TestBuildCaddyConfig_MissingServiceMetaProducesEmptyUpstreams(t *testing.T)
 	}
 	var parsed map[string]any
 	_ = json.Unmarshal(got, &parsed)
-	rts := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["jaco"].(map[string]any)["routes"].([]any)
+	rts := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["jaco_https"].(map[string]any)["routes"].([]any)
 	// Route exists; upstreams empty.
 	first := rts[0].(map[string]any)
 	upstreams, _ := first["handle"].([]any)[0].(map[string]any)["upstreams"].([]any)
@@ -214,7 +271,7 @@ func TestBuildCaddyConfig_RoutesSortedByDomain(t *testing.T) {
 	}
 	var parsed map[string]any
 	_ = json.Unmarshal(got, &parsed)
-	rts := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["jaco"].(map[string]any)["routes"].([]any)
+	rts := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["jaco_https"].(map[string]any)["routes"].([]any)
 	hosts := []string{}
 	for _, r := range rts[:3] { // skip fallback
 		match := r.(map[string]any)["match"].([]any)[0].(map[string]any)
@@ -252,7 +309,7 @@ func TestBuildCaddyConfig_PathMatcherWithCatchAll(t *testing.T) {
 	if err := json.Unmarshal(got, &parsed); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	rts := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["jaco"].(map[string]any)["routes"].([]any)
+	rts := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["jaco_https"].(map[string]any)["routes"].([]any)
 
 	// First entry should be the jaco.sh host block; last is fallback.
 	if len(rts) != 2 { // 1 domain block + fallback
@@ -316,7 +373,7 @@ func TestBuildCaddyConfig_LongestPrefixFirst(t *testing.T) {
 	}
 	var parsed map[string]any
 	_ = json.Unmarshal(got, &parsed)
-	rts := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["jaco"].(map[string]any)["routes"].([]any)
+	rts := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["jaco_https"].(map[string]any)["routes"].([]any)
 	domainBlock := rts[0].(map[string]any)
 	handle := domainBlock["handle"].([]any)[0].(map[string]any)
 	subRoutes := handle["routes"].([]any)
@@ -417,7 +474,7 @@ func TestBuildCaddyConfig_PathMatchesExactPrefix(t *testing.T) {
 	if err := json.Unmarshal(got, &parsed); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	rts := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["jaco"].(map[string]any)["routes"].([]any)
+	rts := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["jaco_https"].(map[string]any)["routes"].([]any)
 
 	// One path route (no catch-all) lands in a subroute block under the
 	// host-matched outer route. Walk in to the inner path matcher.
@@ -500,7 +557,7 @@ func TestBuildCaddyConfig_ACMEDisabledOmitsAutomation(t *testing.T) {
 // automatic_https.disable == true (the cluster-wide / no-policy opt-out).
 func assertAutomaticHTTPSDisabled(t *testing.T, apps map[string]any) {
 	t.Helper()
-	srv := apps["http"].(map[string]any)["servers"].(map[string]any)["jaco"].(map[string]any)
+	srv := apps["http"].(map[string]any)["servers"].(map[string]any)["jaco_https"].(map[string]any)
 	ah, ok := srv["automatic_https"].(map[string]any)
 	if !ok {
 		t.Fatalf("jaco server has no automatic_https block; Caddy would auto-issue default-PROD certs. server=%v", srv)
