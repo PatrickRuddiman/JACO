@@ -153,6 +153,11 @@ func validateJacoYAML(j *JacoYAML) (code string, message string, ok bool) {
 	// would silently shadow another route. Reject all duplicates up front.
 	type domainPath struct{ domain, path string }
 	seenRoutes := map[domainPath]bool{}
+	// A domain must pick one TLS mode: Caddy can't half-redirect (some paths
+	// 308→https, others served plain). Mixed tls:auto + tls:off on one domain
+	// is rejected up front (issue #46). TLS is already resolved to auto/off by
+	// ParseJacoYAML (deployment-level acme:off + default-to-auto).
+	domainTLS := map[string]string{}
 	for _, r := range j.Routes {
 		if r.Domain == "" {
 			return "validation_failed", "route domain is required", false
@@ -168,6 +173,10 @@ func validateJacoYAML(j *JacoYAML) (code string, message string, ok bool) {
 		default:
 			return "validation_failed", fmt.Sprintf("route %q has unknown tls %q (want auto|off)", r.Domain, r.TLS), false
 		}
+		if prev, ok := domainTLS[r.Domain]; ok && prev != r.TLS {
+			return "route_tls_mixed", fmt.Sprintf("domain %q mixes tls:auto and tls:off routes; a domain must use a single TLS mode", r.Domain), false
+		}
+		domainTLS[r.Domain] = r.TLS
 		key := domainPath{r.Domain, r.Path}
 		if seenRoutes[key] {
 			return "validation_failed", fmt.Sprintf("route conflict: domain %q path %q is declared more than once; (domain, path) combinations must be unique", r.Domain, r.Path), false

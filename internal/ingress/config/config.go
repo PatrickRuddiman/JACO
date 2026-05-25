@@ -140,78 +140,55 @@ func BuildCaddyConfig(routes []Route, replicas []ReplicaObservedView, services m
 		sortedRoutes = append(sortedRoutes, domainMap[d]...)
 	}
 
-	cfgRoutes := make([]any, 0, len(domains)+1)
+	// Two servers (issue #46): jaco_https terminates TLS on :443 and reverse-
+	// proxies every domain; jaco_http on :80 issues a 308 HTTP→HTTPS redirect
+	// for tls:auto domains (those that get a TLS policy) and reverse-proxies
+	// the rest (tls:off) as plain HTTP. A single combined :80,:443 server can't
+	// express this — its host-matched routes match both ports, so :80 traffic
+	// to a tls:auto domain gets proxied instead of redirected.
+	redirect := redirectDomainSet(sortedRoutes, opts)
+
+	httpsRoutes := make([]any, 0, len(domains)+1)
+	httpRoutes := make([]any, 0, len(domains)+1)
 	for _, domain := range domains {
-		domRoutes := domainMap[domain]
-
-		// Within this domain: separate path routes from catch-all (empty path).
-		var pathRoutes []Route
-		var catchAll *Route
-		for i := range domRoutes {
-			if domRoutes[i].Path == "" {
-				r := domRoutes[i]
-				catchAll = &r
-			} else {
-				pathRoutes = append(pathRoutes, domRoutes[i])
-			}
+		proxyRoute := buildDomainRoute(domain, domainMap[domain], healthyByService, services)
+		httpsRoutes = append(httpsRoutes, proxyRoute)
+		if redirect[domain] {
+			httpRoutes = append(httpRoutes, redirectRoute(domain))
+		} else {
+			httpRoutes = append(httpRoutes, proxyRoute)
 		}
-		// Sort path routes longest-prefix-first for deterministic Caddy ordering.
-		sort.Slice(pathRoutes, func(i, j int) bool {
-			li, lj := len(pathRoutes[i].Path), len(pathRoutes[j].Path)
-			if li != lj {
-				return li > lj // longer first
-			}
-			return pathRoutes[i].Path < pathRoutes[j].Path
-		})
-
-		if len(pathRoutes) == 0 {
-			// Single route for this domain (catch-all or path-only).
-			r := domRoutes[0]
-			cfgRoutes = append(cfgRoutes, buildSingleRoute(domain, r, healthyByService, services))
-			continue
-		}
-
-		// Multiple routes: emit a subroutes block inside a host-matched route.
-		// Caddy v2: outer match=host, handle=[{handler:"subroute", routes:[...]}]
-		var subRoutes []any
-		for _, r := range pathRoutes {
-			subRoutes = append(subRoutes, buildPathRoute(r, healthyByService, services))
-		}
-		if catchAll != nil {
-			subRoutes = append(subRoutes, buildProxyHandle(*catchAll, healthyByService, services))
-		}
-		cfgRoutes = append(cfgRoutes, map[string]any{
-			"match": []any{map[string]any{"host": []any{domain}}},
-			"handle": []any{map[string]any{
-				"handler": "subroute",
-				"routes":  subRoutes,
-			}},
-		})
 	}
-	// Fallback 404 at the tail.
-	cfgRoutes = append(cfgRoutes, fallbackRoute())
+	httpsRoutes = append(httpsRoutes, fallbackRoute())
+	httpRoutes = append(httpRoutes, fallbackRoute())
 
 	tlsPolicies := buildTLSPolicies(sortedRoutes, opts)
 
-	jacoServer := map[string]any{
-		"listen": []any{":80", ":443"},
-		"routes": cfgRoutes,
-	}
+	// automatic_https policy, shared by both servers:
+	//   - policies present → keep Caddy's issuance + ACME-challenge serving on
+	//     :80, but disable ITS redirects (we emit explicit, testable 308s and
+	//     skip the challenge path ourselves).
+	//   - no policies (acme_enabled:false or no tls:auto) → fully disabled, so
+	//     Caddy never auto-issues against its default prod issuer (#41).
+	autoHTTPS := map[string]any{"disable_redirects": true}
 	if len(tlsPolicies) == 0 {
-		// No automation policies were emitted — either acme_enabled:false
-		// (cluster-wide opt-out) or no tls:auto route exists. Caddy's
-		// automatic_https defaults to ON, so without this it auto-issues a
-		// cert for every :443 host route using its DEFAULT issuer (Let's
-		// Encrypt PROD) — ignoring acme_ca and the acme_enabled opt-out, and
-		// burning prod rate limits. Disable it explicitly so the opt-out
-		// actually prevents all outbound ACME.
-		jacoServer["automatic_https"] = map[string]any{"disable": true}
+		autoHTTPS = map[string]any{"disable": true}
 	}
+
 	root := map[string]any{
 		"apps": map[string]any{
 			"http": map[string]any{
 				"servers": map[string]any{
-					"jaco": jacoServer,
+					"jaco_https": map[string]any{
+						"listen":          []any{":443"},
+						"routes":          httpsRoutes,
+						"automatic_https": autoHTTPS,
+					},
+					"jaco_http": map[string]any{
+						"listen":          []any{":80"},
+						"routes":          httpRoutes,
+						"automatic_https": autoHTTPS,
+					},
 				},
 			},
 		},
@@ -225,6 +202,96 @@ func BuildCaddyConfig(routes []Route, replicas []ReplicaObservedView, services m
 	}
 
 	return json.MarshalIndent(root, "", "  ")
+}
+
+// redirectDomainSet is the set of domains that get an HTTP→HTTPS redirect on
+// :80 — every domain with at least one tls:auto route, when ACME is enabled
+// cluster-wide. This mirrors buildTLSPolicies' selection exactly, so a domain
+// is redirected iff it also gets a TLS automation policy. When acme_enabled is
+// false (or no tls:auto route exists) the set is empty and :80 proxies plainly.
+func redirectDomainSet(routes []Route, opts BuildOpts) map[string]bool {
+	if !opts.ACMEEnabled {
+		return nil
+	}
+	set := map[string]bool{}
+	for _, r := range routes {
+		if r.TLSAuto {
+			set[r.Domain] = true
+		}
+	}
+	return set
+}
+
+// acmeChallengePathGlob is the HTTP-01 challenge prefix the :80 redirect must
+// NOT swallow, so Caddy's ACME client can still answer challenges over plain
+// HTTP. Matches challenge.ChallengePath; duplicated here to avoid an import.
+const acmeChallengePathGlob = "/.well-known/acme-challenge/*"
+
+// redirectRoute is the :80 route for a tls:auto domain: a 308 to the same host
+// over https, preserving path + query. The acme-challenge path is excluded so
+// HTTP-01 validation is served plainly (belt-and-suspenders alongside Caddy's
+// own challenge handler, which runs ahead of user routes).
+func redirectRoute(domain string) any {
+	return map[string]any{
+		"match": []any{map[string]any{
+			"host": []any{domain},
+			"not":  []any{map[string]any{"path": []any{acmeChallengePathGlob}}},
+		}},
+		"handle": []any{map[string]any{
+			"handler":     "static_response",
+			"status_code": 308,
+			"headers": map[string]any{
+				"Location": []any{"https://{http.request.host}{http.request.uri}"},
+			},
+		}},
+	}
+}
+
+// buildDomainRoute builds the reverse-proxy route for one domain: a single
+// host-matched route when the domain has one catch-all route, or a host-matched
+// subroute block ordering path routes longest-prefix-first with the catch-all
+// last. Shared by the :443 server and (for tls:off domains) the :80 server.
+func buildDomainRoute(domain string, domRoutes []Route, healthyByService map[string][]ReplicaObservedView, services map[string]ServiceMeta) any {
+	var pathRoutes []Route
+	var catchAll *Route
+	for i := range domRoutes {
+		if domRoutes[i].Path == "" {
+			r := domRoutes[i]
+			catchAll = &r
+		} else {
+			pathRoutes = append(pathRoutes, domRoutes[i])
+		}
+	}
+	// Sort path routes longest-prefix-first for deterministic Caddy ordering.
+	sort.Slice(pathRoutes, func(i, j int) bool {
+		li, lj := len(pathRoutes[i].Path), len(pathRoutes[j].Path)
+		if li != lj {
+			return li > lj // longer first
+		}
+		return pathRoutes[i].Path < pathRoutes[j].Path
+	})
+
+	if len(pathRoutes) == 0 {
+		// Single route for this domain (catch-all or path-only).
+		return buildSingleRoute(domain, domRoutes[0], healthyByService, services)
+	}
+
+	// Multiple routes: emit a subroutes block inside a host-matched route.
+	// Caddy v2: outer match=host, handle=[{handler:"subroute", routes:[...]}]
+	var subRoutes []any
+	for _, r := range pathRoutes {
+		subRoutes = append(subRoutes, buildPathRoute(r, healthyByService, services))
+	}
+	if catchAll != nil {
+		subRoutes = append(subRoutes, buildProxyHandle(*catchAll, healthyByService, services))
+	}
+	return map[string]any{
+		"match": []any{map[string]any{"host": []any{domain}}},
+		"handle": []any{map[string]any{
+			"handler": "subroute",
+			"routes":  subRoutes,
+		}},
+	}
 }
 
 // buildUpstreams returns the upstream list for a route.
