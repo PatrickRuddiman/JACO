@@ -81,6 +81,13 @@ ssh_node "${PUB[0]}" "rm -rf ~/bench && mkdir -p ~/bench"
 scp -r "${SSH_OPTS[@]}" "$SAMPLES_DIR/workload" "$SSH_USER@${PUB[0]}:~/bench/workload"
 scp -r "${SSH_OPTS[@]}" "$JACO_DIR/jaco.yaml" "$JACO_DIR/docker-compose.yml" "$SSH_USER@${PUB[0]}:~/bench/"
 
+# Pin the registry to node-1's PRIVATE IP in the shipped compose. The compose
+# default is the hostname jaco-1:5000, but Azure VNet doesn't resolve bare VM
+# names across VMs — so non-builder nodes can't pull the custom images and
+# those replicas silently never start (the deployment runs under-count). The
+# private IP always resolves and is already in each node's insecure-registries.
+ssh_node "${PUB[0]}" "sed -i 's|[\$]{REGISTRY:-jaco-1:5000}|$REGISTRY|g' ~/bench/docker-compose.yml"
+
 echo "[bootstrap] building + pushing workload images on node-1 -> $REGISTRY"
 ssh_node "${PUB[0]}" "
   set -e
