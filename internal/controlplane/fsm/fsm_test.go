@@ -179,6 +179,79 @@ func TestApplyDeploymentApplyThenDeleteCascadesRoutes(t *testing.T) {
 	}
 }
 
+// TestApplyReplaceSetPrunesDroppedRoutes asserts re-applying a deployment with
+// fewer routes prunes the dropped ones (both HTTP and TCP) — upsert-only would
+// leave the removed route/listener serving.
+func TestApplyReplaceSetPrunesDroppedRoutes(t *testing.T) {
+	f, s, _ := newFSM(t)
+
+	applyCmd(t, f, 1, &pb.Command{
+		Identity: "operator", Ts: timestamppb.Now(),
+		Payload: &pb.Command_DeploymentApply{DeploymentApply: &pb.DeploymentApply{
+			Deployment: "sample", Revision: 1,
+			Routes: []*pb.Route{
+				{Domain: "a.example", Deployment: "sample", Service: "web", Port: 80},
+				{Domain: "b.example", Deployment: "sample", Service: "api", Port: 8080},
+			},
+			TcpRoutes: []*pb.TCPRoute{
+				{PublishedPort: 5432, Deployment: "sample", Service: "db", ContainerPort: 5432},
+				{PublishedPort: 6379, Deployment: "sample", Service: "cache", ContainerPort: 6379},
+			},
+		}},
+	})
+	if s.Routes.Len() != 2 || s.TCPRoutes.Len() != 2 {
+		t.Fatalf("after first apply: Routes=%d TCPRoutes=%d, want 2/2", s.Routes.Len(), s.TCPRoutes.Len())
+	}
+
+	// Re-apply with one of each dropped.
+	applyCmd(t, f, 2, &pb.Command{
+		Identity: "operator", Ts: timestamppb.Now(),
+		Payload: &pb.Command_DeploymentApply{DeploymentApply: &pb.DeploymentApply{
+			Deployment: "sample", Revision: 2,
+			Routes:    []*pb.Route{{Domain: "a.example", Deployment: "sample", Service: "web", Port: 80}},
+			TcpRoutes: []*pb.TCPRoute{{PublishedPort: 5432, Deployment: "sample", Service: "db", ContainerPort: 5432}},
+		}},
+	})
+
+	if s.Routes.Len() != 1 {
+		t.Errorf("HTTP route not pruned: Routes.Len = %d, want 1", s.Routes.Len())
+	}
+	if _, ok := s.Routes.Get(state.RouteKey("b.example", "")); ok {
+		t.Errorf("dropped HTTP route b.example still present")
+	}
+	if s.TCPRoutes.Len() != 1 {
+		t.Errorf("TCP route not pruned: TCPRoutes.Len = %d, want 1", s.TCPRoutes.Len())
+	}
+	if _, ok := s.TCPRoutes.Get(state.TCPRouteKey(6379)); ok {
+		t.Errorf("dropped TCP route 6379 still present")
+	}
+}
+
+// TestApplyDeploymentDeleteCascadesTCPRoutes asserts deleting a deployment
+// removes its TCP routes alongside HTTP routes.
+func TestApplyDeploymentDeleteCascadesTCPRoutes(t *testing.T) {
+	f, s, _ := newFSM(t)
+
+	applyCmd(t, f, 1, &pb.Command{
+		Identity: "operator", Ts: timestamppb.Now(),
+		Payload: &pb.Command_DeploymentApply{DeploymentApply: &pb.DeploymentApply{
+			Deployment: "sample", Revision: 1,
+			TcpRoutes: []*pb.TCPRoute{{PublishedPort: 5432, Deployment: "sample", Service: "db", ContainerPort: 5432}},
+		}},
+	})
+	if s.TCPRoutes.Len() != 1 {
+		t.Fatalf("after apply: TCPRoutes.Len = %d, want 1", s.TCPRoutes.Len())
+	}
+
+	applyCmd(t, f, 2, &pb.Command{
+		Identity: "operator", Ts: timestamppb.Now(),
+		Payload: &pb.Command_DeploymentDelete{DeploymentDelete: &pb.DeploymentDelete{Deployment: "sample"}},
+	})
+	if s.TCPRoutes.Len() != 0 {
+		t.Errorf("after delete: TCPRoutes.Len = %d, want 0 (cascade)", s.TCPRoutes.Len())
+	}
+}
+
 // TestApplyRoutesSameDomainDifferentPaths guards the route-store key: path-
 // based routing (#34) puts several routes on ONE domain, so the store must
 // key on (domain, path) — keying on domain alone collapses them to one and
@@ -371,7 +444,8 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 	applyCmd(t, f1, 3, &pb.Command{
 		Payload: &pb.Command_DeploymentApply{DeploymentApply: &pb.DeploymentApply{
 			Deployment: "sample", Revision: 1,
-			Routes: []*pb.Route{{Domain: "a.example", Deployment: "sample", Service: "web", Port: 80}},
+			Routes:    []*pb.Route{{Domain: "a.example", Deployment: "sample", Service: "web", Port: 80}},
+			TcpRoutes: []*pb.TCPRoute{{PublishedPort: 5432, Deployment: "sample", Service: "db", ContainerPort: 5432}},
 		}},
 	})
 	applyCmd(t, f1, 4, &pb.Command{
@@ -407,6 +481,9 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 	}
 	if _, ok := s2.Routes.Get(state.RouteKey("a.example", "")); !ok {
 		t.Errorf("restored route missing")
+	}
+	if _, ok := s2.TCPRoutes.Get(state.TCPRouteKey(5432)); !ok {
+		t.Errorf("restored tcp route missing")
 	}
 	if _, ok := s2.Subnets.Get(state.SubnetKey("sample", "_default", "node-a")); !ok {
 		t.Errorf("restored subnet missing")

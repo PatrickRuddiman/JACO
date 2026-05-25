@@ -20,6 +20,7 @@ func (f *FSM) Snapshot() (hraft.FSMSnapshot, error) {
 		ReplicasDesired:  f.State.ReplicasDesired.List(),
 		ReplicasObserved: f.State.ReplicasObserved.List(),
 		Routes:           f.State.Routes.List(),
+		TcpRoutes:        f.State.TCPRoutes.List(),
 		Certs:            f.State.Certs.List(),
 		ChallengeTokens:  f.State.ChallengeTokens.List(),
 		Tokens:           f.State.Tokens.List(),
@@ -69,6 +70,9 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 	}
 	for _, v := range snap.GetRoutes() {
 		f.State.Routes.Apply(v, 0)
+	}
+	for _, v := range snap.GetTcpRoutes() {
+		f.State.TCPRoutes.Apply(v, 0)
 	}
 	for _, v := range snap.GetCerts() {
 		f.State.Certs.Apply(v, 0)
