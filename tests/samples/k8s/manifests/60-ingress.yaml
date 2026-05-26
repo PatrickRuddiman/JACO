@@ -1,0 +1,30 @@
+# North-south ingress: ingress-nginx routes jaco.sh → web:80 and terminates TLS.
+# The cert-manager annotation + the tls block make cert-manager obtain the
+# staging cert (50-clusterissuer.yaml) and store it in the jaco-sh-tls secret,
+# which ingress-nginx then serves. ingress-nginx runs as a hostNetwork DaemonSet
+# (see bootstrap.sh), so :80/:443 are bound on every node behind the testbed LB.
+# Benched over https://jaco.sh, same target as JACO / Swarm / k3s.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web
+  namespace: bench
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: jaco.sh
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - jaco.sh
+      secretName: jaco-sh-tls

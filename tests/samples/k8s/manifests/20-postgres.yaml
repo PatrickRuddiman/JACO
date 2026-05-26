@@ -1,0 +1,99 @@
+# Postgres primary + streaming replica, pinned to different nodes (jaco-2 /
+# jaco-3) via nodeSelector so the WAL stream crosses the pod network — the same
+# cross-node replication the JACO/Swarm runs measure. One bench-postgres image,
+# two roles (PG_ROLE). PGDATA is an emptyDir (ephemeral): a fresh replica
+# re-syncs from the primary via pg_basebackup on every start, exercising the
+# replication path. The registry host (jaco-1:5000) is rewritten to node-1's
+# private IP by bootstrap.sh before apply.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pg-primary
+  namespace: bench
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: pg-primary }
+  template:
+    metadata:
+      labels: { app: pg-primary }
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: jaco-2
+      containers:
+        - name: postgres
+          image: jaco-1:5000/bench-postgres:latest
+          env:
+            - { name: PG_ROLE, value: primary }
+            - { name: POSTGRES_USER, value: bench }
+            - { name: POSTGRES_PASSWORD, value: bench }
+            - { name: POSTGRES_DB, value: bench }
+            - { name: POSTGRES_HOST_AUTH_METHOD, value: trust }
+          ports: [{ containerPort: 5432 }]
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "bench", "-d", "bench"] }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits:   { cpu: "500m", memory: "256Mi" }
+          volumeMounts:
+            - { name: pgdata, mountPath: /var/lib/postgresql/data }
+      volumes:
+        - name: pgdata
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pg-primary
+  namespace: bench
+spec:
+  selector: { app: pg-primary }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pg-replica
+  namespace: bench
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: pg-replica }
+  template:
+    metadata:
+      labels: { app: pg-replica }
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: jaco-3
+      containers:
+        - name: postgres
+          image: jaco-1:5000/bench-postgres:latest
+          env:
+            - { name: PG_ROLE, value: replica }
+            - { name: PG_PRIMARY_HOST, value: pg-primary }
+            - { name: POSTGRES_USER, value: bench }
+            - { name: POSTGRES_PASSWORD, value: bench }
+          ports: [{ containerPort: 5432 }]
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "bench"] }
+            initialDelaySeconds: 20
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits:   { cpu: "500m", memory: "256Mi" }
+          volumeMounts:
+            - { name: pgdata, mountPath: /var/lib/postgresql/data }
+      volumes:
+        - name: pgdata
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pg-replica
+  namespace: bench
+spec:
+  selector: { app: pg-replica }
+  ports: [{ port: 5432, targetPort: 5432 }]
