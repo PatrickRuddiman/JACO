@@ -4,6 +4,9 @@ How the four orchestrators (JACO, Kubernetes, k3s, Docker Swarm) are graded
 when running the **identical** [workload](../workload) on the **identical**
 [testbed](../../testbed). Only the orchestration layer changes between runs.
 
+The methodology behind these choices — and the literature it draws on — is in
+[`docs/benchmarking-methodology.md`](docs/benchmarking-methodology.md).
+
 ## Fairness principles (how bias is eliminated)
 
 1. **One workload, one set of images.** Same `web` / `api` / `redis` images and
@@ -19,6 +22,20 @@ when running the **identical** [workload](../workload) on the **identical**
 4. **Automated end-to-end.** `run.sh <stack>` deploys, measures, and records
    without manual steps in the measured window. The only human inputs are the
    subjective ease-of-setup notes (below), kept separate from the measured score.
+5. **Repeat and report variance.** `run.sh --repeat N` takes N measured samples
+   and records each one plus mean / stdev / **95% CI** (`load.stats`). A single
+   run can't establish a tail percentile; the scorecard prints rps ±95% CI, and
+   **overlapping intervals mean a statistical tie**, not a winner.
+6. **Warm-up, then measure.** A discarded warm-up load (`BENCH_WARMUP_DURATION`,
+   default 20s) precedes the measured samples so caches/JITs are at steady state
+   — cold-start effects don't leak into steady-state numbers.
+7. **Watch the load generator.** The generator host's CPU is sampled around each
+   run (`load_generator.cpu_pct_max`, plus a `saturated` flag at >80%). A
+   saturated generator caps offered load and would be mistaken for the stack's
+   ceiling — the scorecard flags it so such a run isn't trusted.
+8. **Account for control-plane cost.** Idle node memory + load average are
+   snapshotted post-deploy/pre-load (`overhead.*`); with an identical idle
+   workload the cross-stack delta approximates each control plane's footprint.
 
 ## Dimensions
 
@@ -56,6 +73,13 @@ stack on a dimension scores **100** and the others scale relative to it:
 - lower-better:  `score = min(positive values) / value × 100` (0 ⇒ 100)
 - reliability:   `score = (1 − error_rate) × 100` (absolute)
 
+The throughput/latency values fed into scoring are the **per-sample means**
+(`--repeat N`); the scorecard also prints the rps 95% CI so ties are visible.
+**Control-plane overhead and load-generator CPU are reported raw (informational),
+not yet folded into the composite** — the idle-memory proxy is deliberately coarse
+(it isn't per-process attribution), so promoting it to a scored dimension waits on
+a more precise collector.
+
 The **composite** is the weighted sum (weights above). `scorecard.sh` computes
 this from `results/*/result.json` and prints a sorted table. With a single
 stack's results present, every normalized score is 100 — the comparison is only
@@ -65,21 +89,31 @@ meaningful once ≥2 stacks have run.
 
 ```sh
 # from tests/samples/bench, with the testbed deployed and node IPs resolvable
-./run.sh jaco                  # deploy + measure + record one stack
+./run.sh jaco --repeat 5       # deploy + warm-up + 5 measured samples + record
 ./collect.sh                   # snapshot node resource stats + bundle for download
-# ...repeat ./run.sh for k8s / k3s / swarm (adapters land in the follow-up)...
-./scorecard.sh                 # cross-stack comparison table
+# ...repeat ./run.sh for k8s / k3s / swarm...
+./scorecard.sh                 # cross-stack comparison table (rps mean ±95% CI)
 ```
 
-Each run writes `results/<stack>-<timestamp>/result.json` plus the raw k6
-summary, app metrics, and node stats. `results/` is gitignored.
+Useful env: `BENCH_REPEAT` (default 1; or `--repeat N`), `BENCH_WARMUP_DURATION`
+(default `20s`, `0` to disable), `BENCH_VUS`, `BENCH_DURATION`, `BENCH_TARGET`,
+`BENCH_HOST_HEADER`. Each run writes `results/<stack>-<timestamp>/result.json`
+(per-sample `samples[]` + `stats`, `load_generator`, `overhead`) plus the raw k6
+summaries, app metrics, and node stats. `results/` is gitignored.
 
 ## Caveats
 
-- TLS termination differs per stack; for an apples-to-apples HTTP comparison set
-  `BENCH_TARGET=http://<lb-ip>` + `BENCH_HOST_HEADER=<domain>` and keep it
-  constant across all stacks in a comparison.
-- The LOC proxy for ease-of-setup is rough by design; treat the composite as a
-  decision aid, not a verdict. The raw columns in the scorecard are the truth.
-- Run stacks one at a time on the shared bed (tear the workload down between
-  runs) so they never contend for the same nodes.
+- **Ingress terminators differ per stack** (JACO/Swarm use Caddy, k3s uses
+  Traefik, kubeadm uses ingress-nginx) — all over HTTPS via ACME staging, but a
+  small ingress-attributable latency delta can't be fully excluded. For a pure
+  orchestration comparison, set `BENCH_TARGET=http://<lb-ip>` +
+  `BENCH_HOST_HEADER=<domain>` (HTTP, no terminator) and keep it constant across
+  all stacks in the comparison.
+- **Don't over-read small gaps.** Compare rps with its 95% CI: overlapping
+  intervals are a tie. The LOC proxy for ease-of-setup is rough by design; treat
+  the composite as a decision aid, not a verdict. Raw columns are the truth.
+- **One bed, one stack at a time, randomized order.** Run stacks sequentially on
+  the same bed (or re-provision between) so they never contend for nodes, and
+  randomize which stack goes first across repetitions to avoid order effects.
+- TTL and bootstrap time can be skewed by image-layer cache reuse; for a clean
+  time-to-ready, ensure symmetric cold/warm image-cache state across stacks.

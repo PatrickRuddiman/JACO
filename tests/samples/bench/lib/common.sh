@@ -82,3 +82,32 @@ setup_loc() {
 # Default ingress target. The user's jaco.sh A record points at the LB IP; for
 # stacks without TLS, set BENCH_TARGET=http://<lb-ip> and BENCH_HOST_HEADER.
 bench_target() { echo "${BENCH_TARGET:-https://jaco.sh}"; }
+
+# Snapshot the LOAD-GENERATOR host's CPU jiffies from /proc/stat. Echoes
+# "<idle> <total>". Two snapshots around a load run give the average host-CPU
+# busy %, used to verify the generator isn't the bottleneck (a top benchmarking
+# pitfall: a saturated load generator caps offered load and is mistaken for the
+# system-under-test's ceiling). Returns "0 0" on non-Linux so callers degrade.
+cpu_sample() {
+  awk '/^cpu /{idle=$5+$6; total=0; for(i=2;i<=NF;i++) total+=$i; print idle, total; exit}' \
+    /proc/stat 2>/dev/null || echo "0 0"
+}
+
+# Idle control-plane / per-node overhead proxy. With the workload identical and
+# idle across stacks, the cross-stack delta in node memory + load average ≈ the
+# orchestrator's fixed control-plane cost (etcd/apiserver vs raft vs swarm
+# managers). Measured post-deploy, pre-load. Echoes "<used_mb_total> <loadavg_total> <nodes>".
+# This is a coarse but fair, automatable proxy — not per-process attribution.
+collect_idle_overhead() {
+  local total_mb=0 total_load="0" n=0 out mb ld
+  for ip in "${PUB[@]}"; do
+    out="$(ssh_node "$ip" "echo \"\$(free -m | awk '/^Mem:/{print \$3}') \$(awk '{print \$1}' /proc/loadavg)\"" 2>/dev/null || echo "0 0")"
+    mb="${out%% *}"; ld="${out##* }"
+    [[ "$mb" =~ ^[0-9]+$ ]] || mb=0
+    [[ "$ld" =~ ^[0-9.]+$ ]] || ld=0
+    total_mb=$((total_mb + mb))
+    total_load="$(awk -v a="$total_load" -v b="$ld" 'BEGIN{printf "%.2f", a+b}')"
+    n=$((n + 1))
+  done
+  echo "$total_mb $total_load $n"
+}
