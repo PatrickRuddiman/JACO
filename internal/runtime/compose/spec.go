@@ -1,7 +1,6 @@
 package compose
 
 import (
-	"fmt"
 	"sort"
 	"strconv"
 	"time"
@@ -314,6 +313,3 @@ func cloneStringList(in []string) []string {
 	copy(out, in)
 	return out
 }
-
-// silence unused-symbol checks until later tasks consume the helpers.
-var _ = fmt.Sprintf

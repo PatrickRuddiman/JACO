@@ -12,7 +12,6 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
 	"github.com/PatrickRuddiman/jaco/internal/cliclient"
@@ -248,9 +247,6 @@ func dialServer(addr string, caCertPEM []byte) (*grpc.ClientConn, error) {
 	fmt.Fprintln(os.Stderr, "warning: dialing without --ca-cert; server identity is not verified")
 	return grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})))
 }
-
-// silence unused if --ca-cert is the only path callers exercise.
-var _ = insecure.NewCredentials
 
 // readCACert reads the PEM-encoded CA certificate at path. When the file does
 // not exist it returns the documented user-facing error so operators know how
