@@ -199,15 +199,6 @@ type Options struct {
 	ACMESkipStaging bool
 }
 
-// ipamPoolOrDefault returns the configured IPAM pool, or the JACO default
-// when the operator left it empty.
-func ipamPoolOrDefault(pool string) string {
-	if pool == "" {
-		return ipam.DefaultPoolCIDR
-	}
-	return pool
-}
-
 // New builds a Server. Doesn't start anything yet — call Serve.
 func New(opts Options) (*Server, error) {
 	if opts.UnixSocketPath == "" {
@@ -322,6 +313,16 @@ func New(opts Options) (*Server, error) {
 	if tcpAdvertise == "" {
 		tcpAdvertise = tcpAddr
 	}
+	// IPAM pool defaults to the JACO pool when the operator left it empty.
+	ipamPool := opts.IPAMPool
+	if ipamPool == "" {
+		ipamPool = ipam.DefaultPoolCIDR
+	}
+	// ACME directory URL defaults to LE prod when acme_ca is unset.
+	acmeCA := opts.ACMECA
+	if acmeCA == "" {
+		acmeCA = leProdCA
+	}
 	*server = Server{
 		gs:           gs,
 		listener:     lis,
@@ -334,11 +335,11 @@ func New(opts Options) (*Server, error) {
 		srvLog:       logging.Subsystem(logger, "daemon/grpc"),
 		docker:       opts.Docker,
 		tlsDyn:       dynTLS,
-		ipamPool:     ipamPoolOrDefault(opts.IPAMPool),
+		ipamPool:     ipamPool,
 		dataDir:      opts.DataDir,
 		acme: ingressACMEOpts{
 			Email:   opts.ACMEEmail,
-			CA:      acmeCAOrDefault(opts.ACMECA),
+			CA:      acmeCA,
 			Enabled: opts.ACMEEnabled,
 		},
 		acmeSkipStaging: opts.ACMESkipStaging,
