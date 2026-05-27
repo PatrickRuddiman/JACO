@@ -101,12 +101,12 @@ func (r *Reconciler) Tick(ctx context.Context) error {
 		// (a transient `nft` exec failure shouldn't mark the node down).
 		//
 		// NOTE: `nft -j list table inet jaco` also errors when the table is
-		// absent, so the isolation table does not auto-bootstrap here. That's
-		// intentional for now: the rendered `input` chain (policy drop) does
-		// not yet permit SSH or the Tailscale interface, so applying it on a
-		// remotely-managed host would lock the operator out. Enabling the
-		// table safely (SSH/Tailscale allow + correct WG iface name) is a
-		// separate change tracked outside issue #28.
+		// absent, so the isolation table does not auto-bootstrap here. The
+		// rendered chains are all policy accept (Render never blanket-drops
+		// host traffic — the no-host-disruption invariant), so applying the
+		// table on a remotely-managed host is safe and wouldn't lock the
+		// operator out. Auto-bootstrapping on a bare table is simply deferred
+		// to a separate change tracked outside issue #28.
 		return fmt.Errorf("nft list: %w", err)
 	}
 

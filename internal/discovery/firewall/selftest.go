@@ -56,12 +56,16 @@ func SelfTestFromJSON(jsonBytes []byte, expected RuleInput) error {
 		}
 	}
 
+	// All base chains are policy accept — JACO never blanket-drops host
+	// ingress or non-JACO forwarded traffic (the no-host-disruption
+	// invariant; see Render). These must track Render's emitted policies;
+	// TestSelfTestFromJSON_AcceptsRenderRoundTrip guards against drift.
 	wantChains := map[string]struct {
 		hook, policy string
 		priority     int
 	}{
-		"forward": {hook: "forward", policy: "drop", priority: 0},
-		"input":   {hook: "input", policy: "drop", priority: 0},
+		"forward": {hook: "forward", policy: "accept", priority: 0},
+		"input":   {hook: "input", policy: "accept", priority: 0},
 		"output":  {hook: "output", policy: "accept", priority: 0},
 	}
 

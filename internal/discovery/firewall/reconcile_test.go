@@ -117,17 +117,18 @@ func goodInput() firewall.RuleInput {
 }
 
 // validJSON is `nft -j list` output that matches goodInput (3 chains + 1
-// set).
+// set). All base chains are policy accept — the shape Render emits (the
+// no-host-disruption invariant); SelfTest must treat this as no-drift.
 const validJSON = `{"nftables":[
-	{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"drop"}},
-	{"chain":{"family":"inet","table":"jaco","name":"input","hook":"input","prio":0,"policy":"drop"}},
+	{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"accept"}},
+	{"chain":{"family":"inet","table":"jaco","name":"input","hook":"input","prio":0,"policy":"accept"}},
 	{"chain":{"family":"inet","table":"jaco","name":"output","hook":"output","prio":0,"policy":"accept"}},
 	{"set":{"family":"inet","table":"jaco","name":"dep_net_sample_frontend","type":"ipv4_addr"}}
 ]}`
 
 // driftedJSON is missing the input chain (drift simulation).
 const driftedJSON = `{"nftables":[
-	{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"drop"}},
+	{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"accept"}},
 	{"chain":{"family":"inet","table":"jaco","name":"output","hook":"output","prio":0,"policy":"accept"}},
 	{"set":{"family":"inet","table":"jaco","name":"dep_net_sample_frontend","type":"ipv4_addr"}}
 ]}`
