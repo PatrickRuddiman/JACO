@@ -123,14 +123,17 @@ const validJSON = `{"nftables":[
 	{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"accept"}},
 	{"chain":{"family":"inet","table":"jaco","name":"input","hook":"input","prio":0,"policy":"accept"}},
 	{"chain":{"family":"inet","table":"jaco","name":"output","hook":"output","prio":0,"policy":"accept"}},
-	{"set":{"family":"inet","table":"jaco","name":"dep_net_sample_frontend","type":"ipv4_addr"}}
+	{"set":{"family":"inet","table":"jaco","name":"dep_net_sample_frontend","type":"ipv4_addr"}},
+	{"set":{"family":"inet","table":"jaco","name":"jaco_pool","type":"ipv4_addr"}}
 ]}`
 
-// driftedJSON is missing the input chain (drift simulation).
+// driftedJSON is missing the input chain (drift simulation); the sets match
+// goodInput (incl. jaco_pool) so the ONLY drift is the absent input chain.
 const driftedJSON = `{"nftables":[
 	{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"accept"}},
 	{"chain":{"family":"inet","table":"jaco","name":"output","hook":"output","prio":0,"policy":"accept"}},
-	{"set":{"family":"inet","table":"jaco","name":"dep_net_sample_frontend","type":"ipv4_addr"}}
+	{"set":{"family":"inet","table":"jaco","name":"dep_net_sample_frontend","type":"ipv4_addr"}},
+	{"set":{"family":"inet","table":"jaco","name":"jaco_pool","type":"ipv4_addr"}}
 ]}`
 
 func TestReconcile_HappyPathNoDriftSilent(t *testing.T) {

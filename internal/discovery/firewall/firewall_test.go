@@ -231,7 +231,8 @@ func TestSelfTestFromJSON_AllChainsAndSetsPresent(t *testing.T) {
 		{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"accept"}},
 		{"chain":{"family":"inet","table":"jaco","name":"input","hook":"input","prio":0,"policy":"accept"}},
 		{"chain":{"family":"inet","table":"jaco","name":"output","hook":"output","prio":0,"policy":"accept"}},
-		{"set":{"family":"inet","table":"jaco","name":"dep_net_sample_frontend","type":"ipv4_addr"}}
+		{"set":{"family":"inet","table":"jaco","name":"dep_net_sample_frontend","type":"ipv4_addr"}},
+		{"set":{"family":"inet","table":"jaco","name":"jaco_pool","type":"ipv4_addr"}}
 	]}`)
 	if err := firewall.SelfTestFromJSON(jsonOK, expected); err != nil {
 		t.Fatalf("SelfTest: %v", err)
@@ -307,6 +308,13 @@ func renderToNftJSON(t *testing.T, in firewall.RuleInput, rendered string) []byt
 		}
 		seen[n] = true
 		entries = append(entries, entry{Set: &set{Family: "inet", Table: "jaco", Name: n, Type: "ipv4_addr"}})
+	}
+	// Render also emits the aggregate jaco_pool set whenever there's any
+	// subnet — a real `nft -j list` includes it, so the faithful round-trip
+	// must too. Omitting it is what let the SelfTest/Render set divergence
+	// (issue #76) slip past the unit suite and only surface on the nft rig.
+	if len(in.Subnets) > 0 {
+		entries = append(entries, entry{Set: &set{Family: "inet", Table: "jaco", Name: "jaco_pool", Type: "ipv4_addr"}})
 	}
 
 	b, err := json.Marshal(struct {

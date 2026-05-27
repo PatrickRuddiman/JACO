@@ -91,6 +91,14 @@ func SelfTestFromJSON(jsonBytes []byte, expected RuleInput) error {
 	for _, s := range expected.Subnets {
 		wantSets[SetName(s.Deployment, s.Network)] = true
 	}
+	// jaco_pool is the union-of-all-subnets set Render emits to scope the
+	// cross-network isolation drop; it exists whenever there's any subnet
+	// (see Render's `len(allCIDRs) > 0` guard). Expect it under the same
+	// condition or SelfTest reports it as a spurious extra on every cluster
+	// that has a workload — which keeps the firewall reconciler flapping.
+	if len(expected.Subnets) > 0 {
+		wantSets["jaco_pool"] = true
+	}
 	for name := range wantSets {
 		if !gotSets[name] {
 			missing = append(missing, "set:"+name)
