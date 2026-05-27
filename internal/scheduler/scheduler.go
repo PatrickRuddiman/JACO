@@ -187,7 +187,9 @@ func (s *Scheduler) Reconcile(_ context.Context) {
 		return
 	}
 	s.log().Info("applying reconcile batch", "commands", len(batch))
-	_ = s.apply(data)
+	if err := s.apply(data); err != nil {
+		s.log().Error("scheduler reconcile batch apply failed", "commands", len(batch), "error", err)
+	}
 }
 
 // reconcileService computes the diff between current and desired
