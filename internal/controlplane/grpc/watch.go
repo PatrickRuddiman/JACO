@@ -36,22 +36,104 @@ func (w *watchServer) Subscribe(req *pb.SubscribeRequest, stream pb.Watch_Subscr
 	if requested["deployments"] {
 		sub := w.brokers.Deployments.Subscribe()
 		defer sub.Cancel()
-		go forwardDeployments(sub, merged, done, depFilter)
+		go forward(sub, merged, done,
+			func(ev watch.Event[*pb.Deployment]) bool {
+				if depFilter == "" {
+					return true
+				}
+				name := ""
+				if ev.After != nil {
+					name = ev.After.GetName()
+				} else if ev.Before != nil {
+					name = ev.Before.GetName()
+				}
+				return name == depFilter
+			},
+			func(ev watch.Event[*pb.Deployment]) *pb.SubscribeEvent {
+				return &pb.SubscribeEvent{Payload: &pb.SubscribeEvent_Deployment{Deployment: &pb.DeploymentEvent{
+					Kind:      kindToProto(ev.Kind),
+					Before:    ev.Before,
+					After:     ev.After,
+					RaftIndex: ev.RaftIndex,
+				}}}
+			})
 	}
 	if requested["replicas_observed"] {
 		sub := w.brokers.ReplicasObserved.Subscribe()
 		defer sub.Cancel()
-		go forwardReplicasObserved(sub, w.state, merged, done, depFilter)
+		st := w.state
+		go forward(sub, merged, done,
+			func(ev watch.Event[*pb.ReplicaObserved]) bool {
+				if depFilter == "" {
+					return true
+				}
+				id := ""
+				if ev.After != nil {
+					id = ev.After.GetId()
+				} else if ev.Before != nil {
+					id = ev.Before.GetId()
+				}
+				rd, ok := st.ReplicasDesired.Get(id)
+				return ok && rd.GetDeployment() == depFilter
+			},
+			func(ev watch.Event[*pb.ReplicaObserved]) *pb.SubscribeEvent {
+				return &pb.SubscribeEvent{Payload: &pb.SubscribeEvent_ReplicaObserved{ReplicaObserved: &pb.ReplicaObservedEvent{
+					Kind:      kindToProto(ev.Kind),
+					Before:    ev.Before,
+					After:     ev.After,
+					RaftIndex: ev.RaftIndex,
+				}}}
+			})
 	}
 	if requested["routes"] {
 		sub := w.brokers.Routes.Subscribe()
 		defer sub.Cancel()
-		go forwardRoutes(sub, merged, done, depFilter)
+		go forward(sub, merged, done,
+			func(ev watch.Event[*pb.Route]) bool {
+				if depFilter == "" {
+					return true
+				}
+				dep := ""
+				if ev.After != nil {
+					dep = ev.After.GetDeployment()
+				} else if ev.Before != nil {
+					dep = ev.Before.GetDeployment()
+				}
+				return dep == depFilter
+			},
+			func(ev watch.Event[*pb.Route]) *pb.SubscribeEvent {
+				return &pb.SubscribeEvent{Payload: &pb.SubscribeEvent_Route{Route: &pb.RouteEvent{
+					Kind:      kindToProto(ev.Kind),
+					Before:    ev.Before,
+					After:     ev.After,
+					RaftIndex: ev.RaftIndex,
+				}}}
+			})
 	}
 	if requested["tcp_routes"] {
 		sub := w.brokers.TCPRoutes.Subscribe()
 		defer sub.Cancel()
-		go forwardTCPRoutes(sub, merged, done, depFilter)
+		go forward(sub, merged, done,
+			func(ev watch.Event[*pb.TCPRoute]) bool {
+				if depFilter == "" {
+					return true
+				}
+				dep := ""
+				if ev.After != nil {
+					dep = ev.After.GetDeployment()
+				} else if ev.Before != nil {
+					dep = ev.Before.GetDeployment()
+				}
+				return dep == depFilter
+			},
+			func(ev watch.Event[*pb.TCPRoute]) *pb.SubscribeEvent {
+				return &pb.SubscribeEvent{Payload: &pb.SubscribeEvent_TcpRoute{TcpRoute: &pb.TCPRouteEvent{
+					Kind:      kindToProto(ev.Kind),
+					Before:    ev.Before,
+					After:     ev.After,
+					RaftIndex: ev.RaftIndex,
+				}}}
+			})
 	}
 
 	for {
@@ -69,107 +151,16 @@ func (w *watchServer) Subscribe(req *pb.SubscribeRequest, stream pb.Watch_Subscr
 	}
 }
 
-func forwardDeployments(sub *watch.Subscription[*pb.Deployment], out chan<- *pb.SubscribeEvent, done <-chan struct{}, depFilter string) {
+// forward fans one broker subscription into the merged output stream: for each
+// event it passes keep, build the SubscribeEvent and send it, then exit if the
+// Subscribe loop has signalled done. keep == false skips the event (the
+// deployment_filter); build wraps the typed event into the oneof payload.
+func forward[T any](sub *watch.Subscription[T], out chan<- *pb.SubscribeEvent, done <-chan struct{}, keep func(watch.Event[T]) bool, build func(watch.Event[T]) *pb.SubscribeEvent) {
 	for ev := range sub.Events() {
-		if depFilter != "" {
-			name := ""
-			if ev.After != nil {
-				name = ev.After.GetName()
-			} else if ev.Before != nil {
-				name = ev.Before.GetName()
-			}
-			if name != depFilter {
-				continue
-			}
+		if !keep(ev) {
+			continue
 		}
-		out <- &pb.SubscribeEvent{Payload: &pb.SubscribeEvent_Deployment{Deployment: &pb.DeploymentEvent{
-			Kind:      kindToProto(ev.Kind),
-			Before:    ev.Before,
-			After:     ev.After,
-			RaftIndex: ev.RaftIndex,
-		}}}
-		select {
-		case <-done:
-			return
-		default:
-		}
-	}
-}
-
-func forwardReplicasObserved(sub *watch.Subscription[*pb.ReplicaObserved], st *state.State, out chan<- *pb.SubscribeEvent, done <-chan struct{}, depFilter string) {
-	for ev := range sub.Events() {
-		if depFilter != "" {
-			id := ""
-			if ev.After != nil {
-				id = ev.After.GetId()
-			} else if ev.Before != nil {
-				id = ev.Before.GetId()
-			}
-			rd, ok := st.ReplicasDesired.Get(id)
-			if !ok || rd.GetDeployment() != depFilter {
-				continue
-			}
-		}
-		out <- &pb.SubscribeEvent{Payload: &pb.SubscribeEvent_ReplicaObserved{ReplicaObserved: &pb.ReplicaObservedEvent{
-			Kind:      kindToProto(ev.Kind),
-			Before:    ev.Before,
-			After:     ev.After,
-			RaftIndex: ev.RaftIndex,
-		}}}
-		select {
-		case <-done:
-			return
-		default:
-		}
-	}
-}
-
-func forwardRoutes(sub *watch.Subscription[*pb.Route], out chan<- *pb.SubscribeEvent, done <-chan struct{}, depFilter string) {
-	for ev := range sub.Events() {
-		if depFilter != "" {
-			dep := ""
-			if ev.After != nil {
-				dep = ev.After.GetDeployment()
-			} else if ev.Before != nil {
-				dep = ev.Before.GetDeployment()
-			}
-			if dep != depFilter {
-				continue
-			}
-		}
-		out <- &pb.SubscribeEvent{Payload: &pb.SubscribeEvent_Route{Route: &pb.RouteEvent{
-			Kind:      kindToProto(ev.Kind),
-			Before:    ev.Before,
-			After:     ev.After,
-			RaftIndex: ev.RaftIndex,
-		}}}
-		select {
-		case <-done:
-			return
-		default:
-		}
-	}
-}
-
-func forwardTCPRoutes(sub *watch.Subscription[*pb.TCPRoute], out chan<- *pb.SubscribeEvent, done <-chan struct{}, depFilter string) {
-	for ev := range sub.Events() {
-		if depFilter != "" {
-			dep := ""
-			if ev.After != nil {
-				dep = ev.After.GetDeployment()
-			} else if ev.Before != nil {
-				dep = ev.Before.GetDeployment()
-			}
-			if dep != depFilter {
-				continue
-			}
-		}
-		out <- &pb.SubscribeEvent{Payload: &pb.SubscribeEvent_TcpRoute{TcpRoute: &pb.TCPRouteEvent{
-			Kind:      kindToProto(ev.Kind),
-			Before:    ev.Before,
-			After:     ev.After,
-			RaftIndex: ev.RaftIndex,
-		}}}
+		out <- build(ev)
 		select {
 		case <-done:
 			return
