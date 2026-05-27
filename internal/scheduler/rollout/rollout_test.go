@@ -65,10 +65,18 @@ func seedDeployment(t *testing.T, f *fsm.FSM, name string, currentRev, prevRev u
 	}
 }
 
-// seedReplicaObserved writes a ReplicaObserved entry for replica index i.
+// seedReplicaObserved writes a ReplicaObserved entry for replica index i,
+// plus the matching ReplicaDesired entry that the scheduler always creates
+// alongside it. The desired entry is the authoritative (deployment, service)
+// mapping that belongsToService consults, so observed replicas without a
+// desired entry would otherwise be treated as orphans belonging to no
+// service.
 func seedReplicaObserved(t *testing.T, f *fsm.FSM, deployment, service string, idx uint64, st pb.ReplicaState, clock *fakeClock) {
 	t.Helper()
 	id := counter.ReplicaID(deployment, service, idx)
+	f.State.ReplicasDesired.Apply(&pb.ReplicaDesired{
+		Id: id, Deployment: deployment, Service: service, Index: int32(idx),
+	}, 50+idx)
 	cmd := &pb.Command{Ts: timestamppb.New(clock.Now()), Payload: &pb.Command_ReplicaObservedUpdate{
 		ReplicaObservedUpdate: &pb.ReplicaObservedUpdate{Replica: &pb.ReplicaObserved{
 			Id: id, State: st, LastHealthAt: timestamppb.New(clock.Now()),
@@ -174,6 +182,51 @@ func TestStepReady_TrueOnlyForRunningFreshTargetReplica(t *testing.T) {
 	ready, _, _ = r.StepReady("sample", "web")
 	if ready {
 		t.Errorf("StepReady=true on stale health")
+	}
+}
+
+// TestStepReady_NotRunningScopedToService — a rollout for one (deployment,
+// service) must not count not-running replicas of a different service. The
+// per-service invariant in AdvanceStep keys off StepReady's notRunning count,
+// so unrelated services' churn must never block or hold this rollout.
+func TestStepReady_NotRunningScopedToService(t *testing.T) {
+	r, st, f, clock := newHarness(t)
+	if err := r.Start("sample", "web", 2, 3); err != nil {
+		t.Fatal(err)
+	}
+
+	// Target service "web": its current-step (0) replica is RUNNING + fresh.
+	seedReplicaObserved(t, f, "sample", "web", 0, pb.ReplicaState_REPLICA_STATE_RUNNING, clock)
+
+	// A DIFFERENT service ("worker") has two non-running replicas. These must
+	// not bleed into web's not-running count.
+	seedReplicaObserved(t, f, "sample", "worker", 0, pb.ReplicaState_REPLICA_STATE_PENDING, clock)
+	seedReplicaObserved(t, f, "sample", "worker", 1, pb.ReplicaState_REPLICA_STATE_DEGRADED, clock)
+
+	// A different deployment entirely, also churning.
+	seedReplicaObserved(t, f, "other", "web", 0, pb.ReplicaState_REPLICA_STATE_PENDING, clock)
+
+	ready, notRunning, err := r.StepReady("sample", "web")
+	if err != nil {
+		t.Fatalf("StepReady: %v", err)
+	}
+	if notRunning != 0 {
+		t.Errorf("notRunning = %d, want 0 (other services' non-running replicas must not count)", notRunning)
+	}
+	if !ready {
+		t.Errorf("StepReady = false, want true (target replica RUNNING + fresh)")
+	}
+
+	// The rollout must not be held: AdvanceStep should bump current_step
+	// despite the unrelated services' three non-running replicas (which would
+	// trip the notRunning>1 invariant if mis-scoped).
+	clock.Advance(time.Second)
+	if err := r.AdvanceStep("sample", "web"); err != nil {
+		t.Fatalf("AdvanceStep: %v", err)
+	}
+	plan, _ := st.RolloutPlans.Get(state.RolloutPlanKey("sample", "web"))
+	if plan.GetCurrentStep() != 1 {
+		t.Errorf("current_step = %d, want 1 (rollout must advance, not hold on unrelated churn)", plan.GetCurrentStep())
 	}
 }
 
