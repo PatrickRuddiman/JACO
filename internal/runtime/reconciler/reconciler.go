@@ -29,32 +29,6 @@ import (
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
-// resolveDNSServers returns one gateway IP per declared network, looked
-// up via state.Subnets + bridge.GatewayIP. Networks the daemon doesn't
-// yet know a CIDR for are silently skipped. host is the local node — the
-// per-host subnet whose gateway the local container resolves against.
-func resolveDNSServers(st *state.State, deployment, host string, networks []string) []string {
-	var out []string
-	for _, netname := range networks {
-		// Network names in spec are docker-network names (jaco_<dep>_<net>);
-		// state.Subnets keys by (deployment, network, host) — pull just the
-		// network suffix from the docker name.
-		net := bridge.NetworkNameFromDockerName(netname)
-		if net == "" {
-			continue
-		}
-		sn, ok := st.Subnets.Get(state.SubnetKey(deployment, net, host))
-		if !ok {
-			continue
-		}
-		gw, err := bridge.GatewayIP(sn.GetCidr())
-		if err == nil {
-			out = append(out, gw)
-		}
-	}
-	return out
-}
-
 // ErrSubnetPoolExhausted is the sentinel an EnsureSubnetFn returns when the
 // IPAM pool can't satisfy a per-host /24. The reconciler maps it to a FAILED
 // ReplicaObserved rather than retrying forever. Any other error is treated as
@@ -327,7 +301,28 @@ func (r *Reconciler) runStart(workCtx, watchCtx context.Context, rep *pb.Replica
 	// Per-bridge DNS resolvers (task 27 deferral). For each declared
 	// network, look up the subnet CIDR in state.Subnets and compute the
 	// gateway IP; that's where the daemon's discovery/dns Manager binds.
-	spec.DNSServers = resolveDNSServers(r.state, rep.GetDeployment(), r.hostname, spec.Networks)
+	// host is the local node — the per-host subnet whose gateway the local
+	// container resolves against. Networks the daemon doesn't yet know a
+	// CIDR for are silently skipped.
+	var dnsServers []string
+	for _, netname := range spec.Networks {
+		// Network names in spec are docker-network names (jaco_<dep>_<net>);
+		// state.Subnets keys by (deployment, network, host) — pull just the
+		// network suffix from the docker name.
+		net := bridge.NetworkNameFromDockerName(netname)
+		if net == "" {
+			continue
+		}
+		sn, ok := r.state.Subnets.Get(state.SubnetKey(rep.GetDeployment(), net, r.hostname))
+		if !ok {
+			continue
+		}
+		gw, err := bridge.GatewayIP(sn.GetCidr())
+		if err == nil {
+			dnsServers = append(dnsServers, gw)
+		}
+	}
+	spec.DNSServers = dnsServers
 
 	// Surface image-pull state. Without this, a pull that can't succeed (e.g.
 	// an unreachable registry) retries forever inside Start with zero
