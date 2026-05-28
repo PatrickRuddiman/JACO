@@ -56,12 +56,16 @@ func SelfTestFromJSON(jsonBytes []byte, expected RuleInput) error {
 		}
 	}
 
+	// All base chains are policy accept — JACO never blanket-drops host
+	// ingress or non-JACO forwarded traffic (the no-host-disruption
+	// invariant; see Render). These must track Render's emitted policies;
+	// TestSelfTestFromJSON_AcceptsRenderRoundTrip guards against drift.
 	wantChains := map[string]struct {
 		hook, policy string
 		priority     int
 	}{
-		"forward": {hook: "forward", policy: "drop", priority: 0},
-		"input":   {hook: "input", policy: "drop", priority: 0},
+		"forward": {hook: "forward", policy: "accept", priority: 0},
+		"input":   {hook: "input", policy: "accept", priority: 0},
 		"output":  {hook: "output", policy: "accept", priority: 0},
 	}
 
@@ -86,6 +90,14 @@ func SelfTestFromJSON(jsonBytes []byte, expected RuleInput) error {
 	wantSets := map[string]bool{}
 	for _, s := range expected.Subnets {
 		wantSets[SetName(s.Deployment, s.Network)] = true
+	}
+	// jaco_pool is the union-of-all-subnets set Render emits to scope the
+	// cross-network isolation drop; it exists whenever there's any subnet
+	// (see Render's `len(allCIDRs) > 0` guard). Expect it under the same
+	// condition or SelfTest reports it as a spurious extra on every cluster
+	// that has a workload — which keeps the firewall reconciler flapping.
+	if len(expected.Subnets) > 0 {
+		wantSets["jaco_pool"] = true
 	}
 	for name := range wantSets {
 		if !gotSets[name] {
