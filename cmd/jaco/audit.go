@@ -77,7 +77,7 @@ func init() {
 		case "json":
 			if follow {
 				// NDJSON for follow mode (one object per line, flushed).
-				return streamAuditJSON(stream, enc, true)
+				return streamAuditJSON(stream, enc)
 			}
 			// Buffer all events into a JSON array for non-follow.
 			return collectAuditJSON(stream, enc)
@@ -120,7 +120,7 @@ func eventToJSON(ev *pb.AuditEvent) auditEventJSON {
 	return out
 }
 
-func streamAuditJSON(stream pb.Audit_QueryClient, enc *json.Encoder, ndjson bool) error {
+func streamAuditJSON(stream pb.Audit_QueryClient, enc *json.Encoder) error {
 	for {
 		ev, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -129,10 +129,8 @@ func streamAuditJSON(stream pb.Audit_QueryClient, enc *json.Encoder, ndjson bool
 		if err != nil {
 			return cliclient.FormatError(err)
 		}
-		if ndjson {
-			if err := enc.Encode(eventToJSON(ev)); err != nil {
-				return err
-			}
+		if err := enc.Encode(eventToJSON(ev)); err != nil {
+			return err
 		}
 	}
 }

@@ -227,6 +227,3 @@ func Teardown(ctx context.Context, d dockerx.Docker, deployment, network string)
 	}
 	return nil
 }
-
-// silence unused
-var _ = strings.HasPrefix

@@ -1,7 +1,6 @@
 package cliclient
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -127,9 +126,3 @@ func FormatError(err error) error {
 	}
 	return err
 }
-
-// errInvalidWriter is reserved for future helper that detects when the
-// renderer is being asked to write to a non-Writer (currently unused).
-var errInvalidWriter = errors.New("renderer requires a non-nil writer")
-
-func init() { _ = errInvalidWriter }
