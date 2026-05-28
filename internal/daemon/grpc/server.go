@@ -689,10 +689,14 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 					return prodCertIssued(st, domain)
 				},
 				OnPromote: func(domain string) {
-					challenge.NewIssuerForEnv(apply, challenge.EnvStaging).EmitIssued(domain, challenge.EnvStaging)
+					iss := challenge.NewIssuerForEnv(apply, challenge.EnvStaging)
+					iss.Logger = ingressLog
+					iss.EmitIssued(domain, challenge.EnvStaging)
 				},
 				OnStageFail: func(domain string, err error) {
-					challenge.NewIssuer(apply).EmitStageFailure(domain, err)
+					iss := challenge.NewIssuer(apply)
+					iss.Logger = ingressLog
+					iss.EmitStageFailure(domain, err)
 				},
 			}
 			acme.StagingDomains = ctrl.StagingDomains

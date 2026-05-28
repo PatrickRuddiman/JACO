@@ -114,9 +114,10 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	// at debug-only and let the steady-state loop pick up the replicas
 	// via the ReplicasDesired watch.
 	if err := r.orphanSweep(ctx); err != nil {
-		// Silent: the only "error" is "cluster meta not populated" on
-		// a fresh boot, which is expected and self-heals via the watch.
-		_ = err
+		// The only "error" is "cluster meta not populated" on a fresh boot,
+		// which is expected and self-heals via the watch — log at debug so
+		// it's available when diagnosing but doesn't clutter steady-state.
+		r.logger.Debug("initial orphan sweep skipped", "error", err)
 	}
 	r.resync(ctx)
 
@@ -142,7 +143,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 			r.handle(ctx, ev)
 		case <-ticker.C:
 			if err := r.orphanSweep(ctx); err != nil {
-				_ = err
+				r.logger.Debug("safety-tick orphan sweep skipped", "error", err)
 			}
 			r.resync(ctx)
 		}

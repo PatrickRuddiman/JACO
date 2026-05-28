@@ -18,6 +18,7 @@ package challenge
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
+	"github.com/PatrickRuddiman/jaco/internal/logging"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -54,6 +56,19 @@ const (
 type Issuer struct {
 	apply Applier
 	env   string
+
+	// Logger logs cert lifecycle audit-emit failures at WARN (emitting audit
+	// is non-fatal, so the apply path swallows the error — but an operator
+	// still wants to know the audit trail has a hole). nil → discard. Set by
+	// the daemon after construction; tests leave it nil.
+	Logger *slog.Logger
+}
+
+func (i *Issuer) log() *slog.Logger {
+	if i.Logger == nil {
+		return logging.Discard()
+	}
+	return i.Logger
 }
 
 // NewIssuer constructs an Issuer with the environment unspecified (prod-
@@ -95,15 +110,21 @@ func (i *Issuer) Issue(_ context.Context, domain, token, keyAuth string) error {
 		return err
 	}
 	if applyErr := i.apply(data); applyErr != nil {
-		_ = i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_FAILED, i.withEnv(map[string]string{
+		if auditErr := i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_FAILED, i.withEnv(map[string]string{
 			"domain": domain,
 			"reason": applyErr.Error(),
-		}))
+		})); auditErr != nil {
+			i.log().Warn("cert audit emit failed",
+				"event", "certificate_failed", "domain", domain, "error", auditErr)
+		}
 		return applyErr
 	}
-	_ = i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_RENEWED, i.withEnv(map[string]string{
+	if auditErr := i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_RENEWED, i.withEnv(map[string]string{
 		"domain": domain,
-	}))
+	})); auditErr != nil {
+		i.log().Warn("cert audit emit failed",
+			"event", "certificate_renewed", "domain", domain, "error", auditErr)
+	}
 	return nil
 }
 
@@ -158,22 +179,28 @@ func ClassifyFailure(err error) FailureClass {
 // stage failure, stamping stage_failed_at=staging + the failure class so an
 // operator sees that prod was deliberately NOT attempted (issue #41).
 func (i *Issuer) EmitStageFailure(domain string, err error) {
-	_ = i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_FAILED, map[string]string{
+	if auditErr := i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_FAILED, map[string]string{
 		"domain":           domain,
 		"acme_environment": EnvStaging,
 		"stage_failed_at":  "staging",
 		"failure_class":    string(ClassifyFailure(err)),
 		"reason":           err.Error(),
-	})
+	}); auditErr != nil {
+		i.log().Warn("cert audit emit failed",
+			"event", "certificate_failed", "domain", domain, "error", auditErr)
+	}
 }
 
 // EmitIssued records a CERTIFICATE_ISSUED audit event tagged with the
 // environment the cert was issued against.
 func (i *Issuer) EmitIssued(domain, env string) {
-	_ = i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_ISSUED, map[string]string{
+	if auditErr := i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_ISSUED, map[string]string{
 		"domain":           domain,
 		"acme_environment": env,
-	})
+	}); auditErr != nil {
+		i.log().Warn("cert audit emit failed",
+			"event", "certificate_issued", "domain", domain, "error", auditErr)
+	}
 }
 
 // withEnv stamps acme_environment onto an audit payload when the issuer was
