@@ -135,4 +135,3 @@ See [`jaco audit`](../cli/audit.md) and
   [`jaco audit`](../cli/audit.md)
 - [Cluster lifecycle](cluster-lifecycle.md)
 - [Status and errors](status-and-errors.md)
-- [`slices/control-plane.md`](../planning/slices/control-plane.md)

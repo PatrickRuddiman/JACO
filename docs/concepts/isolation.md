@@ -14,7 +14,6 @@ Both are enforced by **L2 bridge separation** (one bridge per
 operational on every node before that node is considered ready.
 
 Code: [`internal/discovery/firewall/`](../../internal/discovery/firewall).
-Design: [`slices/discovery.md`](../planning/slices/discovery.md) §4.
 
 ## The no-host-disruption invariant
 
@@ -232,4 +231,3 @@ relays.
 - [Status and errors](status-and-errors.md) — the
   `isolation_unavailable` and `isolation_ruleset_reconciled` codes
 - [Troubleshooting](../operations/troubleshooting.md)
-- [`slices/discovery.md`](../planning/slices/discovery.md)

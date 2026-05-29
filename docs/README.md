@@ -4,9 +4,7 @@ JACO — Just Another Container Orchestrator. Multi-node, Docker-engine,
 raft-replicated, embedded Caddy, WireGuard mesh, nftables-enforced
 isolation. Two binaries: `jacod` (daemon) and `jaco` (CLI).
 
-This tree is the user-facing documentation. The internal design material
-that drives implementation lives under [`planning/`](planning) — it's
-written for AI coding agents and is not a reading path for operators.
+This tree is the user-facing documentation.
 
 ## Start here
 

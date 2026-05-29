@@ -136,5 +136,4 @@ If the signing key needs to rotate (compromise, schedule):
 
 - [`jaco self-upgrade`](../cli/self-upgrade.md)
 - [Upgrades](../operations/upgrades.md)
-- [`slices/packaging.md`](../planning/slices/packaging.md)
 - [Repository layout](repo-layout.md)

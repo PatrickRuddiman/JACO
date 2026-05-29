@@ -11,27 +11,23 @@ with nftables-enforced isolation. It ships as **two binaries**:
   over the unix socket and to peer `jacod`s over TCP for cross-host
   control.
 
-This page is the architectural overview. For the source-of-truth design
-material aimed at the implementation, see
-[`docs/planning/design.md`](../planning/design.md).
+This page is the architectural overview.
 
 ## Verticals
 
 Every node runs the same set of verticals inside one `jacod` process.
-Each has its own page under [`internal/.../doc.go`](../../internal) and
-a more detailed design slice under
-[`docs/planning/slices/`](../planning/slices).
+Each has its own package doc under [`internal/`](../../internal).
 
-| vertical          | responsibility                                                                                       | slice |
-|-------------------|------------------------------------------------------------------------------------------------------|-------|
-| **control-plane** | raft group, replicated state machine, command admission, watch fan-out, audit log, cluster CA       | [slice](../planning/slices/control-plane.md) |
-| **scheduler**     | leader-only desired-state reconciler; placement, rolling updates, drain, restart-after-3            | [slice](../planning/slices/scheduler.md) |
-| **runtime**       | per-node docker engine driver; image pull, container lifecycle, healthcheck observation, log tail   | [slice](../planning/slices/runtime.md) |
-| **discovery**     | per-node bridges, /24 IPAM, WireGuard mesh, nftables isolation, per-bridge DNS                      | [slice](../planning/slices/discovery.md) |
-| **ingress**       | embedded Caddy on `:80, :443`; ACME issuance + renewal via raft-backed CertMagic storage            | [slice](../planning/slices/ingress.md) |
-| **daemon**        | `jacod` itself: config loading, lifecycle, goroutine orchestration, admission gating                | [slice](../planning/slices/daemon.md) |
-| **cli**           | operator + developer subcommands                                                                    | [slice](../planning/slices/cli.md) |
-| **packaging**     | release pipeline, install, `jaco self-upgrade`                                                      | [slice](../planning/slices/packaging.md) |
+| vertical          | responsibility                                                                                       |
+|-------------------|------------------------------------------------------------------------------------------------------|
+| **control-plane** | raft group, replicated state machine, command admission, watch fan-out, audit log, cluster CA       |
+| **scheduler**     | leader-only desired-state reconciler; placement, rolling updates, drain, restart-after-3            |
+| **runtime**       | per-node docker engine driver; image pull, container lifecycle, healthcheck observation, log tail   |
+| **discovery**     | per-node bridges, /24 IPAM, WireGuard mesh, nftables isolation, per-bridge DNS                      |
+| **ingress**       | embedded Caddy on `:80, :443`; ACME issuance + renewal via raft-backed CertMagic storage            |
+| **daemon**        | `jacod` itself: config loading, lifecycle, goroutine orchestration, admission gating                |
+| **cli**           | operator + developer subcommands                                                                    |
+| **packaging**     | release pipeline, install, `jaco self-upgrade`                                                      |
 
 ## Data flow at a glance
 
@@ -106,5 +102,3 @@ those RPCs is planned. See the CLI pages for the exact contract today.
 - [Cluster lifecycle](cluster-lifecycle.md)
 - [Networking](networking.md)
 - [Repository layout](../contributing/repo-layout.md)
-- [`docs/planning/design.md`](../planning/design.md) — full design
-- [`docs/planning/spec.md`](../planning/spec.md) — full spec

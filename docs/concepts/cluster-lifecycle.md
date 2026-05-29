@@ -1,10 +1,7 @@
 # Cluster lifecycle
 
 How a cluster comes into existence, grows, elects leaders, and
-shrinks. The canonical decision-by-decision rationale lives in
-[`slices/control-plane.md`](../planning/slices/control-plane.md) and
-[`slices/daemon.md`](../planning/slices/daemon.md); this page is the
-operator-facing summary.
+shrinks. This page is the operator-facing summary.
 
 ## States
 
@@ -143,4 +140,3 @@ with `pending: drain_timeout` visible in `jaco status`.
 - [`jaco node`](../cli/node.md)
 - [Auth and tokens](auth-and-tokens.md)
 - [Recovery](../operations/recovery.md)
-- [`slices/control-plane.md`](../planning/slices/control-plane.md)

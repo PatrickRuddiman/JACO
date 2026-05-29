@@ -5,8 +5,6 @@ metrics**, **structured logs**, and the **cluster audit log** in raft
 state. The OTel SDK is opt-in via env; the logs and audit log are
 always on.
 
-Design contract: [`design.md`](../planning/design.md) §5 and §6.
-
 ## OpenTelemetry
 
 ### Exporter

@@ -55,9 +55,7 @@ What lives where. Use this as the map when you're about to grep.
 │   └── proto/jaco/v1/   # buf-generated gRPC + proto types
 ├── proto/               # proto source files
 │   └── jaco/v1/         # entities, services, commands, errors, events, fsm
-├── docs/                # this documentation tree
-│   ├── planning/        # internal design material (slices, tasks, spec, design)
-│   └── …                # operator + developer docs
+├── docs/                # operator + developer documentation tree
 ├── tests/               # end-to-end tests
 │   ├── samples/         # comparative bench: JACO vs k8s/k3s/swarm
 │   └── testbed/         # Azure provisioning template for benchmarking
@@ -96,4 +94,3 @@ What lives where. Use this as the map when you're about to grep.
 - [Development](development.md)
 - [Release and packaging](release-and-packaging.md)
 - [Testing](testing.md)
-- [`docs/planning/slices/`](../planning/slices) — per-vertical design notes

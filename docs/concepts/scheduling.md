@@ -7,8 +7,6 @@ and writes `ReplicaDesired`, `RolloutPlan`, and
 scheduler-side; on leader change, the new leader picks up where the
 old one left off via raft state.
 
-Full design rationale: [`slices/scheduler.md`](../planning/slices/scheduler.md).
-
 ## Reconcile trigger
 
 - **Watch-driven** with a 50 ms debounce — coalesces bursts of events
@@ -160,4 +158,3 @@ for v1.
   [`jaco rollback`](../cli/rollback-delete.md)
 - [`jaco.yaml` schema](../manifests/jaco-yaml.md)
 - [Status and errors](status-and-errors.md)
-- [`slices/scheduler.md`](../planning/slices/scheduler.md)

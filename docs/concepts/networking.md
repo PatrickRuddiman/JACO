@@ -14,9 +14,7 @@ Cross-deployment and cross-network traffic is blocked at L3 by the
 nftables ruleset described in [Isolation](isolation.md). This page is
 about the connectivity plane; that page is about the deny plane.
 
-Source-of-truth design:
-[`slices/discovery.md`](../planning/slices/discovery.md). Code lives
-under [`internal/discovery/`](../../internal/discovery).
+Code lives under [`internal/discovery/`](../../internal/discovery).
 
 ## IPAM
 
@@ -135,4 +133,3 @@ out of scope.
 - [Isolation](isolation.md)
 - [Ingress](ingress.md)
 - [Configuration](../configuration.md) — `ipam_pool`, `wg_port`
-- [`slices/discovery.md`](../planning/slices/discovery.md)

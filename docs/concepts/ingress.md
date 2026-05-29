@@ -5,8 +5,7 @@ node, ACME via a raft-backed CertMagic storage, route definitions
 sourced from `Route` entities. Plus a raw-TCP L4 router on every node
 for compose-declared `ports:` entries.
 
-Code: [`internal/ingress/`](../../internal/ingress). Design:
-[`slices/ingress.md`](../planning/slices/ingress.md).
+Code: [`internal/ingress/`](../../internal/ingress).
 
 ## What every node listens on
 
@@ -160,4 +159,3 @@ and gracefully swaps listeners as needed.
   block
 - [Networking](networking.md), [Isolation](isolation.md)
 - [Configuration](../configuration.md) — `acme_*` keys
-- [`slices/ingress.md`](../planning/slices/ingress.md)
