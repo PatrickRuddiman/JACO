@@ -59,6 +59,8 @@ Why each subsystem is shaped the way it is.
 
 ## Operations
 
+- [Migration](operations/migration.md) — move an existing
+  docker-compose stack (with volumes) onto a JACO cluster.
 - [Upgrades](operations/upgrades.md) — rolling `jaco self-upgrade`
   walkthrough.
 - [Backups](operations/backups.md) — `jaco backup` and `jaco restore`

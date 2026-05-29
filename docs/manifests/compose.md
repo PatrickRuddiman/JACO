@@ -131,5 +131,7 @@ See [`jaco validate`](../cli/validate.md).
 
 - [`jaco.yaml` schema](jaco-yaml.md)
 - [Examples](examples.md)
+- [Migration](../operations/migration.md) — porting an existing
+  compose stack, including how JACO names and handles volumes
 - [Networking](../concepts/networking.md)
 - [Status and errors](../concepts/status-and-errors.md)
