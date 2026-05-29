@@ -64,6 +64,32 @@ in raft (`total_steps = replicas`, `current_step = 0`, state
 `previous_revision` if you don't want to wait or want to abandon a bad
 roll.
 
+## Replica start and image-pull visibility
+
+The runtime reconciler on each node starts a desired replica
+**asynchronously**: the image pull, container create, and start run in
+a goroutine, so a slow or stuck pull on one replica never freezes the
+reconcile loop or stalls the other replicas on that node. Starts are
+deduped by replica id — a re-dispatch for the same desired `raft_index`
+is a no-op, while a changed `raft_index` (e.g. an image roll) cancels
+and supersedes the in-flight start.
+
+Image-pull progress is surfaced as `ReplicaObserved` so a stuck pull is
+visible in [`jaco status`](../cli/status.md) and the node logs rather
+than silently retrying forever:
+
+- First attempt → `ReplicaObserved{state: pulling, code: pulling}`.
+- Each failed attempt → `ReplicaObserved{state: pending, code:
+  image_pull_failed, details: {reason: "<image>: <error>"}}`, plus a
+  `warn` line in the node log (`image pull failed; will retry`). The
+  pull keeps retrying; the replica sits in `pending` with the
+  `image_pull_failed` code attached until it succeeds.
+
+This is distinct from the terminal `failed` state, which the scheduler
+sets only after the restart budget is exhausted (below). A replica
+whose subnet allocation cannot be satisfied is published directly as
+`ReplicaObserved{state: failed, code: subnet_pool_exhausted}`.
+
 ## Health and restart policy
 
 The compose `restart:` field is intentionally **ignored** — the

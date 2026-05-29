@@ -79,3 +79,10 @@ Why each subsystem is shaped the way it is.
   releases are cut, signed, and published.
 - [Testing](contributing/testing.md) — unit, integration, the privileged
   isolation rig, and the comparative samples bench.
+
+## License
+
+JACO is licensed under the [Apache License 2.0](../LICENSE). Attribution
+notices for bundled dependencies are in [`NOTICE`](../NOTICE), and the
+full per-module third-party inventory (generated from `go.mod`) is in
+[`THIRD_PARTY_LICENSES.md`](../THIRD_PARTY_LICENSES.md).

@@ -94,14 +94,30 @@ recorded.
 
 ## Custom CertMagic storage
 
-The CertMagic `Storage` interface is implemented against raft:
+The CertMagic `Storage` interface is implemented against raft, with an
+optional on-disk fallback cache rooted at `$dataDir/ingress/cache`
+(raft stays authoritative):
 
-- `Store(key, value)` — raft Apply, persisted under `Cert{}` or
-  `CertBlob{}`.
-- `Load(key)` — local in-memory typed store (kept in sync by watch);
-  falls back to a leader read mid-Resync.
+- `Store(key, value)` — raft Apply (persisted under `CertBlob{}`), then
+  a best-effort write-through to the disk cache.
+- `Load(key)` — read the in-memory typed store (kept in sync by watch);
+  if raft has no copy, fall back to the disk cache.
 - `Lock(name) / Unlock(name)` — raft Apply with lessee + expiry.
-- `List, Delete, Exists, Stat` — direct local reads/applies.
+- `Delete, Exists` — raft Apply / local read, with the disk cache
+  consulted (Exists) or cleared (Delete) to match.
+
+### Read-repair from the disk cache (issue #65)
+
+When `Load` finds a blob in the disk cache that raft does not have —
+for example raft state was wiped or the node reinstalled while the cert
+cache on disk survived — it **re-seeds raft** with that blob before
+returning it. This matters because a follower can only serve the
+replicated `CertBlob` (it cannot write raft, and it never reads another
+node's local disk cache): without the re-seed the leader would serve
+TLS from its disk cache while every follower failed. The Apply is a
+no-op on a follower (not leader); the leader's `Load` performs the
+repair, and once raft holds the blob the fallback branch is no longer
+taken.
 
 This is what makes the spec promise hold — "any node accepts ingress
 for any declared domain" and "TLS private keys never leave the

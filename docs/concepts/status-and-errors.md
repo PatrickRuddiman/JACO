@@ -60,8 +60,8 @@ backoff).
 
 | state       | meaning                                                                                       |
 |-------------|-----------------------------------------------------------------------------------------------|
-| `pending`   | `ReplicaDesired` received; image not yet pulled                                               |
-| `pulling`   | image pull in progress (or backing off after a failure)                                       |
+| `pending`   | `ReplicaDesired` received; image not yet pulled. A failing pull stays here with `code: image_pull_failed` (and the error in `details.reason`) while it retries |
+| `pulling`   | image pull in progress (reported on the first attempt)                                        |
 | `running`   | container up; first `healthy` healthcheck observed (or `running + no healthcheck` for 5 s)   |
 | `degraded`  | `State.Health.Status = unhealthy` observed                                                    |
 | `updating`  | set by the scheduler during a rolling update; runtime reads but doesn't write                 |
