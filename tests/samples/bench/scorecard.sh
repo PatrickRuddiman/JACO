@@ -39,24 +39,37 @@ jq -s \
           stack: $r.stack, label: $r.label,
           composite: (($sSetup*$w.setup)+($sTtl*$w.ttl)+($sRps*$w.rps)+($sLat*$w.lat)+($sRel*$w.rel)+($sLag*$w.lag)),
           scores: { setup:$sSetup, ttl:$sTtl, throughput:$sRps, latency:$sLat, reliability:$sRel, replication:$sLag },
-          raw: { rps:$r.load.rps, ttl_s:$r.timings.ttl_seconds, p95_ms:$r.load.latency_ms.p95,
-                 err:$r.load.error_rate, lag_s:$r.replica_lag_seconds, setup_loc:$r.setup_loc }
+          raw: { rps:$r.load.rps, rps_ci:($r.load.stats.rps.ci95 // 0), n:($r.load.repeat // 1),
+                 ttl_s:$r.timings.ttl_seconds, p95_ms:$r.load.latency_ms.p95,
+                 err:$r.load.error_rate, lag_s:$r.replica_lag_seconds, setup_loc:$r.setup_loc,
+                 ovh_mem:($r.overhead.idle_mem_used_mb // 0), cpu:($r.load_generator.cpu_pct_max // 0),
+                 saturated:($r.load_generator.saturated // false) }
         })
     | sort_by(-.composite)
   ' "${files[@]}" >"$RESULTS_DIR/scorecard.json"
 
 log "wrote $RESULTS_DIR/scorecard.json"
 echo
-printf 'stack\tcomposite\tsetup\tttl\trps\tlatency\treliab\trepl\t|\trps\tttl_s\tp95_ms\terr\n'
+printf 'stack\tcomposite\tsetup\tttl\trps\tlatency\treliab\trepl\t|\trps\t±95\tn\tttl_s\tp95_ms\terr\tovh_mb\tlg_cpu%%\n'
 jq -r '.[] | [
     .label,
     (.composite|.*10|round/10),
     (.scores.setup|round), (.scores.ttl|round), (.scores.throughput|round),
     (.scores.latency|round), (.scores.reliability|round), (.scores.replication|round),
     "|",
-    (.raw.rps|.*10|round/10), .raw.ttl_s, (.raw.p95_ms|.*10|round/10),
-    (.raw.err|.*1000|round/1000)
+    (.raw.rps|.*10|round/10), (.raw.rps_ci|.*10|round/10), .raw.n,
+    .raw.ttl_s, (.raw.p95_ms|.*10|round/10),
+    (.raw.err|.*1000|round/1000),
+    .raw.ovh_mem, (.raw.cpu|.*10|round/10)
   ] | @tsv' "$RESULTS_DIR/scorecard.json" \
   | { command -v column >/dev/null 2>&1 && column -t -s$'\t' || cat; }
 echo
 echo "(scores 0–100, higher better; best stack per dimension = 100. raw columns are actuals.)"
+echo "(rps is the mean of n samples; ±95 is the 95% CI half-width — overlapping intervals ⇒ a statistical tie."
+echo " ovh_mb = idle node memory used across the cluster, a control-plane footprint proxy; lg_cpu% = peak load-generator CPU.)"
+# Flag any run whose load generator may have been the bottleneck.
+if jq -e 'any(.[]; .raw.saturated)' "$RESULTS_DIR/scorecard.json" >/dev/null 2>&1; then
+  echo
+  jq -r '.[] | select(.raw.saturated) | "WARNING: \(.label) load-generator CPU peaked >80% (\(.raw.cpu|.*10|round/10)%) — its throughput may reflect the generator, not the stack."' \
+    "$RESULTS_DIR/scorecard.json"
+fi

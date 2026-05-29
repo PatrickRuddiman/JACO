@@ -1,0 +1,71 @@
+# Redis primary + 2 replicas, mirroring the Swarm stack: same image, replica
+# counts, resource limits, and the same inline server flags. The api writes to
+# the `redis-primary` Service and reads from the `redis-replica` Service (which
+# load-balances across the 2 replica pods).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-primary
+  namespace: bench
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: redis-primary }
+  template:
+    metadata:
+      labels: { app: redis-primary }
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args: ["redis-server", "--save", "", "--appendonly", "no", "--protected-mode", "no"]
+          ports: [{ containerPort: 6379 }]
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits:   { cpu: "500m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-primary
+  namespace: bench
+spec:
+  selector: { app: redis-primary }
+  ports: [{ port: 6379, targetPort: 6379 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-replica
+  namespace: bench
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: redis-replica }
+  template:
+    metadata:
+      labels: { app: redis-replica }
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args: ["redis-server", "--replicaof", "redis-primary", "6379", "--replica-read-only", "yes", "--save", "", "--appendonly", "no", "--protected-mode", "no"]
+          ports: [{ containerPort: 6379 }]
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits:   { cpu: "500m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-replica
+  namespace: bench
+spec:
+  selector: { app: redis-replica }
+  ports: [{ port: 6379, targetPort: 6379 }]

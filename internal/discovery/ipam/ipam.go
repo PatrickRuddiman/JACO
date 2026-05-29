@@ -8,7 +8,6 @@
 package ipam
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -216,9 +215,6 @@ func thirdOctet(cidr string) (uint8, bool) {
 	return ip[2], true
 }
 
-// silence unused (kept on hand for future big-pool generalization).
-var _ = binary.BigEndian
-
 // allocatedCIDRs returns the existing Subnet CIDRs sorted for deterministic
 // test output.
 func allocatedCIDRs(s *state.State) []string {
@@ -229,5 +225,3 @@ func allocatedCIDRs(s *state.State) []string {
 	sort.Strings(out)
 	return out
 }
-
-var _ = allocatedCIDRs // exported via test helper

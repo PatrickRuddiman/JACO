@@ -100,7 +100,7 @@ func (r *Rollout) StepReady(deployment, service string) (ready bool, notRunning 
 	for _, obs := range r.state.ReplicasObserved.List() {
 		if obs.GetState() != pb.ReplicaState_REPLICA_STATE_RUNNING {
 			// Only count replicas that belong to this service.
-			if belongsToService(obs, deployment, service) {
+			if r.belongsToService(obs, deployment, service) {
 				notRunning++
 			}
 		}
@@ -273,17 +273,21 @@ func (r *Rollout) auditAndHold(deployment, service, reason string) error {
 	return r.apply(data)
 }
 
-// belongsToService matches a ReplicaObserved against the (deployment,
-// service) it was created for by checking the deployment-prefixed id form.
-// We carry the id pattern <deployment>-<service>-<index>; cross-reference
-// against state.ReplicasDesired for the authoritative mapping.
-func belongsToService(_ *pb.ReplicaObserved, _, _ string) bool {
-	// In practice the runtime stamps ReplicaObserved.Id which is the same as
-	// ReplicaDesired.Id. We could prefix-match, but cleaner is to look up
-	// the matching desired entry. Caller's state has both; this helper
-	// guards against name-collision false positives. For v1 we just rely on
-	// the desired-set lookup performed by StepReady below.
-	return true
+// belongsToService reports whether a ReplicaObserved belongs to the given
+// (deployment, service). ReplicaObserved carries only an Id of the form
+// <deployment>-<service>-<index> (see counter.ReplicaID), which is ambiguous
+// when names contain dashes. The authoritative mapping lives in
+// state.ReplicasDesired, whose entries carry explicit Deployment/Service
+// fields keyed by the same Id, so we look the observed replica up there and
+// compare. A replica with no desired entry is an orphan and belongs to no
+// service (returns false), so it never inflates another service's
+// not-running count.
+func (r *Rollout) belongsToService(obs *pb.ReplicaObserved, deployment, service string) bool {
+	desired, ok := r.state.ReplicasDesired.Get(obs.GetId())
+	if !ok {
+		return false
+	}
+	return desired.GetDeployment() == deployment && desired.GetService() == service
 }
 
 // isFresh reports whether the timestamp is within HealthFreshness of now.

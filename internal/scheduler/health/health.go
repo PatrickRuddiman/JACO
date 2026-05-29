@@ -246,7 +246,10 @@ func (r *Restarter) handleRunning(obs *pb.ReplicaObserved) {
 func (r *Restarter) applyOne(cmd *pb.Command) {
 	data, err := proto.Marshal(cmd)
 	if err != nil {
+		r.log().Error("restarter marshal command failed", "error", err)
 		return
 	}
-	_ = r.apply(data)
+	if err := r.apply(data); err != nil {
+		r.log().Error("restarter raft apply failed", "error", err)
+	}
 }

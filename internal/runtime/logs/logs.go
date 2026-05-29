@@ -116,7 +116,18 @@ func (s *lineSink) flush() {
 }
 
 func (s *lineSink) emit(line string) error {
-	ts, body := splitDockerTimestamp(line)
+	// Split off the `RFC3339 ` prefix docker prepends when Timestamps=true.
+	// A zero time + the original string means no timestamp was found (which
+	// can happen if the container produced an empty line).
+	var ts time.Time
+	body := line
+	if line != "" {
+		if sp := strings.IndexByte(line, ' '); sp >= 0 {
+			if parsed, err := time.Parse(time.RFC3339Nano, line[:sp]); err == nil {
+				ts, body = parsed, line[sp+1:]
+			}
+		}
+	}
 	ll := &pb.LogLine{
 		ReplicaId: s.replicaID,
 		Host:      s.host,
@@ -132,22 +143,5 @@ func (s *lineSink) emit(line string) error {
 	case <-s.ctx.Done():
 		return s.ctx.Err()
 	}
-}
-
-// splitDockerTimestamp parses the `RFC3339 ` prefix docker prepends when
-// Timestamps=true. Returns a zero time + the original string if no timestamp
-// is found (which can happen if the container produced an empty line).
-func splitDockerTimestamp(line string) (time.Time, string) {
-	if line == "" {
-		return time.Time{}, ""
-	}
-	sp := strings.IndexByte(line, ' ')
-	if sp < 0 {
-		return time.Time{}, line
-	}
-	if ts, err := time.Parse(time.RFC3339Nano, line[:sp]); err == nil {
-		return ts, line[sp+1:]
-	}
-	return time.Time{}, line
 }
 

@@ -2,6 +2,7 @@ package firewall_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -224,21 +225,129 @@ func TestSelfTestFromJSON_AllChainsAndSetsPresent(t *testing.T) {
 	expected := firewall.RuleInput{
 		Subnets: []firewall.Subnet{{Deployment: "sample", Network: "frontend", CIDR: "10.244.0.0/24"}},
 	}
+	// All base chains are policy accept — matches what Render emits (the
+	// no-host-disruption invariant); SelfTest must accept this shape.
 	jsonOK := []byte(`{"nftables":[
-		{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"drop"}},
-		{"chain":{"family":"inet","table":"jaco","name":"input","hook":"input","prio":0,"policy":"drop"}},
+		{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"accept"}},
+		{"chain":{"family":"inet","table":"jaco","name":"input","hook":"input","prio":0,"policy":"accept"}},
 		{"chain":{"family":"inet","table":"jaco","name":"output","hook":"output","prio":0,"policy":"accept"}},
-		{"set":{"family":"inet","table":"jaco","name":"dep_net_sample_frontend","type":"ipv4_addr"}}
+		{"set":{"family":"inet","table":"jaco","name":"dep_net_sample_frontend","type":"ipv4_addr"}},
+		{"set":{"family":"inet","table":"jaco","name":"jaco_pool","type":"ipv4_addr"}}
 	]}`)
 	if err := firewall.SelfTestFromJSON(jsonOK, expected); err != nil {
 		t.Fatalf("SelfTest: %v", err)
 	}
 }
 
+// TestSelfTestFromJSON_AcceptsRenderRoundTrip derives the nft -j JSON that a
+// real `nft -f` apply of Render's output would produce, then feeds it to
+// SelfTest. This couples the SelfTest expectations to Render directly so they
+// can never silently drift apart again (issue #76): if Render's chain policies
+// change, the synthesized JSON below changes with it, and any mismatch with
+// SelfTest's wantChains is caught here without needing the caps+nft rig.
+func TestSelfTestFromJSON_AcceptsRenderRoundTrip(t *testing.T) {
+	in := firewall.RuleInput{
+		Subnets: []firewall.Subnet{
+			{Deployment: "sample", Network: "frontend", CIDR: "10.244.0.0/24"},
+			{Deployment: "sample", Network: "backend", CIDR: "10.244.1.0/24"},
+		},
+		WGPort:       51820,
+		GrpcPort:     7000,
+		IngressPorts: []int{80, 443},
+	}
+	rendered := firewall.Render(in)
+
+	// Read the policy each base chain carries straight out of Render's output,
+	// rather than hard-coding it, so this test fails if Render and SelfTest
+	// ever disagree about a chain policy.
+	json := renderToNftJSON(t, in, rendered)
+	if err := firewall.SelfTestFromJSON(json, in); err != nil {
+		t.Fatalf("SelfTest rejected a faithful round-trip of Render output: %v\n=== rendered:\n%s\n=== json:\n%s", err, rendered, json)
+	}
+}
+
+// renderToNftJSON synthesizes the `nft -j list table inet jaco` document that
+// applying `rendered` would yield: one base-chain entry per chain (carrying
+// the policy parsed from the rendered ruleset) plus one set entry per expected
+// (deployment, network). It is a faithful stand-in for the real nft round-trip
+// for the fields SelfTest inspects (chain hook/policy/priority and set names).
+func renderToNftJSON(t *testing.T, in firewall.RuleInput, rendered string) []byte {
+	t.Helper()
+	type chain struct {
+		Family string `json:"family"`
+		Table  string `json:"table"`
+		Name   string `json:"name"`
+		Hook   string `json:"hook"`
+		Prio   int    `json:"prio"`
+		Policy string `json:"policy"`
+	}
+	type set struct {
+		Family string `json:"family"`
+		Table  string `json:"table"`
+		Name   string `json:"name"`
+		Type   string `json:"type"`
+	}
+	type entry struct {
+		Chain *chain `json:"chain,omitempty"`
+		Set   *set   `json:"set,omitempty"`
+	}
+
+	var entries []entry
+	for _, name := range []string{"forward", "input", "output"} {
+		entries = append(entries, entry{Chain: &chain{
+			Family: "inet", Table: "jaco", Name: name, Hook: name,
+			Prio:   0,
+			Policy: policyFromRender(t, rendered, name),
+		}})
+	}
+	seen := map[string]bool{}
+	for _, s := range in.Subnets {
+		n := firewall.SetName(s.Deployment, s.Network)
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		entries = append(entries, entry{Set: &set{Family: "inet", Table: "jaco", Name: n, Type: "ipv4_addr"}})
+	}
+	// Render also emits the aggregate jaco_pool set whenever there's any
+	// subnet — a real `nft -j list` includes it, so the faithful round-trip
+	// must too. Omitting it is what let the SelfTest/Render set divergence
+	// (issue #76) slip past the unit suite and only surface on the nft rig.
+	if len(in.Subnets) > 0 {
+		entries = append(entries, entry{Set: &set{Family: "inet", Table: "jaco", Name: "jaco_pool", Type: "ipv4_addr"}})
+	}
+
+	b, err := json.Marshal(struct {
+		Nftables []entry `json:"nftables"`
+	}{Nftables: entries})
+	if err != nil {
+		t.Fatalf("marshal synthesized nft json: %v", err)
+	}
+	return b
+}
+
+// policyFromRender extracts the policy keyword from the
+// `type filter hook <name> priority 0; policy <policy>;` line Render emits for
+// the named base chain. Fails the test if the line (or policy) is missing.
+func policyFromRender(t *testing.T, rendered, chainName string) string {
+	t.Helper()
+	marker := "hook " + chainName + " priority 0; policy "
+	idx := strings.Index(rendered, marker)
+	if idx < 0 {
+		t.Fatalf("Render output has no base-chain policy line for chain %q:\n%s", chainName, rendered)
+	}
+	rest := rendered[idx+len(marker):]
+	end := strings.IndexByte(rest, ';')
+	if end < 0 {
+		t.Fatalf("malformed policy line for chain %q:\n%s", chainName, rendered)
+	}
+	return strings.TrimSpace(rest[:end])
+}
+
 func TestSelfTestFromJSON_MissingChainErrors(t *testing.T) {
 	expected := firewall.RuleInput{Subnets: []firewall.Subnet{{Deployment: "a", Network: "b", CIDR: "10.244.0.0/24"}}}
 	jsonMissing := []byte(`{"nftables":[
-		{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"drop"}},
+		{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"accept"}},
 		{"set":{"family":"inet","table":"jaco","name":"dep_net_a_b","type":"ipv4_addr"}}
 	]}`)
 	err := firewall.SelfTestFromJSON(jsonMissing, expected)
@@ -260,8 +369,8 @@ func TestSelfTestFromJSON_MissingChainErrors(t *testing.T) {
 func TestSelfTestFromJSON_ExtraSetErrors(t *testing.T) {
 	expected := firewall.RuleInput{Subnets: []firewall.Subnet{{Deployment: "a", Network: "b", CIDR: "10.244.0.0/24"}}}
 	jsonExtra := []byte(`{"nftables":[
-		{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"drop"}},
-		{"chain":{"family":"inet","table":"jaco","name":"input","hook":"input","prio":0,"policy":"drop"}},
+		{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"accept"}},
+		{"chain":{"family":"inet","table":"jaco","name":"input","hook":"input","prio":0,"policy":"accept"}},
 		{"chain":{"family":"inet","table":"jaco","name":"output","hook":"output","prio":0,"policy":"accept"}},
 		{"set":{"family":"inet","table":"jaco","name":"dep_net_a_b","type":"ipv4_addr"}},
 		{"set":{"family":"inet","table":"jaco","name":"orphan_set","type":"ipv4_addr"}}

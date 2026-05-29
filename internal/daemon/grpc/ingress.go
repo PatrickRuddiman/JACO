@@ -63,15 +63,6 @@ const (
 	leStagingCA = "https://acme-staging-v02.api.letsencrypt.org/directory"
 )
 
-// acmeCAOrDefault returns the configured ACME directory URL, or LE prod when
-// the operator left acme_ca unset.
-func acmeCAOrDefault(ca string) string {
-	if ca == "" {
-		return leProdCA
-	}
-	return ca
-}
-
 // ingressCacheDir is the on-disk fallback cache path for cert blobs:
 // $dataDir/ingress/cache. Empty dataDir → "" (disk fallback disabled, e.g.
 // in tests that don't set DataDir).

@@ -185,7 +185,11 @@ func (w *Watcher) loop(ctx context.Context, rw *replicaWatcher) {
 		if obs == nil {
 			continue
 		}
-		_ = w.submit(ctx, obs)
+		if err := w.submit(ctx, obs); err != nil && ctx.Err() == nil {
+			w.log().Warn("replica health submit failed",
+				logging.KeyReplicaID, rw.replicaID,
+				"state", stateString(obs.GetState()), "error", err)
+		}
 	}
 }
 

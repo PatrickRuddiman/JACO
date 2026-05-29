@@ -114,7 +114,11 @@ func runClusterStatus(ctx context.Context, client pb.ClusterClient, out io.Write
 		return nil
 	}
 	fmt.Fprintln(out, "Status:     initialized")
-	fmt.Fprintf(out, "Leader:     %s\n", strDefault(resp.GetLeader(), "(no leader elected)"))
+	leader := resp.GetLeader()
+	if leader == "" {
+		leader = "(no leader elected)"
+	}
+	fmt.Fprintf(out, "Leader:     %s\n", leader)
 	fmt.Fprintf(out, "Raft index: %d\n", resp.GetRaftIndex())
 	fmt.Fprintf(out, "Nodes (%d):\n", len(resp.GetNodes()))
 	for _, n := range resp.GetNodes() {
@@ -122,13 +126,6 @@ func runClusterStatus(ctx context.Context, client pb.ClusterClient, out io.Write
 			strings.TrimPrefix(n.GetStatus().String(), "NODE_STATUS_"))
 	}
 	return nil
-}
-
-func strDefault(s, fallback string) string {
-	if s == "" {
-		return fallback
-	}
-	return s
 }
 
 func socketDefault() string {
