@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 
 	"github.com/compose-spec/compose-go/v2/loader"
@@ -76,6 +77,9 @@ func loadBytes(workingDir, filename string, body []byte, rejectEnvFiles bool) (*
 		opts.SkipConsistencyCheck = true
 	})
 	if err != nil {
+		if verr := translateLegacyComposeError(err); verr != nil {
+			return nil, verr
+		}
 		return nil, fmt.Errorf("compose load: %w", err)
 	}
 	return project, nil
@@ -292,4 +296,52 @@ func setEnvironment(svc *yaml.Node, env types.MappingWithEquals) error {
 		envNode.Content = append(envNode.Content, keyNode, valNode)
 	}
 	return nil
+}
+
+// legacyComposeFieldEquivalents maps v1/v2 compose keys the modern spec
+// dropped to the modern equivalent JACO operators should use. compose-go's
+// loader rejects these outright with "additional properties 'X' not
+// allowed" before JACO's own validator sees them; translateLegacyComposeError
+// detects that pattern and re-emits a typed ValidationError naming the
+// equivalent (issue #122).
+var legacyComposeFieldEquivalents = map[string]string{
+	"log_driver":    "logging.driver",
+	"log_opt":       "logging.options",
+	"net":           "network_mode",
+	"volume_driver": "no direct equivalent; use long-form `volumes:` with `driver:`",
+	"dockerfile":    "build.dockerfile",
+}
+
+// legacyAdditionalPropertyPattern matches compose-go's stable rejection
+// string for unknown fields, capturing the offending key.
+var legacyAdditionalPropertyPattern = regexp.MustCompile(`additional properties '([^']+)' not allowed`)
+
+// translateLegacyComposeError inspects a compose-go load error and, when it
+// matches the "additional properties 'X' not allowed" shape for a v1/v2
+// legacy field, returns a typed ValidationError naming the modern
+// equivalent. Returns nil when the error doesn't match — caller falls
+// back to the generic "compose load" wrap.
+func translateLegacyComposeError(err error) *ValidationError {
+	if err == nil {
+		return nil
+	}
+	match := legacyAdditionalPropertyPattern.FindStringSubmatch(err.Error())
+	if len(match) != 2 {
+		return nil
+	}
+	field := match[1]
+	modern, ok := legacyComposeFieldEquivalents[field]
+	if !ok {
+		return nil
+	}
+	return &ValidationError{
+		Code: "legacy_compose_field",
+		Message: fmt.Sprintf(
+			"compose field %q is a v1/v2 spelling dropped from the modern spec; use %s instead",
+			field, modern),
+		Details: map[string]string{
+			"field":             field,
+			"modern_equivalent": modern,
+		},
+	}
 }
