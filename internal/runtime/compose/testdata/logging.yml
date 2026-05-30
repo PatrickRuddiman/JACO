@@ -1,0 +1,17 @@
+services:
+  legacy:
+    image: busybox
+    log_driver: syslog
+    log_opt:
+      syslog-address: "tcp://127.0.0.1:514"
+  both:
+    image: busybox
+    log_driver: syslog
+    log_opt:
+      syslog-address: "tcp://127.0.0.1:514"
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+  none:
+    image: busybox
