@@ -639,6 +639,11 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 			EnsureSNAT:    firewall.EnsureSNATExempt,
 			EnsureOverlay: firewall.EnsureOverlayExempt,
 			Logger:        logging.Subsystem(s.logger, "firewall").With(logging.KeyNode, hostname),
+			// Gate first tick on raft having discovered a leader; otherwise the
+			// Audit/UpdateStatus forwards both fail to resolve the leader gRPC
+			// address and the reconciler logs "Audit failed" + "Tick failed"
+			// before raft has settled (issue #113).
+			ReadyGate: func() bool { return node.Leader() != "" },
 		}
 		s.subsystemsWG.Add(1)
 		go func() {
