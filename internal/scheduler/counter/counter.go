@@ -71,3 +71,30 @@ func (c *Counter) Next(deployment, service string) (uint64, error) {
 func ReplicaID(deployment, service string, index uint64) string {
 	return fmt.Sprintf("%s-%s-%d", deployment, service, index)
 }
+
+// ReplicaIDForHost composes the per-replica id for a GLOBAL (daemonset)
+// service, which runs exactly one replica per node. The id is keyed by host
+// (not a positional index) so a node's replica keeps a stable id across
+// reconciles regardless of membership churn: when another node leaves, the
+// surviving nodes' ids are unchanged, so their containers are not needlessly
+// torn down and recreated. The hostname is sanitized to [a-zA-Z0-9_.-] so the
+// id stays a valid container/DNS label component.
+func ReplicaIDForHost(deployment, service, host string) string {
+	return fmt.Sprintf("%s-%s-%s", deployment, service, sanitizeHost(host))
+}
+
+// sanitizeHost replaces any character outside [a-zA-Z0-9_.-] with '-' so a
+// hostname can be embedded in a replica id without breaking container names
+// or DNS labels.
+func sanitizeHost(host string) string {
+	b := make([]rune, 0, len(host))
+	for _, r := range host {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '.', r == '-':
+			b = append(b, r)
+		default:
+			b = append(b, '-')
+		}
+	}
+	return string(b)
+}
