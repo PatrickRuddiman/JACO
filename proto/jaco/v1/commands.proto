@@ -55,6 +55,9 @@ message Command {
     AuditAppend audit_append = 80;
 
     Batch batch = 90;
+
+    RegistryCredentialUpsert registry_credential_upsert = 100;
+    RegistryCredentialRemove registry_credential_remove = 101;
   }
 }
 
@@ -254,4 +257,19 @@ message JoinTokenConsume {
 
 message AuditAppend {
   AuditEvent event = 1;
+}
+
+// ----- Registry mutations -----
+
+// RegistryCredentialUpsert installs (or replaces) the credential for the
+// canonical registry host carried in credential.registry. The FSM stamps
+// updated_at from cmd.ts if the caller left it unset.
+message RegistryCredentialUpsert {
+  RegistryCredential credential = 1;
+}
+
+// RegistryCredentialRemove drops the credential for registry (canonical
+// host). Idempotent: removing an unknown host is not an error.
+message RegistryCredentialRemove {
+  string registry = 1;
 }

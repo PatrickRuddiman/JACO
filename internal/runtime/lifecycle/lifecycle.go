@@ -34,14 +34,19 @@ const (
 	labelRaftIndex    = "jaco.raft_index"
 )
 
-// IsolationGate is the optional state + self-hostname pair the daemon
-// passes to Start so containers aren't created on a node whose nftables
-// ruleset has drifted (status=isolation_unavailable). Zero value disables
-// the gate — every call from tests with an in-memory fake state works
-// untouched.
+// IsolationGate is the optional state + self-hostname + pull-auth bag the
+// daemon passes to Start. Zero value disables every gate — existing test
+// paths with an in-memory fake state work untouched.
+//
+// State + SelfHostname populate the isolation gate (refuse to bring up a
+// container on an isolation_unavailable node). AuthResolver injects the
+// replicated-credential lookup into the image-pull path; nil resolves to an
+// anonymous pull (the production reconciler wires the cluster-state lookup
+// closure, tests can pass an inline fn).
 type IsolationGate struct {
 	State        *state.State
 	SelfHostname string
+	AuthResolver pull.AuthResolver
 }
 
 // Start brings spec's container up. Idempotent on the (replica_id, raft_index)
@@ -109,7 +114,11 @@ func StartWithPullState(ctx context.Context, d dockerx.Docker, spec compose.Cont
 	// haven't cached the image error with "No such image" on Create
 	// otherwise. pull.Pull retries with exponential backoff so transient
 	// registry failures don't abort the reconcile.
-	if err := pull.Pull(ctx, d, spec.Image, nil, onPull); err != nil {
+	var resolver pull.AuthResolver
+	if len(gate) > 0 {
+		resolver = gate[0].AuthResolver
+	}
+	if err := pull.Pull(ctx, d, spec.Image, resolver, nil, onPull); err != nil {
 		return "", fmt.Errorf("ImagePull %s: %w", spec.Image, err)
 	}
 

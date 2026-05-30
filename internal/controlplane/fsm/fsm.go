@@ -500,6 +500,44 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 			f.Apply(&hraft.Log{Index: idx, Data: childBytes})
 		}
 		return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
+
+	case *pb.Command_RegistryCredentialUpsert:
+		// Canonicalize the host so a credential added as "index.docker.io" by
+		// one operator is found by the reconciler that just normalized the
+		// image ref to "docker.io". Empty/garbage hosts are dropped silently
+		// (the gRPC handler validates up-front; this guard catches Apply
+		// reaching the FSM via an unvalidated path, e.g. a future test
+		// helper).
+		cred := p.RegistryCredentialUpsert.GetCredential()
+		if cred == nil {
+			return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
+		}
+		host := canonicalRegistryHost(cred.GetRegistry())
+		if host == "" {
+			return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
+		}
+		stored := proto.Clone(cred).(*pb.RegistryCredential)
+		stored.Registry = host
+		if stored.GetUpdatedAt() == nil {
+			stored.UpdatedAt = cmd.GetTs()
+		}
+		f.State.RegistryCredentials.Apply(stored, idx)
+		// Audit MUST NOT carry the secret (or even its length / hash — the
+		// posture is symmetric with TOKEN_ISSUE which records only identity).
+		return pb.AuditEventType_AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_UPSERT, map[string]string{
+			"registry": host,
+			"username": cred.GetUsername(),
+		}
+
+	case *pb.Command_RegistryCredentialRemove:
+		host := canonicalRegistryHost(p.RegistryCredentialRemove.GetRegistry())
+		if host == "" {
+			return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
+		}
+		f.State.RegistryCredentials.Remove(host, idx)
+		return pb.AuditEventType_AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_REMOVE, map[string]string{
+			"registry": host,
+		}
 	}
 
 	// Unknown / missing payload — recorded by returning UNSPECIFIED; no audit
@@ -521,4 +559,33 @@ func commandOp(cmd *pb.Command) string {
 		return name[i+1:]
 	}
 	return name
+}
+
+// canonicalRegistryHost normalizes the registry-host key used by
+// state.RegistryCredentials to the same form pull.CanonicalHost produces
+// from a parsed image reference. Both sides MUST agree or the reconciler's
+// per-pull lookup misses every credential.
+//
+// Empty / whitespace-only input returns "" so the caller can drop the
+// command; everything else is lower-cased and the legacy Docker Hub aliases
+// ("index.docker.io", "index.docker.io/v1") fold to "docker.io". Self-hosted
+// hosts with a non-default port keep the port verbatim.
+func canonicalRegistryHost(host string) string {
+	h := strings.ToLower(strings.TrimSpace(host))
+	if h == "" {
+		return ""
+	}
+	// Some clients emit "https://registry.example.com/v2/" — strip the scheme
+	// and any path so we end up with the bare host[:port].
+	if i := strings.Index(h, "://"); i >= 0 {
+		h = h[i+3:]
+	}
+	if i := strings.IndexAny(h, "/?#"); i >= 0 {
+		h = h[:i]
+	}
+	switch h {
+	case "index.docker.io", "registry-1.docker.io", "registry.docker.io":
+		return "docker.io"
+	}
+	return h
 }

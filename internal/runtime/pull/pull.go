@@ -39,7 +39,13 @@ type Puller interface {
 // Pull retries dockerx.ImagePull with exponential backoff until ctx is
 // cancelled or the pull succeeds. after may be nil to use time.After;
 // tests use a fake to avoid burning wall time. onState may be nil.
-func Pull(ctx context.Context, d Puller, ref string, after func(time.Duration) <-chan time.Time, onState StateFn) error {
+//
+// auth is resolved once per attempt: a stable closure returning the same
+// X-Registry-Auth blob lets the moby daemon reuse its scope-token cache
+// across retries, while a closure that re-reads cluster state every call
+// picks up a rotated credential without the reconciler having to cancel
+// and restart the pull loop. auth may be nil — equivalent to anonymous.
+func Pull(ctx context.Context, d Puller, ref string, auth AuthResolver, after func(time.Duration) <-chan time.Time, onState StateFn) error {
 	if after == nil {
 		after = time.After
 	}
@@ -49,7 +55,27 @@ func Pull(ctx context.Context, d Puller, ref string, after func(time.Duration) <
 
 	for attempt := 1; ; attempt++ {
 		notify(onState, StatePulling, attempt, time.Time{}, nil)
-		rc, err := d.ImagePull(ctx, ref, image.PullOptions{})
+		opts := image.PullOptions{}
+		if auth != nil {
+			encoded, err := auth(ref)
+			if err != nil {
+				// A resolver error means the cluster state for this ref is
+				// malformed (e.g. canonicalization failed) — surface it as a
+				// pull failure so the operator sees it on ReplicaObserved
+				// instead of looping silently.
+				delay := BackoffDuration(attempt)
+				next := time.Now().Add(delay)
+				notify(onState, StateFailed, attempt, next, err)
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-after(delay):
+					continue
+				}
+			}
+			opts.RegistryAuth = encoded
+		}
+		rc, err := d.ImagePull(ctx, ref, opts)
 		if err == nil {
 			// Drain the pull stream so the layers finish downloading; the
 			// docker API returns immediately once the request is accepted,

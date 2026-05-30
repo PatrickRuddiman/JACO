@@ -24,10 +24,10 @@ import (
 
 // Options carries everything NewServer needs.
 type Options struct {
-	BindAddr string         // e.g. "0.0.0.0:7000"; "127.0.0.1:0" picks a free port (tests)
-	NodeCert []byte         // PEM
-	NodeKey  []byte         // PEM
-	CACert   []byte         // PEM (cluster CA — used to verify client certs in future)
+	BindAddr string // e.g. "0.0.0.0:7000"; "127.0.0.1:0" picks a free port (tests)
+	NodeCert []byte // PEM
+	NodeKey  []byte // PEM
+	CACert   []byte // PEM (cluster CA — used to verify client certs in future)
 	State    *state.State
 	Brokers  *watch.Registry // needed for follow-mode Audit.Query streams
 	Raft     *raftnode.Node  // optional; nil for tests that bypass raft
@@ -87,6 +87,7 @@ func NewServer(opts Options) (*Server, error) {
 	pb.RegisterAuditServer(gs, &auditServer{state: opts.State, brokers: opts.Brokers})
 	pb.RegisterDeployServer(gs, &deployServer{state: opts.State, raft: opts.Raft})
 	pb.RegisterWatchServer(gs, &watchServer{state: opts.State, brokers: opts.Brokers})
+	pb.RegisterRegistryCredentialsServer(gs, &registryCredentialsServer{state: opts.State, raft: opts.Raft})
 
 	return &Server{grpc: gs, listener: lis, opts: opts}, nil
 }

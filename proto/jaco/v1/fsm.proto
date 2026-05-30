@@ -31,4 +31,9 @@ message FSMSnapshot {
   // path silently dropped every cert blob.
   repeated CertBlob cert_blobs = 16;
   repeated TCPRoute tcp_routes = 17;
+  // registry_credentials carries replicated container-registry auth so a
+  // fresh node can authenticate image pulls without operator re-entry
+  // (issue #101). See entities.proto RegistryCredential for the at-rest
+  // posture and docs/concepts/auth-and-tokens.md for the threat model.
+  repeated RegistryCredential registry_credentials = 18;
 }

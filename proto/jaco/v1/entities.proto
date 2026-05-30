@@ -59,6 +59,8 @@ enum AuditEventType {
   AUDIT_EVENT_TYPE_UPGRADE_SUCCEEDED = 15;
   AUDIT_EVENT_TYPE_UPGRADE_FAILED = 16;
   AUDIT_EVENT_TYPE_ROLLOUT_INVARIANT_HOLD = 17;
+  AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_UPSERT = 18;
+  AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_REMOVE = 19;
 }
 
 // ----- Cluster-level entities -----
@@ -256,4 +258,23 @@ message RestartCounter {
   string replica_id = 1;
   int32 consecutive_failures = 2;
   google.protobuf.Timestamp last_attempt_at = 3;
+}
+
+// ----- Registry entities -----
+
+// RegistryCredential is the raft-replicated container-registry credential
+// consumed at image-pull time. Keyed by canonical registry host:
+//   - "docker.io"   for Docker Hub (normalized from index.docker.io / docker.io)
+//   - "ghcr.io"     for GitHub Container Registry
+//   - "registry.example.com:5000"  for self-hosted registries on non-443 ports
+//
+// secret is the password / API token / PAT, held opaquely. Encoded
+// at-rest in raft alongside the cluster CA private key under the same
+// filesystem-permission + WireGuard-transport trust posture; see
+// docs/concepts/auth-and-tokens.md. Every list/audit surface MUST redact it.
+message RegistryCredential {
+  string registry = 1;
+  string username = 2;
+  bytes secret = 3;
+  google.protobuf.Timestamp updated_at = 4;
 }

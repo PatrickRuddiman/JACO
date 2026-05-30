@@ -112,6 +112,8 @@ type Command struct {
 	//	*Command_JoinTokenConsume
 	//	*Command_AuditAppend
 	//	*Command_Batch
+	//	*Command_RegistryCredentialUpsert
+	//	*Command_RegistryCredentialRemove
 	Payload       isCommand_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -470,6 +472,24 @@ func (x *Command) GetBatch() *Batch {
 	return nil
 }
 
+func (x *Command) GetRegistryCredentialUpsert() *RegistryCredentialUpsert {
+	if x != nil {
+		if x, ok := x.Payload.(*Command_RegistryCredentialUpsert); ok {
+			return x.RegistryCredentialUpsert
+		}
+	}
+	return nil
+}
+
+func (x *Command) GetRegistryCredentialRemove() *RegistryCredentialRemove {
+	if x != nil {
+		if x, ok := x.Payload.(*Command_RegistryCredentialRemove); ok {
+			return x.RegistryCredentialRemove
+		}
+	}
+	return nil
+}
+
 type isCommand_Payload interface {
 	isCommand_Payload()
 }
@@ -602,6 +622,14 @@ type Command_Batch struct {
 	Batch *Batch `protobuf:"bytes,90,opt,name=batch,proto3,oneof"`
 }
 
+type Command_RegistryCredentialUpsert struct {
+	RegistryCredentialUpsert *RegistryCredentialUpsert `protobuf:"bytes,100,opt,name=registry_credential_upsert,json=registryCredentialUpsert,proto3,oneof"`
+}
+
+type Command_RegistryCredentialRemove struct {
+	RegistryCredentialRemove *RegistryCredentialRemove `protobuf:"bytes,101,opt,name=registry_credential_remove,json=registryCredentialRemove,proto3,oneof"`
+}
+
 func (*Command_ClusterInit) isCommand_Payload() {}
 
 func (*Command_NodeJoin) isCommand_Payload() {}
@@ -665,6 +693,10 @@ func (*Command_JoinTokenConsume) isCommand_Payload() {}
 func (*Command_AuditAppend) isCommand_Payload() {}
 
 func (*Command_Batch) isCommand_Payload() {}
+
+func (*Command_RegistryCredentialUpsert) isCommand_Payload() {}
+
+func (*Command_RegistryCredentialRemove) isCommand_Payload() {}
 
 // Batch carries multiple commands applied atomically inside one raft Apply.
 type Batch struct {
@@ -2375,11 +2407,104 @@ func (x *AuditAppend) GetEvent() *AuditEvent {
 	return nil
 }
 
+// RegistryCredentialUpsert installs (or replaces) the credential for the
+// canonical registry host carried in credential.registry. The FSM stamps
+// updated_at from cmd.ts if the caller left it unset.
+type RegistryCredentialUpsert struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Credential    *RegistryCredential    `protobuf:"bytes,1,opt,name=credential,proto3" json:"credential,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegistryCredentialUpsert) Reset() {
+	*x = RegistryCredentialUpsert{}
+	mi := &file_jaco_v1_commands_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegistryCredentialUpsert) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegistryCredentialUpsert) ProtoMessage() {}
+
+func (x *RegistryCredentialUpsert) ProtoReflect() protoreflect.Message {
+	mi := &file_jaco_v1_commands_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegistryCredentialUpsert.ProtoReflect.Descriptor instead.
+func (*RegistryCredentialUpsert) Descriptor() ([]byte, []int) {
+	return file_jaco_v1_commands_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *RegistryCredentialUpsert) GetCredential() *RegistryCredential {
+	if x != nil {
+		return x.Credential
+	}
+	return nil
+}
+
+// RegistryCredentialRemove drops the credential for registry (canonical
+// host). Idempotent: removing an unknown host is not an error.
+type RegistryCredentialRemove struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Registry      string                 `protobuf:"bytes,1,opt,name=registry,proto3" json:"registry,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegistryCredentialRemove) Reset() {
+	*x = RegistryCredentialRemove{}
+	mi := &file_jaco_v1_commands_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegistryCredentialRemove) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegistryCredentialRemove) ProtoMessage() {}
+
+func (x *RegistryCredentialRemove) ProtoReflect() protoreflect.Message {
+	mi := &file_jaco_v1_commands_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegistryCredentialRemove.ProtoReflect.Descriptor instead.
+func (*RegistryCredentialRemove) Descriptor() ([]byte, []int) {
+	return file_jaco_v1_commands_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *RegistryCredentialRemove) GetRegistry() string {
+	if x != nil {
+		return x.Registry
+	}
+	return ""
+}
+
 var File_jaco_v1_commands_proto protoreflect.FileDescriptor
 
 const file_jaco_v1_commands_proto_rawDesc = "" +
 	"\n" +
-	"\x16jaco/v1/commands.proto\x12\ajaco.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x16jaco/v1/entities.proto\"\xc3\x12\n" +
+	"\x16jaco/v1/commands.proto\x12\ajaco.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x16jaco/v1/entities.proto\"\x89\x14\n" +
 	"\aCommand\x12\x1d\n" +
 	"\n" +
 	"cluster_id\x18\x01 \x01(\tR\tclusterId\x12\x1d\n" +
@@ -2424,7 +2549,9 @@ const file_jaco_v1_commands_proto_rawDesc = "" +
 	"\x10join_token_issue\x18H \x01(\v2\x17.jaco.v1.JoinTokenIssueH\x00R\x0ejoinTokenIssue\x12I\n" +
 	"\x12join_token_consume\x18I \x01(\v2\x19.jaco.v1.JoinTokenConsumeH\x00R\x10joinTokenConsume\x129\n" +
 	"\faudit_append\x18P \x01(\v2\x14.jaco.v1.AuditAppendH\x00R\vauditAppend\x12&\n" +
-	"\x05batch\x18Z \x01(\v2\x0e.jaco.v1.BatchH\x00R\x05batchB\t\n" +
+	"\x05batch\x18Z \x01(\v2\x0e.jaco.v1.BatchH\x00R\x05batch\x12a\n" +
+	"\x1aregistry_credential_upsert\x18d \x01(\v2!.jaco.v1.RegistryCredentialUpsertH\x00R\x18registryCredentialUpsert\x12a\n" +
+	"\x1aregistry_credential_remove\x18e \x01(\v2!.jaco.v1.RegistryCredentialRemoveH\x00R\x18registryCredentialRemoveB\t\n" +
 	"\apayload\"5\n" +
 	"\x05Batch\x12,\n" +
 	"\bchildren\x18\x01 \x03(\v2\x10.jaco.v1.CommandR\bchildren\"\xe5\x01\n" +
@@ -2559,7 +2686,13 @@ const file_jaco_v1_commands_proto_rawDesc = "" +
 	"\x10JoinTokenConsume\x12#\n" +
 	"\rhashed_secret\x18\x01 \x01(\fR\fhashedSecret\"8\n" +
 	"\vAuditAppend\x12)\n" +
-	"\x05event\x18\x01 \x01(\v2\x13.jaco.v1.AuditEventR\x05eventB:Z8github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1;jacov1b\x06proto3"
+	"\x05event\x18\x01 \x01(\v2\x13.jaco.v1.AuditEventR\x05event\"W\n" +
+	"\x18RegistryCredentialUpsert\x12;\n" +
+	"\n" +
+	"credential\x18\x01 \x01(\v2\x1b.jaco.v1.RegistryCredentialR\n" +
+	"credential\"6\n" +
+	"\x18RegistryCredentialRemove\x12\x1a\n" +
+	"\bregistry\x18\x01 \x01(\tR\bregistryB:Z8github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1;jacov1b\x06proto3"
 
 var (
 	file_jaco_v1_commands_proto_rawDescOnce sync.Once
@@ -2574,7 +2707,7 @@ func file_jaco_v1_commands_proto_rawDescGZIP() []byte {
 }
 
 var file_jaco_v1_commands_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_jaco_v1_commands_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
+var file_jaco_v1_commands_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
 var file_jaco_v1_commands_proto_goTypes = []any{
 	(RestartCounterUpdate_Action)(0), // 0: jaco.v1.RestartCounterUpdate.Action
 	(*Command)(nil),                  // 1: jaco.v1.Command
@@ -2610,23 +2743,26 @@ var file_jaco_v1_commands_proto_goTypes = []any{
 	(*JoinTokenIssue)(nil),           // 31: jaco.v1.JoinTokenIssue
 	(*JoinTokenConsume)(nil),         // 32: jaco.v1.JoinTokenConsume
 	(*AuditAppend)(nil),              // 33: jaco.v1.AuditAppend
-	nil,                              // 34: jaco.v1.NodeStatusUpdate.DetailsEntry
-	nil,                              // 35: jaco.v1.DeploymentStatusUpdate.DetailsEntry
-	(*timestamppb.Timestamp)(nil),    // 36: google.protobuf.Timestamp
-	(NodeStatus)(0),                  // 37: jaco.v1.NodeStatus
-	(*ServiceSpec)(nil),              // 38: jaco.v1.ServiceSpec
-	(*Route)(nil),                    // 39: jaco.v1.Route
-	(*TCPRoute)(nil),                 // 40: jaco.v1.TCPRoute
-	(DeploymentStatus)(0),            // 41: jaco.v1.DeploymentStatus
-	(*ReplicaDesired)(nil),           // 42: jaco.v1.ReplicaDesired
-	(*ReplicaObserved)(nil),          // 43: jaco.v1.ReplicaObserved
-	(*RolloutPlan)(nil),              // 44: jaco.v1.RolloutPlan
-	(*ChallengeToken)(nil),           // 45: jaco.v1.ChallengeToken
-	(*CertBlob)(nil),                 // 46: jaco.v1.CertBlob
-	(*AuditEvent)(nil),               // 47: jaco.v1.AuditEvent
+	(*RegistryCredentialUpsert)(nil), // 34: jaco.v1.RegistryCredentialUpsert
+	(*RegistryCredentialRemove)(nil), // 35: jaco.v1.RegistryCredentialRemove
+	nil,                              // 36: jaco.v1.NodeStatusUpdate.DetailsEntry
+	nil,                              // 37: jaco.v1.DeploymentStatusUpdate.DetailsEntry
+	(*timestamppb.Timestamp)(nil),    // 38: google.protobuf.Timestamp
+	(NodeStatus)(0),                  // 39: jaco.v1.NodeStatus
+	(*ServiceSpec)(nil),              // 40: jaco.v1.ServiceSpec
+	(*Route)(nil),                    // 41: jaco.v1.Route
+	(*TCPRoute)(nil),                 // 42: jaco.v1.TCPRoute
+	(DeploymentStatus)(0),            // 43: jaco.v1.DeploymentStatus
+	(*ReplicaDesired)(nil),           // 44: jaco.v1.ReplicaDesired
+	(*ReplicaObserved)(nil),          // 45: jaco.v1.ReplicaObserved
+	(*RolloutPlan)(nil),              // 46: jaco.v1.RolloutPlan
+	(*ChallengeToken)(nil),           // 47: jaco.v1.ChallengeToken
+	(*CertBlob)(nil),                 // 48: jaco.v1.CertBlob
+	(*AuditEvent)(nil),               // 49: jaco.v1.AuditEvent
+	(*RegistryCredential)(nil),       // 50: jaco.v1.RegistryCredential
 }
 var file_jaco_v1_commands_proto_depIdxs = []int32{
-	36, // 0: jaco.v1.Command.ts:type_name -> google.protobuf.Timestamp
+	38, // 0: jaco.v1.Command.ts:type_name -> google.protobuf.Timestamp
 	3,  // 1: jaco.v1.Command.cluster_init:type_name -> jaco.v1.ClusterInit
 	4,  // 2: jaco.v1.Command.node_join:type_name -> jaco.v1.NodeJoin
 	5,  // 3: jaco.v1.Command.node_remove:type_name -> jaco.v1.NodeRemove
@@ -2659,29 +2795,32 @@ var file_jaco_v1_commands_proto_depIdxs = []int32{
 	32, // 30: jaco.v1.Command.join_token_consume:type_name -> jaco.v1.JoinTokenConsume
 	33, // 31: jaco.v1.Command.audit_append:type_name -> jaco.v1.AuditAppend
 	2,  // 32: jaco.v1.Command.batch:type_name -> jaco.v1.Batch
-	1,  // 33: jaco.v1.Batch.children:type_name -> jaco.v1.Command
-	37, // 34: jaco.v1.NodeStatusUpdate.status:type_name -> jaco.v1.NodeStatus
-	34, // 35: jaco.v1.NodeStatusUpdate.details:type_name -> jaco.v1.NodeStatusUpdate.DetailsEntry
-	38, // 36: jaco.v1.DeploymentApply.services:type_name -> jaco.v1.ServiceSpec
-	39, // 37: jaco.v1.DeploymentApply.routes:type_name -> jaco.v1.Route
-	40, // 38: jaco.v1.DeploymentApply.tcp_routes:type_name -> jaco.v1.TCPRoute
-	41, // 39: jaco.v1.DeploymentStatusUpdate.status:type_name -> jaco.v1.DeploymentStatus
-	35, // 40: jaco.v1.DeploymentStatusUpdate.details:type_name -> jaco.v1.DeploymentStatusUpdate.DetailsEntry
-	42, // 41: jaco.v1.ReplicaDesiredUpsert.replica:type_name -> jaco.v1.ReplicaDesired
-	43, // 42: jaco.v1.ReplicaObservedUpdate.replica:type_name -> jaco.v1.ReplicaObserved
-	44, // 43: jaco.v1.RolloutPlanUpdate.plan:type_name -> jaco.v1.RolloutPlan
-	0,  // 44: jaco.v1.RestartCounterUpdate.action:type_name -> jaco.v1.RestartCounterUpdate.Action
-	39, // 45: jaco.v1.RouteUpsert.route:type_name -> jaco.v1.Route
-	36, // 46: jaco.v1.CertLock.until:type_name -> google.protobuf.Timestamp
-	45, // 47: jaco.v1.ChallengeTokenStore.token:type_name -> jaco.v1.ChallengeToken
-	46, // 48: jaco.v1.CertBlobUpsert.blob:type_name -> jaco.v1.CertBlob
-	36, // 49: jaco.v1.JoinTokenIssue.expires_at:type_name -> google.protobuf.Timestamp
-	47, // 50: jaco.v1.AuditAppend.event:type_name -> jaco.v1.AuditEvent
-	51, // [51:51] is the sub-list for method output_type
-	51, // [51:51] is the sub-list for method input_type
-	51, // [51:51] is the sub-list for extension type_name
-	51, // [51:51] is the sub-list for extension extendee
-	0,  // [0:51] is the sub-list for field type_name
+	34, // 33: jaco.v1.Command.registry_credential_upsert:type_name -> jaco.v1.RegistryCredentialUpsert
+	35, // 34: jaco.v1.Command.registry_credential_remove:type_name -> jaco.v1.RegistryCredentialRemove
+	1,  // 35: jaco.v1.Batch.children:type_name -> jaco.v1.Command
+	39, // 36: jaco.v1.NodeStatusUpdate.status:type_name -> jaco.v1.NodeStatus
+	36, // 37: jaco.v1.NodeStatusUpdate.details:type_name -> jaco.v1.NodeStatusUpdate.DetailsEntry
+	40, // 38: jaco.v1.DeploymentApply.services:type_name -> jaco.v1.ServiceSpec
+	41, // 39: jaco.v1.DeploymentApply.routes:type_name -> jaco.v1.Route
+	42, // 40: jaco.v1.DeploymentApply.tcp_routes:type_name -> jaco.v1.TCPRoute
+	43, // 41: jaco.v1.DeploymentStatusUpdate.status:type_name -> jaco.v1.DeploymentStatus
+	37, // 42: jaco.v1.DeploymentStatusUpdate.details:type_name -> jaco.v1.DeploymentStatusUpdate.DetailsEntry
+	44, // 43: jaco.v1.ReplicaDesiredUpsert.replica:type_name -> jaco.v1.ReplicaDesired
+	45, // 44: jaco.v1.ReplicaObservedUpdate.replica:type_name -> jaco.v1.ReplicaObserved
+	46, // 45: jaco.v1.RolloutPlanUpdate.plan:type_name -> jaco.v1.RolloutPlan
+	0,  // 46: jaco.v1.RestartCounterUpdate.action:type_name -> jaco.v1.RestartCounterUpdate.Action
+	41, // 47: jaco.v1.RouteUpsert.route:type_name -> jaco.v1.Route
+	38, // 48: jaco.v1.CertLock.until:type_name -> google.protobuf.Timestamp
+	47, // 49: jaco.v1.ChallengeTokenStore.token:type_name -> jaco.v1.ChallengeToken
+	48, // 50: jaco.v1.CertBlobUpsert.blob:type_name -> jaco.v1.CertBlob
+	38, // 51: jaco.v1.JoinTokenIssue.expires_at:type_name -> google.protobuf.Timestamp
+	49, // 52: jaco.v1.AuditAppend.event:type_name -> jaco.v1.AuditEvent
+	50, // 53: jaco.v1.RegistryCredentialUpsert.credential:type_name -> jaco.v1.RegistryCredential
+	54, // [54:54] is the sub-list for method output_type
+	54, // [54:54] is the sub-list for method input_type
+	54, // [54:54] is the sub-list for extension type_name
+	54, // [54:54] is the sub-list for extension extendee
+	0,  // [0:54] is the sub-list for field type_name
 }
 
 func init() { file_jaco_v1_commands_proto_init() }
@@ -2723,6 +2862,8 @@ func file_jaco_v1_commands_proto_init() {
 		(*Command_JoinTokenConsume)(nil),
 		(*Command_AuditAppend)(nil),
 		(*Command_Batch)(nil),
+		(*Command_RegistryCredentialUpsert)(nil),
+		(*Command_RegistryCredentialRemove)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -2730,7 +2871,7 @@ func file_jaco_v1_commands_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_jaco_v1_commands_proto_rawDesc), len(file_jaco_v1_commands_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   35,
+			NumMessages:   37,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

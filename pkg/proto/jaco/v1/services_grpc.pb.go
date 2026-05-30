@@ -902,6 +902,194 @@ var Tokens_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
+	RegistryCredentials_Add_FullMethodName    = "/jaco.v1.RegistryCredentials/Add"
+	RegistryCredentials_Remove_FullMethodName = "/jaco.v1.RegistryCredentials/Remove"
+	RegistryCredentials_List_FullMethodName   = "/jaco.v1.RegistryCredentials/List"
+)
+
+// RegistryCredentialsClient is the client API for RegistryCredentials service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// RegistryCredentials manages container-registry credentials replicated
+// across raft and consumed by every node's image-pull path (issue #101).
+// Add/Remove gate on the leader; List reads local state and returns
+// summaries — the secret is NEVER on the wire.
+type RegistryCredentialsClient interface {
+	Add(ctx context.Context, in *RegistryCredentialAddRequest, opts ...grpc.CallOption) (*RegistryCredentialAddResponse, error)
+	Remove(ctx context.Context, in *RegistryCredentialRemoveRequest, opts ...grpc.CallOption) (*RegistryCredentialRemoveResponse, error)
+	List(ctx context.Context, in *RegistryCredentialListRequest, opts ...grpc.CallOption) (*RegistryCredentialListResponse, error)
+}
+
+type registryCredentialsClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewRegistryCredentialsClient(cc grpc.ClientConnInterface) RegistryCredentialsClient {
+	return &registryCredentialsClient{cc}
+}
+
+func (c *registryCredentialsClient) Add(ctx context.Context, in *RegistryCredentialAddRequest, opts ...grpc.CallOption) (*RegistryCredentialAddResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RegistryCredentialAddResponse)
+	err := c.cc.Invoke(ctx, RegistryCredentials_Add_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *registryCredentialsClient) Remove(ctx context.Context, in *RegistryCredentialRemoveRequest, opts ...grpc.CallOption) (*RegistryCredentialRemoveResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RegistryCredentialRemoveResponse)
+	err := c.cc.Invoke(ctx, RegistryCredentials_Remove_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *registryCredentialsClient) List(ctx context.Context, in *RegistryCredentialListRequest, opts ...grpc.CallOption) (*RegistryCredentialListResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RegistryCredentialListResponse)
+	err := c.cc.Invoke(ctx, RegistryCredentials_List_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// RegistryCredentialsServer is the server API for RegistryCredentials service.
+// All implementations must embed UnimplementedRegistryCredentialsServer
+// for forward compatibility.
+//
+// RegistryCredentials manages container-registry credentials replicated
+// across raft and consumed by every node's image-pull path (issue #101).
+// Add/Remove gate on the leader; List reads local state and returns
+// summaries — the secret is NEVER on the wire.
+type RegistryCredentialsServer interface {
+	Add(context.Context, *RegistryCredentialAddRequest) (*RegistryCredentialAddResponse, error)
+	Remove(context.Context, *RegistryCredentialRemoveRequest) (*RegistryCredentialRemoveResponse, error)
+	List(context.Context, *RegistryCredentialListRequest) (*RegistryCredentialListResponse, error)
+	mustEmbedUnimplementedRegistryCredentialsServer()
+}
+
+// UnimplementedRegistryCredentialsServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedRegistryCredentialsServer struct{}
+
+func (UnimplementedRegistryCredentialsServer) Add(context.Context, *RegistryCredentialAddRequest) (*RegistryCredentialAddResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Add not implemented")
+}
+func (UnimplementedRegistryCredentialsServer) Remove(context.Context, *RegistryCredentialRemoveRequest) (*RegistryCredentialRemoveResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Remove not implemented")
+}
+func (UnimplementedRegistryCredentialsServer) List(context.Context, *RegistryCredentialListRequest) (*RegistryCredentialListResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method List not implemented")
+}
+func (UnimplementedRegistryCredentialsServer) mustEmbedUnimplementedRegistryCredentialsServer() {}
+func (UnimplementedRegistryCredentialsServer) testEmbeddedByValue()                             {}
+
+// UnsafeRegistryCredentialsServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to RegistryCredentialsServer will
+// result in compilation errors.
+type UnsafeRegistryCredentialsServer interface {
+	mustEmbedUnimplementedRegistryCredentialsServer()
+}
+
+func RegisterRegistryCredentialsServer(s grpc.ServiceRegistrar, srv RegistryCredentialsServer) {
+	// If the following call panics, it indicates UnimplementedRegistryCredentialsServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&RegistryCredentials_ServiceDesc, srv)
+}
+
+func _RegistryCredentials_Add_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RegistryCredentialAddRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RegistryCredentialsServer).Add(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RegistryCredentials_Add_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RegistryCredentialsServer).Add(ctx, req.(*RegistryCredentialAddRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RegistryCredentials_Remove_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RegistryCredentialRemoveRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RegistryCredentialsServer).Remove(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RegistryCredentials_Remove_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RegistryCredentialsServer).Remove(ctx, req.(*RegistryCredentialRemoveRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RegistryCredentials_List_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RegistryCredentialListRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RegistryCredentialsServer).List(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RegistryCredentials_List_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RegistryCredentialsServer).List(ctx, req.(*RegistryCredentialListRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// RegistryCredentials_ServiceDesc is the grpc.ServiceDesc for RegistryCredentials service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var RegistryCredentials_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "jaco.v1.RegistryCredentials",
+	HandlerType: (*RegistryCredentialsServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Add",
+			Handler:    _RegistryCredentials_Add_Handler,
+		},
+		{
+			MethodName: "Remove",
+			Handler:    _RegistryCredentials_Remove_Handler,
+		},
+		{
+			MethodName: "List",
+			Handler:    _RegistryCredentials_List_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "jaco/v1/services.proto",
+}
+
+const (
 	Audit_Query_FullMethodName = "/jaco.v1.Audit/Query"
 )
 

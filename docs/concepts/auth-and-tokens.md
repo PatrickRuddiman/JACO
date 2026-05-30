@@ -65,6 +65,47 @@ in any environment you care about.
 stdout so you can stash it on the joining node before running
 `jaco node join`.
 
+### Registry credentials
+
+Container-registry credentials used at image-pull time are replicated
+across the raft and consumed by every node — operators set them once
+via [`jaco registry login`](../cli/registry.md) and every node
+(including ones that join later) can pull from private registries
+without per-node `~/.docker/config.json`.
+
+The entity is `RegistryCredential{registry, username, secret,
+updated_at}`, keyed by canonical host (Docker Hub variants fold to
+`docker.io`; non-default ports are preserved verbatim). At image-pull
+time the reconciler canonicalizes the image ref, looks up the
+credential in cluster state, and threads the base64-encoded
+`X-Registry-Auth` blob into `image.PullOptions.RegistryAuth`. A
+missing credential is not an error — the pull proceeds anonymously.
+
+**At-rest posture.** Registry secrets sit in raft unencrypted, behind
+the same filesystem-permission + WireGuard-transport trust boundary
+as the cluster CA private key (`ca_key` in `ClusterMeta`) and ACME
+private keys (`CertBlob`). This is acceptable for the initial drop
+because the trust posture is symmetric across all replicated secrets;
+envelope encryption is a possible follow-up that should arguably
+cover certs/CA in the same pass rather than singling out registry
+creds (issue [#101](https://github.com/PatrickRuddiman/jaco/issues/101)
+notes this explicitly).
+
+**Replication semantics.** Add/Remove gate on the raft leader and
+propagate via a normal raft Apply, so the credential is on every
+follower within one apply cycle (well under the spec's 5 s bar).
+`FSMSnapshot` includes `repeated RegistryCredential
+registry_credentials = 18` so a fresh node that installs a snapshot
+picks up every credential without operator re-entry.
+
+**Read paths never expose the secret.** `jaco registry list` returns
+a `RegistryCredentialSummary` (registry + username +
+`updated_at`); the wire type has no secret field. Audit events for
+upsert/remove carry `registry` + `username` only — symmetric with
+`TOKEN_ISSUE` which records only the identity. The only way to
+rotate a credential is to `login` again with the new secret; there is
+no read-back.
+
 ## The unix-socket trust boundary
 
 On a cluster node, the local daemon listens on
