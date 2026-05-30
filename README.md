@@ -135,12 +135,16 @@ jaco node   list --server $LEADER
 
 ## Network model
 
-The daemon's cross-host gRPC listener (`listen_addr`) and raft transport
-(`cluster_addr`) are plaintext TCP in v0 — JACO assumes the wire is
-wrapped by Tailscale / WireGuard / your own overlay. Cluster
-authentication still relies on the operator bearer token plus the
-single-use join token; only the wire confidentiality is delegated.
-TLS-with-cluster-CA + cert pinning lands in a follow-up.
+The cross-host **gRPC control plane** (`listen_addr`, default `:7000`)
+runs over **TLS**: each daemon presents a node certificate signed by the
+cluster CA, and the CLI and peer daemons verify against that CA (cert
+pinning). The operator bearer token plus the single-use join token still
+authenticate the caller on top of the transport.
+
+The **raft transport** (`cluster_addr`, default `:7001`) is still
+plaintext TCP — run it over a private network or overlay you control. A
+few bootstrap hops (a node join before it holds the CA, and some
+follower→leader forwarding) negotiate TLS without verifying the peer.
 
 Discovery subsystems (WireGuard mesh, nftables firewall, per-bridge DNS)
 are kernel-gated — when the host lacks the relevant kernel feature
@@ -150,18 +154,19 @@ The scheduler + runtime + ingress paths work either way.
 
 ## Status
 
-Pre-release. Functional for single-host and multi-host clusters via the
-two-binary path described above. Open gaps: TLS on the cross-host
-listener, follower→leader forwarding of `ReplicaObserved` updates, the
-caddy/v2 ingress reload loop, rollout state-machine integration with the
-scheduler, and the drain step machine for `jaco node remove`.
+Tagged releases through `v0.1.2`, functional for single-host and
+multi-host clusters via the two-binary path described above. The earlier
+gaps — cross-host gRPC TLS, follower→leader forwarding of
+`ReplicaObserved` updates, the Caddy ingress reload loop, rollout
+state-machine integration with the scheduler, and the drain step machine
+for `jaco node remove` — are implemented. Known remaining item: the raft
+transport is still plaintext (see Network model).
 
 For operator and developer documentation see [`docs/`](docs/) —
 start with [`docs/getting-started.md`](docs/getting-started.md) for the
 end-to-end user path and
 [`docs/concepts/architecture.md`](docs/concepts/architecture.md) for
-the architecture overview. The original v1 spec and design notes live
-under [`docs/planning/`](docs/planning/) (`spec.md`, `design.md`).
+the architecture overview.
 
 ## License
 

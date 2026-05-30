@@ -14,10 +14,11 @@ End-to-end in one page.
   UDP `51820` for the WireGuard mesh. TCP `80` and `443` reachable from
   whichever clients hit your ingress.
 
-The cross-host gRPC and raft listeners are **plaintext TCP** in v0 — JACO
-assumes the wire is wrapped by an overlay you control. Operator
-authentication still uses bearer tokens; only wire confidentiality is
-delegated. See [Networking](concepts/networking.md) and the README
+The cross-host gRPC control plane (`:7000`) runs over **TLS** with the
+cluster CA — the CLI and peer nodes pin it — and the operator bearer
+token authenticates the caller on top. The **raft transport** (`:7001`)
+is still plaintext TCP, so run it over a private network or overlay you
+control. See [Networking](concepts/networking.md) and the README
 "Network model" section.
 
 ## 1. Install on every host
