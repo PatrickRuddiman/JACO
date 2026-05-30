@@ -19,7 +19,7 @@ func seedNode(st *state.State, name string) {
 
 func seedReplica(st *state.State, dep, svc, host string, idx int32) {
 	st.ReplicasDesired.Apply(&pb.ReplicaDesired{
-		Id: dep + "-" + svc + "-" + itoa(idx),
+		Id:         dep + "-" + svc + "-" + itoa(idx),
 		Deployment: dep, Service: svc, Index: idx, Host: host, Image: "img:1",
 	}, 1)
 }
