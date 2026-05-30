@@ -5,6 +5,39 @@ deployment with public ingress. Every example is a `jaco.yaml` plus a
 `docker-compose.yml` pair; copy them into the same directory and run
 `jaco apply <jaco.yaml>` — the compose file auto-resolves.
 
+## 0. Routes-only: compose supplies the rest
+
+The slimmest legal `jaco.yaml` (issue #99). No `services:` block —
+every compose service inherits a single-replica `spread` placement,
+and `deploy.replicas` in the compose file (if set) supplies the
+default count. The overlay only declares the public route, because
+that's the only thing compose itself can't express.
+
+`jaco.yaml`:
+
+```yaml
+deployment: slim
+routes:
+  - domain: slim.example.com
+    service: web
+    port: 80
+    tls: auto
+```
+
+`docker-compose.yml`:
+
+```yaml
+services:
+  web:
+    image: nginx:1.27
+    deploy:
+      replicas: 3
+```
+
+The merged ServiceSpec lands `web` at three replicas, placement
+`spread`, networks `[_default]`. Add a `services:` entry to override
+any of those (see Example 5 for a multi-service overlay).
+
 ## 1. One service, no ingress
 
 The shortest legal pair. Three replicas of nginx, spread across the

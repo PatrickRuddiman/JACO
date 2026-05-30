@@ -35,7 +35,7 @@ create:
 | `sysctls`      | sysctl key/value pairs                                         |
 | `ulimits`      | resource ulimits                                               |
 | `read_only`    | read-only root filesystem                                      |
-| `networks`     | per-(deployment, network) bridge attach (see below)            |
+| `networks`     | per-service network attach; the jaco overlay may override (see [`jaco.yaml`](jaco-yaml.md#networks)) |
 
 Plus the top-level `networks:` block, which declares the networks
 service-level entries may reference.
@@ -44,7 +44,7 @@ service-level entries may reference.
 
 | field      | behavior                                                                |
 |------------|-------------------------------------------------------------------------|
-| `deploy`   | only `deploy.resources.{limits,reservations}` are read (CPU/memory cgroup limits); `replicas`, `placement`, `restart_policy`, `update_config` are parsed-but-ignored — the scheduler owns those decisions |
+| `deploy`   | `deploy.resources.{limits,reservations}` set the per-replica CPU/memory cgroup limits. `deploy.replicas` (issue #99) supplies the **default replica count** for the service when `jaco.yaml`'s `services[*].replicas` is unset — JACO's overlay still wins when present. `deploy.placement`, `restart_policy`, and `update_config` remain parsed-but-ignored — the scheduler owns those decisions |
 | `cpus`, `mem_limit`, `mem_reservation`, `pids_limit`, `cpu_shares`, `cpuset` | legacy v2 resource keys; honored as a fallback when `deploy.resources` is absent. When both are present, `deploy.resources` wins |
 
 ## Explicitly accepted-and-ignored fields
