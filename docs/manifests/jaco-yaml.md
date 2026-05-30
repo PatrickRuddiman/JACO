@@ -1,3 +1,9 @@
+---
+sources:
+  - internal/controlplane/grpc/jaco_spec.go
+  - proto/jaco/v1/entities.proto
+---
+
 # `jaco.yaml` schema
 
 The overlay manifest is a small, **closed** schema. Every field is

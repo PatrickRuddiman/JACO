@@ -1,3 +1,11 @@
+---
+sources:
+  - cmd/jaco/apply.go
+  - internal/controlplane/grpc/jaco_spec.go
+  - internal/controlplane/admission/
+  - internal/runtime/compose/validate.go
+---
+
 # `jaco apply`
 
 Apply a `jaco.yaml` + compose pair to the cluster. The leader validates

@@ -1,3 +1,14 @@
+---
+sources:
+  - internal/controlplane/bootstrap/
+  - internal/controlplane/raft/
+  - internal/controlplane/grpc/cluster.go
+  - internal/controlplane/grpc/membership.go
+  - internal/scheduler/drain/
+  - cmd/jaco/cluster.go
+  - cmd/jaco/node.go
+---
+
 # Cluster lifecycle
 
 How a cluster comes into existence, grows, elects leaders, and

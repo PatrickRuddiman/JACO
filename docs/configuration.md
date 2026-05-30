@@ -1,3 +1,10 @@
+---
+sources:
+  - internal/daemon/config/
+  - internal/daemon/netdetect/
+  - cmd/jacod/main.go
+---
+
 # Configuration
 
 The daemon reads `/etc/jaco/jacod.yaml` at startup. The schema is

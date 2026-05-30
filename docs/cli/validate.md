@@ -1,3 +1,10 @@
+---
+sources:
+  - cmd/jaco/validate.go
+  - internal/controlplane/grpc/jaco_spec.go
+  - internal/runtime/compose/validate.go
+---
+
 # `jaco validate`
 
 Validate `jaco.yaml` and/or compose files locally. Runs the same

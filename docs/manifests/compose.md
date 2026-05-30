@@ -1,3 +1,9 @@
+---
+sources:
+  - internal/runtime/compose/
+  - internal/runtime/lifecycle/config.go
+---
+
 # Supported compose fields
 
 JACO consumes a standard `docker-compose.yml` v3+ file. The supported

@@ -1,3 +1,10 @@
+---
+sources:
+  - cmd/jaco/self_upgrade.go
+  - internal/packaging/
+  - .github/workflows/release.yml
+---
+
 # Upgrades
 
 JACO is upgraded **one node at a time** with `jaco self-upgrade`. The

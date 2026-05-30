@@ -1,3 +1,13 @@
+---
+sources:
+  - Makefile
+  - go.mod
+  - .golangci.yml
+  - .github/workflows/ci.yml
+  - proto/jaco/v1/
+  - internal/logging/
+---
+
 # Development
 
 Day-to-day build, test, vet, lint, and proto workflow. All targets are

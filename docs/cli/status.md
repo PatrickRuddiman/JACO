@@ -1,3 +1,10 @@
+---
+sources:
+  - cmd/jaco/status.go
+  - internal/controlplane/grpc/watch.go
+  - internal/controlplane/state/
+---
+
 # `jaco status`
 
 Print a snapshot of cluster deployments, replicas, routes, and managed

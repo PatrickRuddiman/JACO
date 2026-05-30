@@ -1,3 +1,11 @@
+---
+sources:
+  - internal/ingress/
+  - internal/daemon/grpc/ingress.go
+  - internal/controlplane/grpc/jaco_spec.go
+  - proto/jaco/v1/entities.proto
+---
+
 # Ingress
 
 JACO's north-south plane: embedded Caddy on `:80` and `:443` on every

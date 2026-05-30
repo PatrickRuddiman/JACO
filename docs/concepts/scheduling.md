@@ -1,3 +1,11 @@
+---
+sources:
+  - internal/scheduler/
+  - internal/runtime/reconciler/
+  - internal/runtime/pull/
+  - proto/jaco/v1/entities.proto
+---
+
 # Scheduling
 
 The scheduler is the **leader-only** desired-state reconciler. It reads
