@@ -456,9 +456,9 @@ func buildHandleChain(route Route, healthyByService map[string][]ReplicaObserved
 // same way pathMatchers does its "exact" form: a trailing glob "*" or trailing
 // "/" is dropped so "/api", "/api/", and "/api/*" all strip the "/api" prefix.
 func stripPrefix(path string) string {
-	if strings.HasSuffix(path, "*") {
-		path = strings.TrimSuffix(path, "*")
-	}
+	// TrimSuffix is a no-op when the suffix is absent, so the trailing glob
+	// and trailing slash can both be trimmed unconditionally.
+	path = strings.TrimSuffix(path, "*")
 	return strings.TrimSuffix(path, "/")
 }
 
