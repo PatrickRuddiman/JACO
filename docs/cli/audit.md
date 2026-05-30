@@ -1,3 +1,10 @@
+---
+sources:
+  - cmd/jaco/audit.go
+  - internal/controlplane/grpc/audit.go
+  - proto/jaco/v1/entities.proto
+---
+
 # `jaco audit`
 
 Query the cluster audit log. Each state-changing operation writes an

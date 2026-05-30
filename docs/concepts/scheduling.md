@@ -1,3 +1,11 @@
+---
+sources:
+  - internal/scheduler/
+  - internal/runtime/reconciler/
+  - internal/runtime/pull/
+  - proto/jaco/v1/entities.proto
+---
+
 # Scheduling
 
 The scheduler is the **leader-only** desired-state reconciler. It reads
@@ -31,12 +39,24 @@ Per `services[*].placement` (see
   `len(eligible) < replicas`, no replicas are scheduled; the
   deployment reports `pending` with details
   `{reason: cannot_satisfy_host_placement, missing: [...]}`.
+- **`global`** (daemonset) — `eligible = all healthy nodes`, and the
+  scheduler places exactly one replica on each eligible host. The
+  service's `replicas:` field is **ignored** and the effective count
+  tracks the size of the ready node set automatically; setting a
+  non-zero `replicas` together with `global` is accepted (a single
+  warn-level log line records the override) but has no effect. Replica
+  ids are derived from the hostname rather than a positional index, so
+  a surviving node's replica id is stable when other nodes join or
+  leave — no churn.
 
 ## Replica ids
 
-Replicas are named `<deployment>-<service>-<index>`. The index is a
-per-service monotonic counter (`ReplicaCounter`) stored in raft;
-indices are never reused. Stable, sortable, grep-friendly in logs.
+Replicas are named `<deployment>-<service>-<index>` for `spread`,
+`pack`, and `hosts`. The index is a per-service monotonic counter
+(`ReplicaCounter`) stored in raft; indices are never reused. For
+`global`, ids are `<deployment>-<service>-<host>`: hostname-keyed so a
+node's replica id survives membership churn. All forms are stable,
+sortable, and grep-friendly in logs.
 
 ## Rolling updates
 
@@ -115,6 +135,9 @@ When `jaco node remove <hostname>` runs, the drain machine:
    the remaining eligible set, writes
    `ReplicaDesired{id, host: new_host}`. The old replica on the
    leaving host remains running until the new one passes health.
+   Exception: **`placement: global`** replicas are not migrated —
+   they are simply dropped, because the daemonset already runs one
+   replica per node and migrating would double-place it on the target.
 3. When every replacement reports `running`, writes
    `ReplicaDesired{id, host: removed}` for the old replicas; runtime
    on the leaving node stops + removes them.

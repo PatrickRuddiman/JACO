@@ -1,3 +1,10 @@
+---
+sources:
+  - cmd/jaco/validate.go
+  - internal/controlplane/grpc/jaco_spec.go
+  - internal/runtime/compose/validate.go
+---
+
 # `jaco validate`
 
 Validate `jaco.yaml` and/or compose files locally. Runs the same
@@ -30,8 +37,9 @@ None — fully local; no cluster contact.
 
 - The jaco manifest is parsed by `internal/controlplane/grpc`'s
   validator. Unknown top-level keys, unknown service-level keys, bad
-  placement modes, or missing required fields fail with
-  `validation_failed` and a typed message.
+  placement modes (the closed set is `spread | pack | hosts |
+  global`), or missing required fields fail with `validation_failed`
+  and a typed message.
 - The compose file is parsed by `internal/runtime/compose`'s
   validator. Service-level fields outside the supported allowlist
   fail with `validation_failed` listing the offending service and

@@ -1,3 +1,10 @@
+---
+sources:
+  - cmd/jaco/backup.go
+  - cmd/jaco/restore.go
+  - internal/controlplane/backup/
+---
+
 # `jaco backup` and `jaco restore`
 
 Cluster state export and restore. The backup tarball is a raft snapshot

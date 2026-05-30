@@ -1,3 +1,11 @@
+---
+sources:
+  - cmd/jaco/backup.go
+  - cmd/jaco/restore.go
+  - internal/controlplane/backup/
+  - internal/controlplane/raft/
+---
+
 # Backups
 
 Cluster state is held in the raft FSM: deployments, replicas, routes,

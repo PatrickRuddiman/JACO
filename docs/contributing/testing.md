@@ -1,3 +1,13 @@
+---
+sources:
+  - Makefile
+  - .github/workflows/ci.yml
+  - .github/workflows/integration.yml
+  - .github/workflows/isolation-rig.yml
+  - scripts/test/
+  - tests/
+---
+
 # Testing
 
 Three test surfaces, in increasing operational cost:

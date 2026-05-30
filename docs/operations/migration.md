@@ -1,3 +1,11 @@
+---
+sources:
+  - internal/runtime/compose/
+  - internal/runtime/lifecycle/
+  - internal/runtime/volumes/
+  - internal/controlplane/grpc/jaco_spec.go
+---
+
 # Migrating a docker-compose stack to a JACO cluster
 
 This guide takes a stack you run today with `docker compose up` on a

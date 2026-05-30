@@ -1,3 +1,12 @@
+---
+sources:
+  - nfpm.yaml
+  - Makefile
+  - .github/workflows/release.yml
+  - cmd/jacod/main.go
+  - internal/packaging/
+---
+
 # Installation
 
 Install the `jaco` CLI and `jacod` daemon on each host that will be a

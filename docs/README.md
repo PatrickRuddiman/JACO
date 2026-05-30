@@ -1,3 +1,8 @@
+---
+sources:
+  - README.md
+---
+
 # JACO documentation
 
 JACO — Just Another Container Orchestrator. Multi-node, Docker-engine,
