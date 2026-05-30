@@ -43,6 +43,7 @@ func buildConfig(spec compose.ContainerSpec) (*container.Config, *container.Host
 		Mounts:         toDockerMounts(spec.Mounts),
 		Tmpfs:          toTmpfsMap(spec.Tmpfs),
 		DNS:            spec.DNSServers,
+		LogConfig:      toDockerLogConfig(spec.LogConfig),
 		Resources: container.Resources{
 			Ulimits: toUlimitsList(spec.Ulimits),
 			// Per-replica CPU/memory cgroup limits (issue #49). The compose
@@ -113,6 +114,21 @@ func toTmpfsMap(in []string) map[string]string {
 		out[t] = ""
 	}
 	return out
+}
+
+// toDockerLogConfig projects the spec's resolved log configuration into
+// docker's container.LogConfig (whose driver field is named Type). A nil spec
+// LogConfig yields the zero value, which docker treats as "use the daemon's
+// default log driver" — exactly the behavior we want when compose declared
+// nothing (issue #94).
+func toDockerLogConfig(in *compose.LogConfig) container.LogConfig {
+	if in == nil {
+		return container.LogConfig{}
+	}
+	return container.LogConfig{
+		Type:   in.Driver,
+		Config: in.Options,
+	}
 }
 
 func toUlimitsList(in map[string]compose.Ulimit) []*units.Ulimit {
