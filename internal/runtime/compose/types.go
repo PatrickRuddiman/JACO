@@ -136,6 +136,13 @@ type ContainerSpec struct {
 	// Same gating as Privileged. Empty = no override; docker applies the
 	// daemon-default security profile.
 	SecurityOpt []string
+	// NetworkMode is the verbatim compose `network_mode:` value (issue #121).
+	// Validator restricts it to: "" (default — per-deployment bridge),
+	// "none", or "service:<name>" where <name> is another service in the
+	// same deployment. The lifecycle layer resolves `service:<name>` to a
+	// docker `container:<id>` at container-create time (lazy, retry-able);
+	// it is NOT resolved here.
+	NetworkMode string
 }
 
 // Mount is a single bind / named-volume / tmpfs attachment.

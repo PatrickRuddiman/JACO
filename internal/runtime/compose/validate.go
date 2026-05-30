@@ -130,6 +130,13 @@ var allowedServiceFields = map[string]bool{
 	// `allows_privileged=true` — see internal/controlplane/grpc/deploy.go.
 	"privileged":   true,
 	"security_opt": true,
+	// network_mode (issue #121). Validator restricts the value to JACO's
+	// closed accept-set: empty (default — per-deployment bridge), `none`,
+	// or `service:<name>` where <name> is another service in the same
+	// deployment. `host`, `container:<id>`, `bridge`, and named-network
+	// values are rejected because they bypass the per-deployment bridge,
+	// the wireguard mesh, the firewall, and ingress.
+	"network_mode": true,
 }
 
 // Validate walks the raw compose YAML and rejects any service-level field
@@ -198,8 +205,67 @@ func Validate(rawYAML []byte) error {
 		if verr := checkPrivilegedLabel(svcName, svc); verr != nil {
 			return verr
 		}
+		if nm, ok := svc["network_mode"]; ok {
+			if verr := checkNetworkMode(svcName, nm, doc.Services); verr != nil {
+				return verr
+			}
+		}
 	}
 	return nil
+}
+
+// checkNetworkMode enforces JACO's closed accept-set for `network_mode:`
+// (issue #121). Empty / `none` / `service:<name>` (where <name> is a service
+// declared in the same compose document) pass; anything else — including
+// `host`, `bridge`, `container:<id>`, and any named network — is rejected
+// with a typed ValidationError naming the offending form so the operator
+// can correct the manifest. Pure cross-field check; the spec/lifecycle
+// layers do the actual resolution to a docker container id at start time.
+func checkNetworkMode(svcName string, modeField any, services map[string]map[string]any) *ValidationError {
+	mode, ok := modeField.(string)
+	if !ok {
+		return &ValidationError{
+			Code:    "validation_failed",
+			Message: fmt.Sprintf("service %q: network_mode must be a string", svcName),
+			Details: map[string]string{"service": svcName, "field": "network_mode"},
+		}
+	}
+	if mode == "" || mode == "none" {
+		return nil
+	}
+	if target, ok := strings.CutPrefix(mode, "service:"); ok {
+		if target == "" {
+			return &ValidationError{
+				Code:    "validation_failed",
+				Message: fmt.Sprintf("service %q: network_mode \"service:\" requires a target service name", svcName),
+				Details: map[string]string{"service": svcName, "field": "network_mode", "value": mode},
+			}
+		}
+		if _, exists := services[target]; !exists {
+			return &ValidationError{
+				Code: "validation_failed",
+				Message: fmt.Sprintf("service %q: network_mode service:%s — no service named %q in deployment",
+					svcName, target, target),
+				Details: map[string]string{
+					"service":        svcName,
+					"field":          "network_mode",
+					"value":          mode,
+					"target_service": target,
+				},
+			}
+		}
+		return nil
+	}
+	return &ValidationError{
+		Code: "validation_failed",
+		Message: fmt.Sprintf("service %q: network_mode %q rejected; JACO only accepts \"none\" or \"service:<name>\" (host/bridge/container:<id>/named networks bypass per-deployment isolation)",
+			svcName, mode),
+		Details: map[string]string{
+			"service": svcName,
+			"field":   "network_mode",
+			"value":   mode,
+		},
+	}
 }
 
 // reservedHostPorts are the host ports JACO's HTTP/S ingress owns; a compose

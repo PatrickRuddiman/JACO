@@ -91,6 +91,12 @@ func ToContainerSpec(svc types.ServiceConfig, opts SpecOptions) ContainerSpec {
 	// calling token's allows_privileged flag.
 	spec.Privileged = svc.Privileged
 	spec.SecurityOpt = cloneStringList(svc.SecurityOpt)
+	// network_mode (#121) — projected verbatim. Validator already
+	// restricted the value to "", "none", or "service:<name>"; the
+	// lifecycle layer resolves `service:<name>` to a docker
+	// `container:<id>` lazily at create time so the target's currently-
+	// running container id is reflected on every reconcile.
+	spec.NetworkMode = svc.NetworkMode
 
 	return spec
 }

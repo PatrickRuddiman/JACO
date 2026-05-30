@@ -686,5 +686,79 @@ func newDeployClient(t *testing.T, c *twoNodeCluster) pb.DeployClient {
 	return pb.NewDeployClient(conn)
 }
 
+// TestDeploy_ApplyRejectsRouteOnNetworkModeService — issue #121: an
+// ingress route targeting a service whose `network_mode:` is set
+// (none or service:<name>) is structurally unreachable — `none` has no
+// listener, `service:<name>` puts the listener on the target's netns —
+// so the apply is rejected with a typed validation_failed error naming
+// the offending route and the network_mode value. One sub-test per
+// forbidden combination.
+func TestDeploy_ApplyRejectsRouteOnNetworkModeService(t *testing.T) {
+	cases := []struct {
+		name        string
+		composeYAML string
+	}{
+		{
+			name: "route_on_network_mode_none",
+			composeYAML: `services:
+  web:
+    image: nginx:1.27
+    network_mode: none
+  app:
+    image: app:1.0
+`,
+		},
+		{
+			name: "route_on_network_mode_service",
+			composeYAML: `services:
+  web:
+    image: nginx:1.27
+    network_mode: "service:app"
+  app:
+    image: app:1.0
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := setupTwoNodeCluster(t)
+			deploy := newDeployClient(t, c)
+			ctx := authContext(c.OperatorToken)
+
+			const jacoYAML = `deployment: sample
+routes:
+  - domain: web.example.com
+    service: web
+    port: 80
+    tls: auto
+`
+			_, err := deploy.Apply(ctx, &pb.ApplyRequest{
+				JacoYaml:    []byte(jacoYAML),
+				ComposeYaml: []byte(tc.composeYAML),
+			})
+			if err == nil {
+				t.Fatalf("expected validation_failed for route on network_mode service")
+			}
+			sErr, _ := status.FromError(err)
+			if sErr.Code() != codes.InvalidArgument {
+				t.Errorf("code = %v, want InvalidArgument", sErr.Code())
+			}
+			if sErr.Message() != "validation_failed" {
+				t.Errorf("status message = %q, want validation_failed (the code)", sErr.Message())
+			}
+			if !errorDetailContains(t, err, "network_mode") {
+				t.Errorf("pb.Error details did not name network_mode: %v", err)
+			}
+			if !errorDetailContains(t, err, "web") {
+				t.Errorf("pb.Error details did not name offending service \"web\": %v", err)
+			}
+			// Deployment must NOT have been created on rejection.
+			if _, ok := c.A.State.Deployments.Get("sample"); ok {
+				t.Errorf("deployment sample was created despite validation_failed")
+			}
+		})
+	}
+}
+
 // silence unused
 var _ = context.Background
