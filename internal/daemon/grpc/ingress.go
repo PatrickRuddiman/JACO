@@ -176,6 +176,15 @@ func prodCertIssued(st *state.State, domain string) bool {
 // config package's typed views, and calls BuildCaddyConfig.
 func ingressBuilder(st *state.State, acme ingressACMEOpts, logger *slog.Logger) func() ([]byte, error) {
 	return func() ([]byte, error) {
+		// Per-stack acme_email lookup (#102): each route inherits its
+		// deployment's ACMEEmail, denormalized onto config.Route so the
+		// ingress builder doesn't need to thread Deployment lookup further
+		// down. Cached per-tick to avoid an N×M state walk for stacks with
+		// many routes.
+		deploymentEmail := map[string]string{}
+		for _, d := range st.Deployments.List() {
+			deploymentEmail[d.GetName()] = d.GetAcmeEmail()
+		}
 		var routes []config.Route
 		for _, r := range st.Routes.List() {
 			routes = append(routes, config.Route{
@@ -186,6 +195,7 @@ func ingressBuilder(st *state.State, acme ingressACMEOpts, logger *slog.Logger) 
 				TLSAuto:    r.GetTlsAuto(),
 				Path:       r.GetPath(),
 				StripPath:  r.GetStripPath(),
+				ACMEEmail:  deploymentEmail[r.GetDeployment()],
 			})
 		}
 

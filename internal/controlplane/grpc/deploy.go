@@ -148,6 +148,7 @@ func (d *deployServer) Apply(ctx context.Context, req *pb.ApplyRequest) (*pb.App
 			Services:    services,
 			Routes:      toRoutes(jacoSpec.Deployment, jacoSpec.Routes),
 			TcpRoutes:   tcpRoutes,
+			AcmeEmail:   jacoSpec.ACMEEmail,
 		}},
 	}
 	if err := applyRaftCommand(d.raft, cmd); err != nil {

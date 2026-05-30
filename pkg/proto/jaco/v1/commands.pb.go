@@ -1075,14 +1075,17 @@ func (x *NodeUpdateSelf) GetGrpcAddress() string {
 }
 
 type DeploymentApply struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Deployment    string                 `protobuf:"bytes,1,opt,name=deployment,proto3" json:"deployment,omitempty"`
-	Revision      uint64                 `protobuf:"varint,2,opt,name=revision,proto3" json:"revision,omitempty"`
-	JacoYaml      []byte                 `protobuf:"bytes,3,opt,name=jaco_yaml,json=jacoYaml,proto3" json:"jaco_yaml,omitempty"`
-	ComposeYaml   []byte                 `protobuf:"bytes,4,opt,name=compose_yaml,json=composeYaml,proto3" json:"compose_yaml,omitempty"`
-	Services      []*ServiceSpec         `protobuf:"bytes,5,rep,name=services,proto3" json:"services,omitempty"`
-	Routes        []*Route               `protobuf:"bytes,6,rep,name=routes,proto3" json:"routes,omitempty"`
-	TcpRoutes     []*TCPRoute            `protobuf:"bytes,7,rep,name=tcp_routes,json=tcpRoutes,proto3" json:"tcp_routes,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Deployment  string                 `protobuf:"bytes,1,opt,name=deployment,proto3" json:"deployment,omitempty"`
+	Revision    uint64                 `protobuf:"varint,2,opt,name=revision,proto3" json:"revision,omitempty"`
+	JacoYaml    []byte                 `protobuf:"bytes,3,opt,name=jaco_yaml,json=jacoYaml,proto3" json:"jaco_yaml,omitempty"`
+	ComposeYaml []byte                 `protobuf:"bytes,4,opt,name=compose_yaml,json=composeYaml,proto3" json:"compose_yaml,omitempty"`
+	Services    []*ServiceSpec         `protobuf:"bytes,5,rep,name=services,proto3" json:"services,omitempty"`
+	Routes      []*Route               `protobuf:"bytes,6,rep,name=routes,proto3" json:"routes,omitempty"`
+	TcpRoutes   []*TCPRoute            `protobuf:"bytes,7,rep,name=tcp_routes,json=tcpRoutes,proto3" json:"tcp_routes,omitempty"`
+	// acme_email is this stack's ACME contact (see Deployment.acme_email).
+	// Empty = fall back to cluster-wide jacod.yaml acme_email. #102.
+	AcmeEmail     string `protobuf:"bytes,8,opt,name=acme_email,json=acmeEmail,proto3" json:"acme_email,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1164,6 +1167,13 @@ func (x *DeploymentApply) GetTcpRoutes() []*TCPRoute {
 		return x.TcpRoutes
 	}
 	return nil
+}
+
+func (x *DeploymentApply) GetAcmeEmail() string {
+	if x != nil {
+		return x.AcmeEmail
+	}
+	return ""
 }
 
 type DeploymentRollback struct {
@@ -2582,7 +2592,7 @@ const file_jaco_v1_commands_proto_rawDesc = "" +
 	"\x0eNodeUpdateSelf\x12\x1a\n" +
 	"\bhostname\x18\x01 \x01(\tR\bhostname\x12)\n" +
 	"\x10wireguard_pubkey\x18\x02 \x01(\fR\x0fwireguardPubkey\x12!\n" +
-	"\fgrpc_address\x18\x03 \x01(\tR\vgrpcAddress\"\x99\x02\n" +
+	"\fgrpc_address\x18\x03 \x01(\tR\vgrpcAddress\"\xb8\x02\n" +
 	"\x0fDeploymentApply\x12\x1e\n" +
 	"\n" +
 	"deployment\x18\x01 \x01(\tR\n" +
@@ -2593,7 +2603,9 @@ const file_jaco_v1_commands_proto_rawDesc = "" +
 	"\bservices\x18\x05 \x03(\v2\x14.jaco.v1.ServiceSpecR\bservices\x12&\n" +
 	"\x06routes\x18\x06 \x03(\v2\x0e.jaco.v1.RouteR\x06routes\x120\n" +
 	"\n" +
-	"tcp_routes\x18\a \x03(\v2\x11.jaco.v1.TCPRouteR\ttcpRoutes\"P\n" +
+	"tcp_routes\x18\a \x03(\v2\x11.jaco.v1.TCPRouteR\ttcpRoutes\x12\x1d\n" +
+	"\n" +
+	"acme_email\x18\b \x01(\tR\tacmeEmail\"P\n" +
 	"\x12DeploymentRollback\x12\x1e\n" +
 	"\n" +
 	"deployment\x18\x01 \x01(\tR\n" +

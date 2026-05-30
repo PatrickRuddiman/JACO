@@ -906,3 +906,67 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// TestParseJacoYAML_AcmeEmailRoundtrip — the top-level acme_email
+// (#102) is parsed off the manifest and lands on JacoYAML.ACMEEmail
+// verbatim (no normalization beyond what mail.ParseAddress accepts).
+func TestParseJacoYAML_AcmeEmailRoundtrip(t *testing.T) {
+	yaml := `
+deployment: myapp
+acme_email: ops@myapp.example.com
+routes:
+  - {domain: a.example.com, service: web, port: 80}
+`
+	j, err := ParseJacoYAML([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if j.ACMEEmail != "ops@myapp.example.com" {
+		t.Errorf("ACMEEmail = %q, want ops@myapp.example.com", j.ACMEEmail)
+	}
+}
+
+// TestValidateJacoYAML_AcmeEmail covers issue #102 validation behavior:
+// empty allowed (fallback to cluster default), valid email accepted,
+// malformed rejected under acme:on, malformed tolerated under acme:off
+// (no certs will be issued anyway).
+func TestValidateJacoYAML_AcmeEmail(t *testing.T) {
+	cases := []struct {
+		name      string
+		acme      string
+		acmeEmail string
+		wantErr   string // substring of error message; "" means accept
+	}{
+		{"empty allowed (defaults to fallback)", "on", "", ""},
+		{"valid email accepted", "on", "ops@example.com", ""},
+		{"valid email accepted under acme:off too", "off", "ops@example.com", ""},
+		{"malformed rejected under acme:on", "on", "not-an-email", "is not a valid email address"},
+		{"malformed rejected under empty (defaults to on)", "", "still-not-an-email", "is not a valid email address"},
+		{"malformed tolerated under acme:off (no issuance to fail on)", "off", "not-an-email", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			j := &JacoYAML{
+				Deployment: "d",
+				ACME:       c.acme,
+				ACMEEmail:  c.acmeEmail,
+			}
+			code, msg, ok := validateJacoYAML(j)
+			if c.wantErr == "" {
+				if !ok {
+					t.Fatalf("expected accept, got code=%q msg=%q", code, msg)
+				}
+				return
+			}
+			if ok {
+				t.Fatalf("expected rejection containing %q, got accept", c.wantErr)
+			}
+			if code != "validation_failed" {
+				t.Errorf("code = %q, want validation_failed", code)
+			}
+			if !contains(msg, c.wantErr) {
+				t.Errorf("msg = %q, want substring %q", msg, c.wantErr)
+			}
+		})
+	}
+}
