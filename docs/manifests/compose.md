@@ -43,6 +43,14 @@ create:
 | `read_only`    | read-only root filesystem                                      |
 | `networks`     | per-service network attach; the jaco overlay may override (see [`jaco.yaml`](jaco-yaml.md#networks)) |
 | `logging`      | modern compose `logging:` block (`driver` + `options`); projected onto docker's container log config. Nil/absent uses docker's default driver. Legacy top-level `log_driver`/`log_opt` are rejected by the compose loader |
+| `stop_signal`  | signal sent on container stop (compose default SIGTERM). Persisted on the container so `docker stop` and `jaco rm` both honor it |
+| `stop_grace_period` | seconds to wait between `stop_signal` and SIGKILL. Persisted on the container; pre-issue #114 every service used a hardcoded 10s |
+| `hostname`, `domainname` | container's `/etc/hostname` and DNS domain |
+| `extra_hosts` | `[host:ip, …]` appended to `/etc/hosts` inside the container |
+| `dns`, `dns_search`, `dns_opt` | per-container DNS overrides. An explicit `dns:` list overrides JACO's per-bridge resolvers; empty falls back to JACO's DNS Manager |
+| `init`         | run `tini` (docker's bundled PID 1) as init |
+| `shm_size`     | size of `/dev/shm` (compose syntax: `"64m"`, `"1g"`) |
+| `ipc`, `pid`, `uts`, `userns_mode`, `cgroup`, `cgroup_parent` | namespace knobs forwarded verbatim. `host`-mode values weaken isolation by design; JACO honors them as-written with no runtime gate |
 
 Plus the top-level `networks:` block, which declares the networks
 service-level entries may reference.

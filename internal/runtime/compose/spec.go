@@ -48,6 +48,35 @@ func ToContainerSpec(svc types.ServiceConfig, opts SpecOptions) ContainerSpec {
 	spec.CPUShares = res.CPUShares
 	spec.CpusetCpus = res.CpusetCpus
 	spec.PidsLimit = res.PidsLimit
+
+	// Shutdown semantics (#114)
+	spec.StopSignal = svc.StopSignal
+	if svc.StopGracePeriod != nil {
+		secs := int(time.Duration(*svc.StopGracePeriod).Seconds())
+		spec.StopGracePeriodSeconds = &secs
+	}
+
+	// Trivial host/dns/init/shm passthroughs (#117)
+	spec.Hostname = svc.Hostname
+	spec.Domainname = svc.DomainName
+	spec.ExtraHosts = svc.ExtraHosts.AsList(":")
+	spec.DNS = cloneStringList(svc.DNS)
+	spec.DNSSearch = cloneStringList(svc.DNSSearch)
+	spec.DNSOptions = cloneStringList(svc.DNSOpts)
+	if svc.Init != nil {
+		v := *svc.Init
+		spec.Init = &v
+	}
+	spec.ShmSizeBytes = int64(svc.ShmSize)
+
+	// Namespace knobs (#118)
+	spec.IpcMode = svc.Ipc
+	spec.PidMode = svc.Pid
+	spec.UTSMode = svc.Uts
+	spec.UsernsMode = svc.UserNSMode
+	spec.CgroupnsMode = svc.Cgroup
+	spec.CgroupParent = svc.CgroupParent
+
 	return spec
 }
 

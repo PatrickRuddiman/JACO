@@ -472,7 +472,10 @@ func (r *Reconciler) stopReplica(ctx context.Context, rep *pb.ReplicaDesired) {
 	r.watcher.Stop(rep.GetId())
 	r.logger.Info("stopping replica container",
 		logging.KeyReplicaID, rep.GetId(), logging.KeyDeployment, rep.GetDeployment())
-	if err := lifecycle.Stop(ctx, r.docker, rep.GetId(), 10); err != nil {
+	// Defer to the container's persisted Config.StopTimeout (compose
+	// `stop_grace_period`, set at create time in lifecycle.buildConfig).
+	// Pre-#114 this was hardcoded to 10s for every service.
+	if err := lifecycle.Stop(ctx, r.docker, rep.GetId(), -1); err != nil {
 		r.logger.Error("lifecycle.Stop failed", logging.KeyReplicaID, rep.GetId(), "error", err)
 	}
 	if err := lifecycle.Remove(ctx, r.docker, rep.GetId()); err != nil {

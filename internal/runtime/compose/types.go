@@ -79,6 +79,34 @@ type ContainerSpec struct {
 	// Ports the user declared in compose. JACO does NOT publish these to the
 	// host (ingress handles that via Caddy). Carried here for audit / docs.
 	Ports []PortDecl
+
+	// Shutdown semantics (issue #114). StopSignal/StopGracePeriodSeconds
+	// flow through docker's Config.StopSignal/StopTimeout, so they are
+	// persisted on the container and honored by `docker stop` regardless of
+	// who initiates the stop. Empty/nil mean "docker default" (SIGTERM,
+	// 10s).
+	StopSignal             string
+	StopGracePeriodSeconds *int
+
+	// User+DNS+host knobs (issue #117). All zero values mean "docker
+	// default applies" (no override emitted to the engine).
+	Hostname   string
+	Domainname string
+	ExtraHosts []string // "host:ip" entries appended to /etc/hosts
+	DNS        []string // overrides the runtime-resolved DNSServers when non-empty
+	DNSSearch  []string
+	DNSOptions []string
+	Init       *bool   // nil = docker default; non-nil = explicit override
+	ShmSizeBytes int64  // 0 = docker default
+
+	// Namespace knobs (issue #118). Strings forwarded verbatim into the
+	// matching HostConfig modes; empty string means "docker default".
+	IpcMode       string
+	PidMode       string
+	UTSMode       string
+	UsernsMode    string
+	CgroupnsMode  string // compose `cgroup:` (host|private)
+	CgroupParent  string
 }
 
 // Mount is a single bind / named-volume / tmpfs attachment.

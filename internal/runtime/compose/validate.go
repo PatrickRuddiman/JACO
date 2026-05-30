@@ -72,6 +72,36 @@ var allowedServiceFields = map[string]bool{
 	"pids_limit":      true,
 	"cpu_shares":      true,
 	"cpuset":          true,
+
+	// Shutdown semantics (issue #114). Both honored: stop_signal sets
+	// Config.StopSignal, stop_grace_period sets Config.StopTimeout. Without
+	// these, Postgres/Redis/nginx/Kafka get the wrong shutdown signal or
+	// not enough time to flush on `jaco rm` / replica rotation — silent
+	// data-loss-shaped behavior.
+	"stop_signal":        true,
+	"stop_grace_period":  true,
+
+	// Trivial HostConfig/Config passthroughs (issue #117). Each maps to
+	// one docker field; no JACO semantics layered on top.
+	"extra_hosts": true,
+	"dns":         true,
+	"dns_search":  true,
+	"dns_opt":     true,
+	"init":        true,
+	"shm_size":    true,
+	"hostname":    true,
+	"domainname":  true,
+
+	// Namespace knobs (issue #118). Each maps to one HostConfig field.
+	// `pid: host`, `ipc: host`, `uts: host`, `userns_mode: host` weaken
+	// isolation by design; honored as-written (no runtime gate in this
+	// PR — operator policy is a separate decision).
+	"ipc":           true,
+	"pid":           true,
+	"uts":           true,
+	"userns_mode":   true,
+	"cgroup":        true,
+	"cgroup_parent": true,
 }
 
 // Validate walks the raw compose YAML and rejects any service-level field
