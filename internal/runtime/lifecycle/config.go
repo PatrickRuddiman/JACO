@@ -66,6 +66,12 @@ func buildConfig(spec compose.ContainerSpec) (*container.Config, *container.Host
 		UsernsMode:     container.UsernsMode(spec.UsernsMode),
 		CgroupnsMode:   container.CgroupnsMode(spec.CgroupnsMode),
 
+		// Privileged + security_opt (#119). Validator + Apply admission
+		// guard these so reaching this line means the operator already
+		// opted in on both ends — forward verbatim to docker.
+		Privileged: spec.Privileged,
+		SecurityOpt: spec.SecurityOpt,
+
 		LogConfig:      toDockerLogConfig(spec.LogConfig),
 		Resources: container.Resources{
 			Ulimits: toUlimitsList(spec.Ulimits),

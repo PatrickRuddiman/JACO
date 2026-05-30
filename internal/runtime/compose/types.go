@@ -124,6 +124,18 @@ type ContainerSpec struct {
 	// never, build}; the runtime collapses always/missing/build into the
 	// existing pull path and short-circuits only on never.
 	PullPolicy string
+
+	// Privileged grants the container the host's full kernel surface
+	// (issue #119). False by default. Apply admission gates this on the
+	// calling token's `allows_privileged` flag; the validator gates it
+	// on the service-level `jaco.io/allow-privileged: "true"` label.
+	Privileged bool
+
+	// SecurityOpt is the verbatim list of `--security-opt` strings the
+	// operator declared (e.g. `seccomp=unconfined`, `apparmor=unconfined`).
+	// Same gating as Privileged. Empty = no override; docker applies the
+	// daemon-default security profile.
+	SecurityOpt []string
 }
 
 // Mount is a single bind / named-volume / tmpfs attachment.

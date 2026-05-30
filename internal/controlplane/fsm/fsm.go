@@ -443,12 +443,14 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 	case *pb.Command_TokenIssue:
 		ti := p.TokenIssue
 		f.State.Tokens.Apply(&pb.Token{
-			Identity:     ti.GetIdentity(),
-			HashedSecret: ti.GetHashedSecret(),
-			IssuedAt:     cmd.GetTs(),
+			Identity:         ti.GetIdentity(),
+			HashedSecret:     ti.GetHashedSecret(),
+			IssuedAt:         cmd.GetTs(),
+			AllowsPrivileged: ti.GetAllowsPrivileged(),
 		}, idx)
 		return pb.AuditEventType_AUDIT_EVENT_TYPE_TOKEN_ISSUE, map[string]string{
-			"identity": ti.GetIdentity(),
+			"identity":          ti.GetIdentity(),
+			"allows_privileged": strconv.FormatBool(ti.GetAllowsPrivileged()),
 		}
 
 	case *pb.Command_TokenRevoke:

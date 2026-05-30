@@ -27,10 +27,13 @@ func tokenIssueCmd() *cobra.Command {
 		Short: "Issue a new operator token (printed to stdout once)",
 	}
 	var server, opToken, caCertPath, name string
+	var allowPrivileged bool
 	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
 	c.Flags().StringVar(&opToken, "token", "", "operator bearer token (or JACO_TOKEN)")
 	c.Flags().StringVar(&caCertPath, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
 	c.Flags().StringVar(&name, "name", "", "identity for the new token; required")
+	c.Flags().BoolVar(&allowPrivileged, "allow-privileged", false,
+		"stamp the token with allows_privileged=true so it can apply manifests using privileged: or security_opt: (issue #119)")
 	_ = c.MarkFlagRequired("server")
 	_ = c.MarkFlagRequired("name")
 
@@ -53,7 +56,10 @@ func tokenIssueCmd() *cobra.Command {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+opToken)
-		resp, err := pb.NewTokensClient(conn).Issue(ctx, &pb.TokenIssueRequest{Identity: name})
+		resp, err := pb.NewTokensClient(conn).Issue(ctx, &pb.TokenIssueRequest{
+			Identity:         name,
+			AllowsPrivileged: allowPrivileged,
+		})
 		if err != nil {
 			return cliclient.FormatError(err)
 		}

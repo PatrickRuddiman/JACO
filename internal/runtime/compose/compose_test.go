@@ -94,8 +94,8 @@ func TestValidate_UnknownFieldRejected(t *testing.T) {
 	if ve.Code != "validation_failed" {
 		t.Errorf("code = %q, want validation_failed", ve.Code)
 	}
-	if ve.Details["field"] != "privileged" {
-		t.Errorf("details.field = %q, want privileged", ve.Details["field"])
+	if ve.Details["field"] != "mac_address" {
+		t.Errorf("details.field = %q, want mac_address", ve.Details["field"])
 	}
 	if ve.Details["service"] != "web" {
 		t.Errorf("details.service = %q, want web", ve.Details["service"])

@@ -86,6 +86,12 @@ func ToContainerSpec(svc types.ServiceConfig, opts SpecOptions) ContainerSpec {
 	// Pull strategy (#120) — validator already restricted the enum.
 	spec.PullPolicy = svc.PullPolicy
 
+	// Privileged + security_opt (#119) — projected verbatim. Both gated
+	// by the validator's label check and by Apply admission against the
+	// calling token's allows_privileged flag.
+	spec.Privileged = svc.Privileged
+	spec.SecurityOpt = cloneStringList(svc.SecurityOpt)
+
 	return spec
 }
 

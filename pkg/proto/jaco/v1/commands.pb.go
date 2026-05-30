@@ -2182,11 +2182,12 @@ func (x *SubnetFree) GetHost() string {
 }
 
 type TokenIssue struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Identity      string                 `protobuf:"bytes,1,opt,name=identity,proto3" json:"identity,omitempty"`
-	HashedSecret  []byte                 `protobuf:"bytes,2,opt,name=hashed_secret,json=hashedSecret,proto3" json:"hashed_secret,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Identity         string                 `protobuf:"bytes,1,opt,name=identity,proto3" json:"identity,omitempty"`
+	HashedSecret     []byte                 `protobuf:"bytes,2,opt,name=hashed_secret,json=hashedSecret,proto3" json:"hashed_secret,omitempty"`
+	AllowsPrivileged bool                   `protobuf:"varint,3,opt,name=allows_privileged,json=allowsPrivileged,proto3" json:"allows_privileged,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *TokenIssue) Reset() {
@@ -2231,6 +2232,13 @@ func (x *TokenIssue) GetHashedSecret() []byte {
 		return x.HashedSecret
 	}
 	return nil
+}
+
+func (x *TokenIssue) GetAllowsPrivileged() bool {
+	if x != nil {
+		return x.AllowsPrivileged
+	}
+	return false
 }
 
 type TokenRevoke struct {
@@ -2684,11 +2692,12 @@ const file_jaco_v1_commands_proto_rawDesc = "" +
 	"deployment\x18\x01 \x01(\tR\n" +
 	"deployment\x12\x18\n" +
 	"\anetwork\x18\x02 \x01(\tR\anetwork\x12\x12\n" +
-	"\x04host\x18\x03 \x01(\tR\x04host\"M\n" +
+	"\x04host\x18\x03 \x01(\tR\x04host\"z\n" +
 	"\n" +
 	"TokenIssue\x12\x1a\n" +
 	"\bidentity\x18\x01 \x01(\tR\bidentity\x12#\n" +
-	"\rhashed_secret\x18\x02 \x01(\fR\fhashedSecret\")\n" +
+	"\rhashed_secret\x18\x02 \x01(\fR\fhashedSecret\x12+\n" +
+	"\x11allows_privileged\x18\x03 \x01(\bR\x10allowsPrivileged\")\n" +
 	"\vTokenRevoke\x12\x1a\n" +
 	"\bidentity\x18\x01 \x01(\tR\bidentity\"p\n" +
 	"\x0eJoinTokenIssue\x12#\n" +

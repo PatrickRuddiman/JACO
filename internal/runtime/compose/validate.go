@@ -122,6 +122,14 @@ var allowedServiceFields = map[string]bool{
 	// treated as `missing` (JACO never builds). `daily`/`weekly` are
 	// rejected.
 	"pull_policy": true,
+
+	// Privileged-mode + security-opt overrides (issue #119). Validator
+	// requires a matching `labels: { "jaco.io/allow-privileged": "true" }`
+	// on the service (defense in depth against typos) and Apply admission
+	// additionally requires the calling token to carry
+	// `allows_privileged=true` — see internal/controlplane/grpc/deploy.go.
+	"privileged":   true,
+	"security_opt": true,
 }
 
 // Validate walks the raw compose YAML and rejects any service-level field
@@ -186,6 +194,9 @@ func Validate(rawYAML []byte) error {
 			if verr := checkPullPolicy(svcName, pp); verr != nil {
 				return verr
 			}
+		}
+		if verr := checkPrivilegedLabel(svcName, svc); verr != nil {
+			return verr
 		}
 	}
 	return nil
@@ -261,6 +272,92 @@ func checkPullPolicy(svcName string, v any) *ValidationError {
 		}
 	}
 	return nil
+}
+
+// privilegedLabelKey is the service-level compose label JACO requires before
+// `privileged:` or `security_opt:` are admitted (issue #119). The label MUST
+// be `"true"` exactly — anything else (including the docker-compose-style
+// bare boolean) reads as not-set, matching how compose serialises labels.
+const privilegedLabelKey = "jaco.io/allow-privileged"
+
+// checkPrivilegedLabel runs after the closed-field pass. Returns a typed
+// ValidationError when a service sets `privileged: true` or a non-empty
+// `security_opt:` list without carrying `labels: { "jaco.io/allow-privileged":
+// "true" }`. The token-class gate is enforced one layer up (Apply admission)
+// — this check is the pure-YAML half so `jaco validate` catches the typo
+// before any wire trip.
+func checkPrivilegedLabel(svcName string, svc map[string]any) *ValidationError {
+	priv, _ := svc["privileged"].(bool)
+	secOpts := sliceLen(svc["security_opt"])
+	if !priv && secOpts == 0 {
+		return nil
+	}
+	if hasPrivilegedLabel(svc["labels"]) {
+		return nil
+	}
+	fields := privilegedFieldsCSV(priv, secOpts > 0)
+	return &ValidationError{
+		Code: "validation_failed",
+		Message: fmt.Sprintf("service %q uses %s but lacks required label %s=\"true\"",
+			svcName, fields, privilegedLabelKey),
+		Details: map[string]string{
+			"service": svcName,
+			"fields":  fields,
+			"label":   privilegedLabelKey,
+		},
+	}
+}
+
+// sliceLen returns the element count when v is a YAML list, or 0 otherwise.
+// A nil interface, an empty list, a non-list value all collapse to 0 — the
+// privileged gate is "did the operator actually declare any security_opt?".
+func sliceLen(v any) int {
+	if v == nil {
+		return 0
+	}
+	s, ok := v.([]any)
+	if !ok {
+		return 0
+	}
+	return len(s)
+}
+
+// hasPrivilegedLabel reports whether the service's `labels:` block carries
+// `jaco.io/allow-privileged: "true"`. Compose accepts both the list form
+// (`["k=v", …]`) and the map form (`{k: v, …}`); both yield string values
+// here. The match is on exact string `"true"` — `True`, `1`, or bare booleans
+// do NOT pass, matching how compose serialises label values.
+func hasPrivilegedLabel(v any) bool {
+	switch labels := v.(type) {
+	case map[string]any:
+		s, _ := labels[privilegedLabelKey].(string)
+		return s == "true"
+	case map[any]any:
+		s, _ := labels[privilegedLabelKey].(string)
+		return s == "true"
+	case []any:
+		want := privilegedLabelKey + "=true"
+		for _, item := range labels {
+			if s, ok := item.(string); ok && s == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// privilegedFieldsCSV renders the human-facing list of which gated fields
+// this service set, in a deterministic order so the error message is stable
+// across runs.
+func privilegedFieldsCSV(priv, secOpts bool) string {
+	switch {
+	case priv && secOpts:
+		return "privileged,security_opt"
+	case priv:
+		return "privileged"
+	default:
+		return "security_opt"
+	}
 }
 
 // publishedHostRange extracts the published host port range from one ports:

@@ -1656,10 +1656,13 @@ func (x *LogLine) GetLine() string {
 }
 
 type TokenIssueRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Identity      string                 `protobuf:"bytes,1,opt,name=identity,proto3" json:"identity,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Identity string                 `protobuf:"bytes,1,opt,name=identity,proto3" json:"identity,omitempty"`
+	// allows_privileged stamps the issued token with the gate that lets it
+	// apply manifests using `privileged:` or `security_opt:` (issue #119).
+	AllowsPrivileged bool `protobuf:"varint,2,opt,name=allows_privileged,json=allowsPrivileged,proto3" json:"allows_privileged,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *TokenIssueRequest) Reset() {
@@ -1697,6 +1700,13 @@ func (x *TokenIssueRequest) GetIdentity() string {
 		return x.Identity
 	}
 	return ""
+}
+
+func (x *TokenIssueRequest) GetAllowsPrivileged() bool {
+	if x != nil {
+		return x.AllowsPrivileged
+	}
+	return false
 }
 
 type TokenIssueResponse struct {
@@ -1920,12 +1930,13 @@ func (x *TokenListResponse) GetTokens() []*TokenInfo {
 }
 
 type TokenInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Identity      string                 `protobuf:"bytes,1,opt,name=identity,proto3" json:"identity,omitempty"`
-	IssuedAt      *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=issued_at,json=issuedAt,proto3" json:"issued_at,omitempty"`
-	RevokedAt     *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=revoked_at,json=revokedAt,proto3" json:"revoked_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Identity         string                 `protobuf:"bytes,1,opt,name=identity,proto3" json:"identity,omitempty"`
+	IssuedAt         *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=issued_at,json=issuedAt,proto3" json:"issued_at,omitempty"`
+	RevokedAt        *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=revoked_at,json=revokedAt,proto3" json:"revoked_at,omitempty"`
+	AllowsPrivileged bool                   `protobuf:"varint,4,opt,name=allows_privileged,json=allowsPrivileged,proto3" json:"allows_privileged,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *TokenInfo) Reset() {
@@ -1977,6 +1988,13 @@ func (x *TokenInfo) GetRevokedAt() *timestamppb.Timestamp {
 		return x.RevokedAt
 	}
 	return nil
+}
+
+func (x *TokenInfo) GetAllowsPrivileged() bool {
+	if x != nil {
+		return x.AllowsPrivileged
+	}
+	return false
 }
 
 type RegistryCredentialAddRequest struct {
@@ -3136,9 +3154,10 @@ const file_jaco_v1_services_proto_rawDesc = "" +
 	"\x04host\x18\x02 \x01(\tR\x04host\x12\x16\n" +
 	"\x06stream\x18\x03 \x01(\tR\x06stream\x12*\n" +
 	"\x02ts\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x02ts\x12\x12\n" +
-	"\x04line\x18\x05 \x01(\tR\x04line\"/\n" +
+	"\x04line\x18\x05 \x01(\tR\x04line\"\\\n" +
 	"\x11TokenIssueRequest\x12\x1a\n" +
-	"\bidentity\x18\x01 \x01(\tR\bidentity\"\x7f\n" +
+	"\bidentity\x18\x01 \x01(\tR\bidentity\x12+\n" +
+	"\x11allows_privileged\x18\x02 \x01(\bR\x10allowsPrivileged\"\x7f\n" +
 	"\x12TokenIssueResponse\x12\x1a\n" +
 	"\bidentity\x18\x01 \x01(\tR\bidentity\x12\x14\n" +
 	"\x05token\x18\x02 \x01(\tR\x05token\x127\n" +
@@ -3148,12 +3167,13 @@ const file_jaco_v1_services_proto_rawDesc = "" +
 	"\x13TokenRevokeResponse\"\x12\n" +
 	"\x10TokenListRequest\"?\n" +
 	"\x11TokenListResponse\x12*\n" +
-	"\x06tokens\x18\x01 \x03(\v2\x12.jaco.v1.TokenInfoR\x06tokens\"\x9b\x01\n" +
+	"\x06tokens\x18\x01 \x03(\v2\x12.jaco.v1.TokenInfoR\x06tokens\"\xc8\x01\n" +
 	"\tTokenInfo\x12\x1a\n" +
 	"\bidentity\x18\x01 \x01(\tR\bidentity\x127\n" +
 	"\tissued_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\bissuedAt\x129\n" +
 	"\n" +
-	"revoked_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\trevokedAt\"n\n" +
+	"revoked_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\trevokedAt\x12+\n" +
+	"\x11allows_privileged\x18\x04 \x01(\bR\x10allowsPrivileged\"n\n" +
 	"\x1cRegistryCredentialAddRequest\x12\x1a\n" +
 	"\bregistry\x18\x01 \x01(\tR\bregistry\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x16\n" +
