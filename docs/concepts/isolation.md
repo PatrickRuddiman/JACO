@@ -1,3 +1,8 @@
+---
+sources:
+  - internal/discovery/firewall/
+---
+
 # Isolation
 
 JACO enforces two isolation boundaries cluster-wide:

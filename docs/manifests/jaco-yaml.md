@@ -1,3 +1,9 @@
+---
+sources:
+  - internal/controlplane/grpc/jaco_spec.go
+  - proto/jaco/v1/entities.proto
+---
+
 # `jaco.yaml` schema
 
 The overlay manifest is a small, **closed** schema. Every field is
@@ -23,12 +29,13 @@ field you leave unset falls back to the compose default. See
 
 ```yaml
 deployment: <name>           # required, string
-routes:                      # optional, list — usually what you came for
+routes:                      # required, list — the point of the file
   - domain: <fqdn>
     service: <service>
     port: <int>
     tls: auto | off
     path: <url-prefix>
+    strip_path: <bool>
 services:                    # optional, list of overrides
   - name: <service>
     replicas: <int >= 0>
@@ -123,16 +130,19 @@ file or `1`.
   the apply succeeds but the deployment status becomes `pending` with
   details `{reason: cannot_satisfy_host_placement, missing: [...]}`
   visible in `jaco status` — no replicas are scheduled elsewhere.
-- **`global`** — one replica per ready node (daemonset). The
-  scheduler derives the count from the cluster's node set, so
-  `replicas:` is **mutually exclusive** with `global`: declaring
-  both is rejected at apply with
-  `service "x" uses placement=global; remove replicas`. Use
-  `placement: global` alone.
+- **`global`** (daemonset) — exactly one replica per ready node. The
+  scheduler derives the count from the cluster's node set, growing and
+  shrinking automatically as nodes join or leave. `replicas:` is
+  **mutually exclusive** with `global`: declaring both is rejected at
+  apply with `service "x" uses placement=global; remove replicas`.
+  `hosts:` is also ignored. Replica ids are keyed by hostname (not a
+  positional index), so a surviving node's replica is unchanged when a
+  peer departs.
 
 `placement` and `hosts` interact: `placement: hosts` requires `hosts`;
 `placement: spread | pack | global` ignores `hosts`. The closed enum is
-enforced by the proto `ServiceSpec.PlacementMode`.
+enforced by the proto `ServiceSpec.PlacementMode`
+([`proto/jaco/v1/entities.proto`](../../proto/jaco/v1/entities.proto)).
 
 ### `networks`
 

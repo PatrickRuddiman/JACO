@@ -1,3 +1,9 @@
+---
+sources:
+  - internal/runtime/compose/
+  - internal/controlplane/grpc/jaco_spec.go
+---
+
 # Manifest examples
 
 Progressive examples, from a one-service deployment to a multi-network

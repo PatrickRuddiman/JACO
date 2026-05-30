@@ -1,3 +1,10 @@
+---
+sources:
+  - cmd/jaco/cluster.go
+  - internal/controlplane/grpc/cluster.go
+  - internal/controlplane/bootstrap/
+---
+
 # `jaco cluster`
 
 Local-daemon cluster control: initialize a new cluster, inspect this

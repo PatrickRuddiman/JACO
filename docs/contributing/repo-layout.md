@@ -1,3 +1,13 @@
+---
+sources:
+  - cmd/
+  - internal/
+  - pkg/
+  - proto/
+  - scripts/test/
+  - tests/
+---
+
 # Repository layout
 
 What lives where. Use this as the map when you're about to grep.

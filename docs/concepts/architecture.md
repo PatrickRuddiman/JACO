@@ -1,3 +1,15 @@
+---
+sources:
+  - cmd/jaco/
+  - cmd/jacod/main.go
+  - internal/controlplane/
+  - internal/scheduler/
+  - internal/runtime/
+  - internal/ingress/
+  - internal/discovery/
+  - proto/jaco/v1/entities.proto
+---
+
 # Architecture
 
 JACO is a multi-node container orchestrator built on hashicorp/raft,

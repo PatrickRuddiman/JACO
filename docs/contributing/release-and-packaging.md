@@ -1,3 +1,12 @@
+---
+sources:
+  - .github/workflows/release.yml
+  - nfpm.yaml
+  - Makefile
+  - internal/packaging/
+  - cmd/jaco/self_upgrade.go
+---
+
 # Release and packaging
 
 How JACO releases are built, signed, and published. The pipeline runs

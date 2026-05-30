@@ -1,3 +1,10 @@
+---
+sources:
+  - cmd/jaco/token.go
+  - internal/controlplane/grpc/token.go
+  - internal/controlplane/admission/
+---
+
 # `jaco token`
 
 Operator-token management. All three subcommands currently require

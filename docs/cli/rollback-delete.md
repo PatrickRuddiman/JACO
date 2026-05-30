@@ -1,3 +1,10 @@
+---
+sources:
+  - cmd/jaco/rollback.go
+  - cmd/jaco/delete.go
+  - internal/controlplane/grpc/deploy.go
+---
+
 # `jaco rollback` and `jaco delete`
 
 State-changing deployment commands. Both currently require `--server`
