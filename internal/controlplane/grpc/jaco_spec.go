@@ -43,9 +43,9 @@ type JacoServiceDecl struct {
 
 // JacoRouteDecl is one Caddy-served HTTP(S) route.
 type JacoRouteDecl struct {
-	Domain  string `yaml:"domain"`
-	Service string `yaml:"service"`
-	Port    int    `yaml:"port"`
+	Domain    string `yaml:"domain"`
+	Service   string `yaml:"service"`
+	Port      int    `yaml:"port"`
 	TLS       string `yaml:"tls"`                  // "auto" (default) | "off"
 	Path      string `yaml:"path,omitempty"`       // optional URL path prefix; "" = catch-all
 	StripPath bool   `yaml:"strip_path,omitempty"` // strip the matched path prefix before proxying
