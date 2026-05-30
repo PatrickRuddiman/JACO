@@ -175,6 +175,20 @@ placement can overcommit a node if the operator asks for it.
 IO/block-device limits and autoscaling are explicitly out of scope
 for v1.
 
+## GPU workloads
+
+Compose's `gpus:` field (issue #116) is honored: a request like
+`gpus: all` or a long-form list with `driver`/`count`/`capabilities`
+forwards onto docker's `HostConfig.DeviceRequests`. **JACO does not
+install or manage the device-runtime hook** — the operator is
+responsible for deploying nvidia-container-runtime (or the AMD
+equivalent) on every node that should host GPU workloads. The
+scheduler does not currently inspect node-level GPU inventory; until
+it does, an `gpus:`-using deployment can land on a CPU-only node and
+the docker create call will fail with the daemon's "could not
+select device driver" error. Pin GPU services to GPU nodes via
+`jaco.yaml`'s placement rules in the meantime.
+
 ## See also
 
 - [`jaco apply`](../cli/apply.md), [`jaco status`](../cli/status.md),

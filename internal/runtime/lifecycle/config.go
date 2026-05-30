@@ -79,6 +79,11 @@ func buildConfig(spec compose.ContainerSpec) (*container.Config, *container.Host
 			CpusetCpus:        spec.CpusetCpus,
 			PidsLimit:         spec.PidsLimit,
 			CgroupParent:      spec.CgroupParent,
+			// Host devices (#115) and modern GPU requests (#116). Both
+			// live on container.Resources; nil/empty preserves docker
+			// default ("no override").
+			Devices:        toDockerDevices(spec.Devices),
+			DeviceRequests: toDockerDeviceRequests(spec.GPURequests),
 		},
 	}
 
@@ -162,6 +167,62 @@ func toUlimitsList(in map[string]compose.Ulimit) []*units.Ulimit {
 	out := make([]*units.Ulimit, 0, len(in))
 	for name, u := range in {
 		out = append(out, &units.Ulimit{Name: name, Soft: u.Soft, Hard: u.Hard})
+	}
+	return out
+}
+
+// toDockerDevices projects the spec's host-device bindings into docker's
+// container.DeviceMapping (issue #115). Nil/empty input → nil so the
+// HostConfig field stays unset (docker default: no devices forwarded).
+func toDockerDevices(in []compose.DeviceMapping) []container.DeviceMapping {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]container.DeviceMapping, len(in))
+	for i, d := range in {
+		out[i] = container.DeviceMapping{
+			PathOnHost:        d.Source,
+			PathInContainer:   d.Target,
+			CgroupPermissions: d.Permissions,
+		}
+	}
+	return out
+}
+
+// toDockerDeviceRequests projects the spec's GPU requests into docker's
+// container.DeviceRequest (issue #116). The spec's flat AND-list of
+// capabilities wraps into docker's [][]string OR-of-AND form (one OR
+// element containing the full AND list — matches what compose-spec
+// renders for `gpus: all` → `[["gpu"]]`). Nil/empty input → nil so the
+// HostConfig stays free of an empty request.
+func toDockerDeviceRequests(in []compose.GPURequest) []container.DeviceRequest {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]container.DeviceRequest, len(in))
+	for i, r := range in {
+		var caps [][]string
+		if len(r.Capabilities) > 0 {
+			caps = [][]string{append([]string(nil), r.Capabilities...)}
+		}
+		out[i] = container.DeviceRequest{
+			Driver:       r.Driver,
+			Count:        int(r.Count),
+			DeviceIDs:    append([]string(nil), r.DeviceIDs...),
+			Capabilities: caps,
+			Options:      cloneStringMap(r.Options),
+		}
+	}
+	return out
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
 	}
 	return out
 }

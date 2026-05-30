@@ -51,6 +51,9 @@ create:
 | `init`         | run `tini` (docker's bundled PID 1) as init |
 | `shm_size`     | size of `/dev/shm` (compose syntax: `"64m"`, `"1g"`) |
 | `ipc`, `pid`, `uts`, `userns_mode`, `cgroup`, `cgroup_parent` | namespace knobs forwarded verbatim. `host`-mode values weaken isolation by design; JACO honors them as-written with no runtime gate |
+| `devices`      | host device bind-mounts (e.g. `/dev/fuse`, `/dev/snd`, `/dev/dri`). Compose short (`"/dev/fuse:/dev/fuse:rwm"`) and long form (`{source, target, permissions}`) both honored. Grants host-kernel surface; operator-side policy gating is out of scope for this PR |
+| `gpus`         | modern GPU request syntax (`gpus: all` or long-form list with `driver`/`count`/`device_ids`/`capabilities`/`options`). Forwarded onto docker `HostConfig.DeviceRequests`. Requires the operator-managed nvidia-container-runtime (or AMD equivalent) on each node |
+| `pull_policy`  | per-service pull strategy. Accepted values: `always` and `missing` (current JACO behavior — call `ImagePull`, daemon manifest-checks; cheap when up-to-date), `never` (skip the pull entirely; needed for air-gapped operators that side-load images), `build` (treated as `missing` — JACO never builds). `daily`/`weekly` are rejected with `validation_failed` |
 
 Plus the top-level `networks:` block, which declares the networks
 service-level entries may reference.

@@ -254,6 +254,14 @@ relays.
   `isolation_unavailable`, others schedule normally), but operators
   should fix the gated node before treating the cluster as
   production-healthy.
+- **Host-kernel surface** — compose `devices:` (issue #115),
+  `privileged:`, and `host`-mode namespace knobs (`pid: host`,
+  `ipc: host`, `uts: host`, `userns_mode: host`) all weaken
+  isolation by design. JACO honors them as-written today; an
+  operator-side policy gate (label/selector based) is on the
+  roadmap so deployments that need raw host access can be opted
+  in explicitly per node, without forcing every workload through
+  the same surface.
 
 ## See also
 

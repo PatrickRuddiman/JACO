@@ -107,6 +107,23 @@ type ContainerSpec struct {
 	UsernsMode    string
 	CgroupnsMode  string // compose `cgroup:` (host|private)
 	CgroupParent  string
+
+	// Host device bind-mounts (issue #115). Each entry maps directly to a
+	// docker DeviceMapping (PathOnHost / PathInContainer / CgroupPermissions).
+	// Empty slice = no devices forwarded; preserves docker default.
+	Devices []DeviceMapping
+
+	// Modern GPU requests (issue #116). Maps onto docker's
+	// HostConfig.DeviceRequests. Empty = no GPU request emitted, so the
+	// daemon falls through to its CPU-only default.
+	GPURequests []GPURequest
+
+	// PullPolicy is the per-service pull strategy (issue #120). Empty
+	// means "use JACO's default" (always call ImagePull, manifest-check).
+	// Validator restricts the value to the closed enum {always, missing,
+	// never, build}; the runtime collapses always/missing/build into the
+	// existing pull path and short-circuits only on never.
+	PullPolicy string
 }
 
 // Mount is a single bind / named-volume / tmpfs attachment.
@@ -115,6 +132,28 @@ type Mount struct {
 	Source   string // host path for bind, volume name for volume
 	Target   string // path inside the container
 	ReadOnly bool
+}
+
+// DeviceMapping is a single host→container device bind-mount (issue #115).
+// Source/Target/CgroupPermissions map directly to docker's
+// container.DeviceMapping fields. Permissions follows docker's "rwm"
+// convention; empty preserves docker's default.
+type DeviceMapping struct {
+	Source      string
+	Target      string
+	Permissions string
+}
+
+// GPURequest mirrors a compose `gpus:` entry (issue #116). Count<0 encodes
+// "all" (compose's `gpus: all`). Capabilities is a single AND list (every
+// device must support every listed cap); the runtime wraps it as
+// docker's [][]string OR-of-AND form. Driver/DeviceIDs/Options map verbatim.
+type GPURequest struct {
+	Driver       string
+	Count        int64
+	DeviceIDs    []string
+	Capabilities []string
+	Options      map[string]string
 }
 
 // Ulimit covers a single soft/hard pair (e.g. nofile, nproc).

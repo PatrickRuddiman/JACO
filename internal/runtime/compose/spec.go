@@ -77,6 +77,15 @@ func ToContainerSpec(svc types.ServiceConfig, opts SpecOptions) ContainerSpec {
 	spec.CgroupnsMode = svc.Cgroup
 	spec.CgroupParent = svc.CgroupParent
 
+	// Host devices (#115)
+	spec.Devices = devicesFromCompose(svc.Devices)
+
+	// GPU requests (#116)
+	spec.GPURequests = gpuRequestsFromCompose(svc.Gpus)
+
+	// Pull strategy (#120) — validator already restricted the enum.
+	spec.PullPolicy = svc.PullPolicy
+
 	return spec
 }
 
@@ -356,5 +365,47 @@ func cloneStringList(in []string) []string {
 	}
 	out := make([]string, len(in))
 	copy(out, in)
+	return out
+}
+
+// devicesFromCompose projects compose's []DeviceMapping into the spec's
+// shape (issue #115). compose-go has already parsed both short-form
+// `"/dev/foo:/dev/foo:rwm"` and long-form maps into the same struct, so
+// this is a structural copy. Returns nil for an empty input so the spec
+// stays free of empty-slice noise (matters for golden-file tests).
+func devicesFromCompose(in []types.DeviceMapping) []DeviceMapping {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]DeviceMapping, len(in))
+	for i, d := range in {
+		out[i] = DeviceMapping{
+			Source:      d.Source,
+			Target:      d.Target,
+			Permissions: d.Permissions,
+		}
+	}
+	return out
+}
+
+// gpuRequestsFromCompose projects compose's []DeviceRequest (the `gpus:`
+// long-form, after compose-go has expanded `gpus: all` into a single
+// {Count: -1, Capabilities: ["gpu"]} entry) into the spec shape
+// (issue #116). Capabilities arrives as a flat AND list; the runtime
+// wraps it for docker's OR-of-AND shape at HostConfig build time.
+func gpuRequestsFromCompose(in []types.DeviceRequest) []GPURequest {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]GPURequest, len(in))
+	for i, r := range in {
+		out[i] = GPURequest{
+			Driver:       r.Driver,
+			Count:        int64(r.Count),
+			DeviceIDs:    cloneStringList(r.IDs),
+			Capabilities: cloneStringList(r.Capabilities),
+			Options:      mapStringToMap(r.Options),
+		}
+	}
 	return out
 }
