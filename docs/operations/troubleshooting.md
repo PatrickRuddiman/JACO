@@ -118,6 +118,35 @@ and declare a `routes:` entry in jaco.yaml to expose it publicly via
 Caddy, **or** publish on a different host port and let JACO's L4
 router forward.
 
+## `legacy_compose_field`
+
+The compose file uses a v1/v2 spelling that the modern compose spec
+dropped. JACO's loader detects compose-go's "additional properties"
+rejection and re-emits a typed error that names the modern
+equivalent. The complete legacy → modern map:
+
+| legacy key | modern equivalent |
+|---|---|
+| `log_driver` | `logging.driver` |
+| `log_opt` | `logging.options` |
+| `net` | `network_mode` |
+| `volume_driver` | no direct equivalent; use long-form `volumes:` with `driver:` |
+| `dockerfile` (top-level service key) | `build.dockerfile` |
+
+`details.field` names the offending key; `details.modern_equivalent`
+repeats the table value. See
+[Migration → Legacy compose spellings](migration.md#legacy-v1v2-spellings)
+for porting guidance.
+
+## `env_file_unresolved`
+
+The daemon received a compose document that still carries `env_file:`.
+The CLI is supposed to fold every referenced file into `environment:`
+client-side before sending; this error means an old CLI is talking to
+a new daemon, or the document was synthesized by a tool that bypassed
+the CLI's resolver. Upgrade the CLI (`jaco self-upgrade`) or run the
+resolution step yourself.
+
 ## `replicas_exceed_pinned_hosts`
 
 `placement: hosts` with `replicas` greater than the number of hosts
@@ -195,6 +224,30 @@ From `jaco self-upgrade`:
 
 See [`jaco self-upgrade`](../cli/self-upgrade.md) and
 [Upgrades](upgrades.md).
+
+## Spurious follower log lines (silenced)
+
+Two startup-window log patterns from older builds are now silenced —
+if you see them in current logs, suspect either a stale binary on
+that node or a real raft / network problem rather than a benign
+startup race:
+
+- `firewall.Reconciler.Tick failed` paired with
+  `Audit(ISOLATION_RULESET_RECONCILED action=applied) failed` — the
+  firewall reconciler's audit/status writes used to call
+  `node.Apply` directly, failing with `ErrNotLeader` on every
+  follower (issue #88, fixed via the `applyOrForwardCommand` shim;
+  see [Isolation → Leader-forwarded audit and
+  status](../concepts/isolation.md#leader-forwarded-audit-and-status-issue-88-112-113)).
+  A freshly-joined follower's first tick still raced ahead of leader
+  discovery; the reconciler now gates its first tick on
+  `node.Leader() != ""` (issue #113).
+- `node is not the leader - storage is probably misconfigured` from
+  Caddy's tls maintenance loop, every ~10 minutes on every
+  non-leader node — the cert-storage `Lock` write used to fail with
+  `ErrNotLeader` on followers (issue #112). It now forwards to the
+  leader via the same shim; see
+  [Ingress → Custom CertMagic storage](../concepts/ingress.md#custom-certmagic-storage).
 
 ## Where to look next
 
