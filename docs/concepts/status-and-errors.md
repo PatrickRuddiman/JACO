@@ -44,6 +44,9 @@ constructors.
 | `unknown_host`                        | `hosts[*]` not a cluster member                                                       |
 | `unknown_network`                     | service-level network not in top-level `networks:`                                    |
 | `reserved_port`                       | compose service publishes 80 or 443                                                   |
+| `legacy_compose_field`                | compose file uses a v1/v2 spelling dropped from the modern spec; `details.field` names the offender, `details.modern_equivalent` names the replacement |
+| `env_file_unresolved`                  | daemon received a compose document still carrying `env_file:` (CLI failed to fold it client-side, e.g. an old CLI talking to a new daemon) |
+| `parse_failed`                        | jaco.yaml failed to unmarshal (yaml syntax, etc.); details include the underlying error |
 | `replicas_exceed_pinned_hosts`        | `placement: hosts` with too few hosts for the requested replicas                      |
 | `image_pull_failed`                   | runtime gave up after retries (still emits backoff state per attempt)                 |
 | `cert_failed`                         | ACME issuance failed past retry budget                                                |

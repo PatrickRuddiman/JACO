@@ -1,6 +1,9 @@
 ---
 sources:
   - internal/discovery/firewall/
+  - internal/daemon/grpc/apply_or_forward.go
+  - internal/daemon/grpc/server.go:applyOrForward
+  - internal/runtime/compose/validate.go:allowedServiceFields
 ---
 
 # Isolation
@@ -218,6 +221,32 @@ A safety tick runs every 30 s:
    continue running** — JACO does not amplify damage by tearing them
    down on drift recovery failure.
 
+### Leader-forwarded audit and status (issue #88, #112, #113)
+
+The `Audit` and `UpdateStatus` callbacks both write to raft. Direct
+`node.Apply` only succeeds on the leader; on a follower it returns
+`hraft.ErrNotLeader`. The reconciler routes both callbacks through the
+`applyOrForwardCommand` shim:
+
+- on the leader → direct `node.Apply`;
+- on a follower → dial the leader's gRPC address (resolved from
+  `state.Nodes`) and call `Internal.Submit` to apply the same command
+  cluster-wide.
+
+Before this shim, every follower's reconcile audited
+`ISOLATION_RULESET_RECONCILED` and called `UpdateStatus`, both failed
+with `ErrNotLeader`, and the reconciler logged
+`Audit(...) failed` + `firewall.Reconciler.Tick failed` even though
+the underlying `nft -f` apply had succeeded. The audit event was also
+lost.
+
+A freshly-joined follower's first tick can still race ahead of raft
+leader discovery — at that point `state.Nodes` carries no leader gRPC
+address and the forward fails. To suppress the spurious startup-window
+errors, `Reconciler.ReadyGate` is wired to `node.Leader() != ""`. While
+the gate returns `false`, `Loop` skips `Tick` and waits for the next
+ticker. Steady-state behavior is unchanged once raft settles.
+
 The isolation rig (`scripts/test/isolation-rig.sh`) exercises this in
 CI: it flushes the table out-of-band and asserts the reconcile
 restores it within 30 s plus the audit event is recorded.
@@ -239,6 +268,23 @@ sets are per-(deployment, network), not per-deployment, so a `frontend`
 container cannot reach a `backend`-only service even within the same
 deployment unless a bridge service (declared on both networks)
 relays.
+
+## Compose namespace knobs weaken isolation
+
+Compose accepts a closed allowlist of namespace knobs that JACO
+forwards verbatim into docker's `HostConfig` (issue #118): `ipc`,
+`pid`, `uts`, `userns_mode`, `cgroup`, `cgroup_parent`. Host-mode
+values (`pid: host`, `ipc: host`, `uts: host`, `userns_mode: host`)
+share the host kernel's namespace with the container and weaken
+isolation by design. JACO does **not** gate them at apply time — an
+operator declaring `pid: host` is presumed to know they are giving the
+container visibility into every host process. Operator policy (e.g.
+rejecting host-mode at admission) is a separate decision tracked
+outside this iteration.
+
+The bridge / nftables isolation described above still holds: a
+container with `pid: host` sees the host's processes but its network
+traffic is still subject to the per-scope set match in `chain forward`.
 
 ## Practical implications
 

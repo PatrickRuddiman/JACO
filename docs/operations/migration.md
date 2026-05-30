@@ -342,6 +342,26 @@ the replication and failover policy.
 | `deploy.replicas` / `deploy.placement` | ignored — set these in `jaco.yaml` |
 | Host ports `80` / `443` | rejected (`reserved_port`); use `routes:` |
 
+## Legacy v1/v2 spellings
+
+If you are porting from a compose file written against the v1 or v2
+spec, a handful of keys were dropped from the modern spec and JACO
+rejects them at parse time with a typed `legacy_compose_field` error
+naming the modern equivalent (issue #122). The error's
+`details.field` and `details.modern_equivalent` give an actionable
+diagnostic instead of an opaque "unknown field":
+
+| legacy key | rewrite to |
+|---|---|
+| `log_driver: json-file` | `logging:`<br>&nbsp;&nbsp;`driver: json-file` |
+| `log_opt: {max-size: 10m}` | `logging:`<br>&nbsp;&nbsp;`options:`<br>&nbsp;&nbsp;&nbsp;&nbsp;`max-size: 10m` |
+| `net: host` | `network_mode: host` |
+| `volume_driver: local` | use the long-form `volumes:` entry with `driver: local` (see compose spec) |
+| top-level service `dockerfile:` | `build:`<br>&nbsp;&nbsp;`dockerfile: …` (then drop it — JACO ignores `build:`) |
+
+Genuine typos (a misspelled key not in this list) keep the generic
+`compose load:` wrap so they aren't misclassified.
+
 ## See also
 
 - [`jaco.yaml` schema](../manifests/jaco-yaml.md),

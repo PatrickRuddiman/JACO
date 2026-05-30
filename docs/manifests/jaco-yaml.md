@@ -194,12 +194,13 @@ For every compose service, the apply path computes a final
 ServiceSpec by merging compose defaults with the jaco entry (if any)
 in this order:
 
-| field      | source (highest priority first)                            |
-|------------|------------------------------------------------------------|
-| `replicas` | jaco `replicas:` if set → compose `deploy.replicas` → `1`  |
-| `placement`| jaco `placement:` if set → `spread`                        |
-| `hosts`    | jaco `hosts:` if set → empty (only used under `placement: hosts`) |
-| `networks` | jaco `networks:` if non-empty → compose service `networks:` keys (sorted) |
+| field        | source (highest priority first)                            |
+|--------------|------------------------------------------------------------|
+| `replicas`   | jaco `replicas:` if set → compose `deploy.replicas` → `1`  |
+| `placement`  | jaco `placement:` if set → `spread`                        |
+| `hosts`      | jaco `hosts:` if set → empty (only used under `placement: hosts`) |
+| `networks`   | jaco `networks:` if non-empty → compose service `networks:` keys (sorted) |
+| `acme_email` | jaco `acme_email:` if set → cluster-wide `jacod.yaml`'s `acme_email` |
 
 Every compose service produces a ServiceSpec, even without a matching
 jaco entry. The merged set is what the scheduler and the runtime see.

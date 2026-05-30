@@ -84,9 +84,16 @@ must agree; mismatches present as silent traffic loss. Default `51820`.
 
 ### `acme_email` (string, optional)
 
-Contact address registered with the ACME directory. Empty is permitted
-but recommended against — ACME providers may not deliver expiry
-warnings without an address. No default.
+**Cluster-wide default** ACME contact address. Used by every
+deployment whose `jaco.yaml` does not declare its own top-level
+`acme_email:`; deployments that do set the field get their own ACME
+account and own automation policy (see
+[Ingress → Per-stack ACME contact email](concepts/ingress.md#per-stack-acme-contact-email)
+and [`jaco.yaml` schema](manifests/jaco-yaml.md#acme_email)).
+
+Empty here AND empty per-stack is permitted but recommended against —
+ACME providers may not deliver expiry warnings without an address.
+No default.
 
 ### `acme_ca` (string, optional, https URL)
 

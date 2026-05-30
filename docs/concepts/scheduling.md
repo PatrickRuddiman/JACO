@@ -3,6 +3,8 @@ sources:
   - internal/scheduler/
   - internal/runtime/reconciler/
   - internal/runtime/pull/
+  - internal/runtime/lifecycle/lifecycle.go
+  - internal/controlplane/grpc/jaco_spec.go
   - proto/jaco/v1/entities.proto
 ---
 
@@ -41,12 +43,14 @@ Per `services[*].placement` (see
   `{reason: cannot_satisfy_host_placement, missing: [...]}`.
 - **`global`** (daemonset) — `eligible = all healthy nodes`, and the
   scheduler places exactly one replica on each eligible host. The
-  service's `replicas:` field is **ignored** and the effective count
-  tracks the size of the ready node set automatically; setting a
-  non-zero `replicas` together with `global` is accepted (a single
-  warn-level log line records the override) but has no effect. Replica
-  ids are derived from the hostname rather than a positional index, so
-  a surviving node's replica id is stable when other nodes join or
+  service's effective count tracks the size of the ready node set
+  automatically. Setting `replicas:` together with `placement: global`
+  is **rejected** at apply time with `service "x" uses
+  placement=global; remove replicas (global runs one replica per ready
+  node)` (issue #99) — operators are made to remove the count rather
+  than seeing the scheduler silently ignore it. Replica ids are
+  derived from the hostname rather than a positional index, so a
+  surviving node's replica id is stable when other nodes join or
   leave — no churn.
 
 ## Replica ids
@@ -118,13 +122,33 @@ failing past the compose threshold):
 1. Scheduler writes a `ReplicaCommand{op: remove_from_routing}`;
    ingress drops the replica from its upstream pool within 5 s.
 2. Scheduler writes a `ReplicaCommand{op: restart}`; runtime stops
-   the container and starts a fresh one with the same spec.
+   the container (sending the configured `stop_signal` and waiting up
+   to the configured `stop_grace_period` before SIGKILL — see
+   [shutdown semantics](#shutdown-semantics) below) and starts a fresh
+   one with the same spec.
 3. The `RestartCounter` for the replica increments. On a
    subsequent `running` observation, the counter is cleared.
 4. **After 3 consecutive failures** without an intervening `running`,
    the scheduler writes `ReplicaObserved{state: failed, code:
    restart_exhausted}` and stops issuing restarts for that replica
    until the next `Deploy.Apply`.
+
+## Shutdown semantics
+
+`runtime/lifecycle.Stop` honors compose's `stop_signal` and
+`stop_grace_period` (issue #114). Both are persisted on the container
+by docker (`Config.StopSignal`, `Config.StopTimeout`); the lifecycle
+stop path sends the configured signal and waits up to the configured
+grace before issuing SIGKILL. Calling `Stop` with a negative grace
+(the runtime reconciler's default) defers to the persisted value, so
+each service gets its own deadline without the reconciler tracking
+per-service specs.
+
+Pre-issue #114, every service used a hardcoded SIGTERM and a 10 s
+grace regardless of the compose declaration — Postgres, Redis, nginx,
+and Kafka all silently lost data on `jaco rm` / replica rotation when
+10 s wasn't enough to flush. Operators porting compose stacks should
+confirm `stop_grace_period` is declared on stateful services.
 
 ## Drain on graceful node remove
 
