@@ -678,7 +678,22 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 		// already-valid cert without re-issuance (issue #41). Raft remains
 		// the authoritative store; the disk cache is only a rate-limit
 		// fallback.
-		jacoStorage := storage.NewWithCache(st, apply, hostname, nil, s.ingressCacheDir())
+		// Cert storage Lock/Unlock and CertBlob writes must succeed on
+		// followers too — otherwise Caddy's tls maintenance loop logs
+		// "node is not the leader - storage is probably misconfigured"
+		// every interval on every non-leader node (issue #112). Wrap the
+		// leader-only `apply` with the apply-or-forward shim so writes
+		// from followers travel to the leader via Internal.Submit.
+		storageApply := func(cmd []byte) error {
+			return applyOrForwardCommand(
+				context.Background(), cmd,
+				func(b []byte) (uint64, error) { return node.Apply(b, 0) },
+				func(ctx context.Context, b []byte) error {
+					return dialAndSubmit(ctx, leaderGRPCAddr(st, node), b)
+				},
+			)
+		}
+		jacoStorage := storage.NewWithCache(st, storageApply, hostname, nil, s.ingressCacheDir())
 		storage.SetDefaultStorage(jacoStorage)
 
 		// ACME settings plumbed from jacod.yaml (issue #41). When
