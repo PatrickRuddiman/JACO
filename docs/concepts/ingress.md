@@ -2,6 +2,7 @@
 sources:
   - internal/ingress/
   - internal/daemon/grpc/ingress.go
+  - internal/daemon/grpc/apply_or_forward.go
   - internal/controlplane/grpc/jaco_spec.go
   - proto/jaco/v1/entities.proto
 ---
@@ -145,6 +146,16 @@ optional on-disk fallback cache rooted at `$dataDir/ingress/cache`
 - `Lock(name) / Unlock(name)` — raft Apply with lessee + expiry.
 - `Delete, Exists` — raft Apply / local read, with the disk cache
   consulted (Exists) or cleared (Delete) to match.
+
+All write paths (`Store`, `Delete`, `Lock`, `Unlock`) go through an
+apply-or-forward shim: a follower's raft Apply returns
+`hraft.ErrNotLeader`, which the shim catches and re-issues as an
+`Internal.Submit` RPC to the leader's gRPC address (resolved from
+`state.Nodes`). Cluster-wide single-acquisition is preserved by the
+existing `CertLock` FSM rules (`LockTTL`, lessee identity). Before this
+forwarding (issue #112), Caddy's tls maintenance loop would log
+`node is not the leader - storage is probably misconfigured` every
+~10 minutes on every non-leader node.
 
 ### Read-repair from the disk cache (issue #65)
 
