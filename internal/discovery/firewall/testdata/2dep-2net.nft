@@ -1,3 +1,5 @@
+add table inet jaco
+delete table inet jaco
 table inet jaco {
     set dep_net_other_default {
         type ipv4_addr
