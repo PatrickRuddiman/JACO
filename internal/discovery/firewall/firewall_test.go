@@ -391,6 +391,48 @@ func TestSelfTestFromJSON_ExtraSetErrors(t *testing.T) {
 	}
 }
 
+// TestRender_AtomicReplacePreamble pins the `add table` + `delete table`
+// preamble that makes every `nft -f` apply recreate table inet jaco from
+// scratch. Without it, nft APPENDS to the existing chains, so each reconcile
+// stacks another generation of forward rules and an earlier deployment's
+// `@jaco_pool drop` shadows a later stack's per-scope accept — silently
+// breaking cross-host traffic for every deployment except the first applied.
+func TestRender_AtomicReplacePreamble(t *testing.T) {
+	got := firewall.Render(firewall.RuleInput{
+		Subnets: []firewall.Subnet{
+			{Deployment: "alpha", Network: "stack", CIDR: "10.244.11.0/24"},
+			{Deployment: "alpha", Network: "stack", CIDR: "10.244.12.0/24"},
+			{Deployment: "bench", Network: "stack", CIDR: "10.244.0.0/24"},
+		},
+	})
+
+	// The two preamble lines must come first, in order, before the table body —
+	// that ordering is what makes nft -f run delete-then-recreate atomically.
+	wantPrefix := "add table inet jaco\ndelete table inet jaco\ntable inet jaco {\n"
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Errorf("Render output must start with the atomic-replace preamble.\ngot first 80 bytes: %q", got[:min(80, len(got))])
+	}
+	// Emitted exactly once each — a second copy would itself be a bug.
+	if c := strings.Count(got, "add table inet jaco\n"); c != 1 {
+		t.Errorf("`add table inet jaco` appears %d times, want 1", c)
+	}
+	if c := strings.Count(got, "delete table inet jaco\n"); c != 1 {
+		t.Errorf("`delete table inet jaco` appears %d times, want 1", c)
+	}
+	// And there must still be exactly one pool drop, sitting AFTER both per-scope
+	// accepts — the property the preamble protects across re-applies.
+	if c := strings.Count(got, "ip saddr @jaco_pool ip daddr @jaco_pool drop"); c != 1 {
+		t.Errorf("pool drop appears %d times, want 1", c)
+	}
+	dropIdx := strings.Index(got, "@jaco_pool ip daddr @jaco_pool drop")
+	for _, sc := range []string{"dep_net_alpha_stack", "dep_net_bench_stack"} {
+		acceptIdx := strings.Index(got, "ip saddr @"+sc+" ip daddr @"+sc+" accept")
+		if acceptIdx < 0 || acceptIdx > dropIdx {
+			t.Errorf("accept for %s must precede the pool drop (accept=%d drop=%d)", sc, acceptIdx, dropIdx)
+		}
+	}
+}
+
 func TestApply_FailsWhenNftMissing(t *testing.T) {
 	// In CI without nftables, Apply errors with a wrapped exec failure.
 	// We only verify the file-management path: a temp file gets created and
