@@ -1,3 +1,10 @@
+---
+sources:
+  - cmd/jaco/node.go
+  - internal/controlplane/grpc/cluster.go
+  - internal/scheduler/drain/
+---
+
 # `jaco node`
 
 Cluster membership management: mint join tokens, attach new nodes,

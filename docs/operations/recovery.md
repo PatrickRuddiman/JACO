@@ -1,3 +1,13 @@
+---
+sources:
+  - cmd/jaco/cluster.go
+  - cmd/jaco/node.go
+  - cmd/jaco/restore.go
+  - internal/controlplane/raft/
+  - internal/controlplane/backup/
+  - internal/scheduler/
+---
+
 # Recovery
 
 What to do when the cluster, a node, or a subsystem is unhealthy.

@@ -1,3 +1,13 @@
+---
+sources:
+  - internal/controlplane/grpc/
+  - internal/runtime/compose/
+  - internal/runtime/pull/
+  - internal/discovery/firewall/
+  - internal/ingress/
+  - proto/jaco/v1/entities.proto
+---
+
 # Troubleshooting
 
 Error codes you will actually see, what they mean, and how to clear

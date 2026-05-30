@@ -1,3 +1,12 @@
+---
+sources:
+  - internal/discovery/bridge/
+  - internal/discovery/ipam/
+  - internal/discovery/wgmesh/
+  - internal/discovery/dns/
+  - internal/discovery/runtime_attach/
+---
+
 # Networking
 
 East-west traffic between containers in JACO uses three layers:
