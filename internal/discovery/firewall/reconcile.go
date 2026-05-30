@@ -59,6 +59,16 @@ type Reconciler struct {
 	// Nil-safe: falls back to a discard logger.
 	Logger *slog.Logger
 
+	// ReadyGate, when set, must return true before Loop will run a Tick.
+	// While it returns false, Loop quietly waits for the next tick instead
+	// of running and logging an error. Used to suppress the boot-window
+	// race where a freshly-joined follower runs its first Tick before raft
+	// has discovered the leader's address — Audit/UpdateStatus then both
+	// fail to forward and the reconciler logs "Audit failed" + "Tick
+	// failed" even though the underlying nft apply succeeded (issue #113).
+	// Nil-safe: when unset, Tick runs every interval as before.
+	ReadyGate func() bool
+
 	// degraded tracks whether the last Tick saw an Apply failure.
 	degraded bool
 }
@@ -166,13 +176,20 @@ func (r *Reconciler) Tick(ctx context.Context) error {
 }
 
 // Loop runs Tick on a 30s ticker until ctx is cancelled.
+// Loop runs Tick on a 30s ticker until ctx is cancelled. When ReadyGate is
+// set and returns false, the tick is skipped and we wait for the next one —
+// this hides the boot-window startup-race (issue #113) where forward-to-
+// leader can't yet resolve the leader's address.
 func (r *Reconciler) Loop(ctx context.Context) error {
 	t := time.NewTicker(ReconcileInterval)
 	defer t.Stop()
 	for {
-		// Run once at start so drift gets fixed quickly.
-		if err := r.Tick(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			r.logger().Error("firewall.Reconciler.Tick failed", "error", err)
+		if r.ReadyGate == nil || r.ReadyGate() {
+			if err := r.Tick(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				r.logger().Error("firewall.Reconciler.Tick failed", "error", err)
+			}
+		} else {
+			r.logger().Debug("firewall.Reconciler.Tick skipped: not ready (no leader yet)")
 		}
 		select {
 		case <-ctx.Done():
