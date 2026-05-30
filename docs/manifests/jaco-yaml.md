@@ -43,10 +43,11 @@ services:                    # optional, list of overrides
     hosts: [host-a, host-b]
     networks: [net-a, net-b]
 acme: on | off               # optional; on by default
+acme_email: ops@example.com  # optional; per-stack ACME contact (#102)
 ```
 
-Only `deployment`, `routes`, `services`, and `acme` are accepted at
-the top level. Anything else is rejected.
+Only `deployment`, `routes`, `services`, `acme`, and `acme_email` are
+accepted at the top level. Anything else is rejected.
 
 ## `deployment`
 
@@ -168,6 +169,24 @@ for dev/internal deployments that don't want JACO racing the
 operator to Let's Encrypt. An individual route may still opt back in
 with an explicit `tls: auto`. Empty / `on` (default) leaves each
 route's TLS decision to the route itself.
+
+## `acme_email`
+
+Per-stack ACME (Let's Encrypt) contact address. Each stack with a
+distinct non-empty `acme_email:` gets its **own Caddy automation
+policy and its own ACME account**, so renewal notifications reach the
+stack's owner instead of one global ops inbox.
+
+- Empty (default) → fall back to the cluster-wide `acme_email` in
+  `jacod.yaml`.
+- Two stacks with the same value share a single ACME account /
+  automation policy.
+- Validation is syntactic only (`net/mail.ParseAddress`) and only
+  runs when ACME is on; under `acme: off` the field is accepted but
+  unused.
+- **Changing a stack's `acme_email`** creates a fresh ACME account
+  registration on the next issuance / renewal; existing valid certs
+  keep serving until renewal.
 
 ## Precedence
 

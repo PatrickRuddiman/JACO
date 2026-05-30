@@ -38,6 +38,12 @@ type Route struct {
 	// prefix from the request URI before proxying upstream. Default false
 	// forwards the full URI unchanged (byte-for-byte the legacy behavior).
 	StripPath bool
+	// ACMEEmail is the per-deployment ACME contact for the stack this route
+	// belongs to (issue #102). Empty means "fall back to opts.ACMEEmail"
+	// (the cluster-wide default from jacod.yaml). buildTLSPolicies groups
+	// domains by (staging, effective-email) so two stacks with different
+	// emails each get their own automation policy and ACME account.
+	ACMEEmail string
 }
 
 // TCPRoute is a published-port L4 listener the caller pulls from
@@ -494,12 +500,23 @@ func fallbackRoute() any {
 }
 
 // buildTLSPolicies emits the apps.tls.automation.policies array.
-// One policy per `tls: auto` route; `tls: off` routes are omitted (the
-// HTTP-only listener serves them).
+// One policy per (staging, ACME-contact-email) group of `tls: auto`
+// routes; `tls: off` routes are omitted (the HTTP-only listener serves
+// them).
 //
 // A single domain may appear on multiple routes (path-based routing), so
 // the subjects list is deduped — ACME would otherwise be asked to issue
 // the same cert several times.
+//
+// Per-stack acme_email (#102): each route's ACMEEmail (denormalized from
+// its deployment) is taken as the contact for that domain's automation
+// policy; routes with empty ACMEEmail fall back to opts.ACMEEmail (the
+// cluster-wide default from jacod.yaml). Domains are grouped by
+// (staging, effective-email) so two stacks with different emails get
+// independent issuers / ACME accounts; stacks with the same email (or
+// all-empty falling back to the cluster default) collapse into one
+// policy, preserving the historical single-policy shape for clusters that
+// haven't adopted per-stack emails.
 func buildTLSPolicies(routes []Route, opts BuildOpts) []any {
 	// Cluster-wide ACME opt-out: no automation block at all, regardless of
 	// per-route tls_auto. The HTTP-only listener serves :80; :443 routes get
@@ -508,8 +525,12 @@ func buildTLSPolicies(routes []Route, opts BuildOpts) []any {
 	if !opts.ACMEEnabled {
 		return nil
 	}
+	type policyKey struct {
+		staging bool
+		email   string
+	}
 	seen := map[string]bool{}
-	var prodDomains, stagingDomains []string
+	groups := map[policyKey][]string{}
 	for _, r := range routes {
 		if !r.TLSAuto {
 			continue
@@ -518,28 +539,39 @@ func buildTLSPolicies(routes []Route, opts BuildOpts) []any {
 			continue
 		}
 		seen[r.Domain] = true
-		// Stage-first: a domain in its staging dry-run gets a policy pointing
-		// at the staging directory. All others issue against the prod CA.
-		if opts.StagingDomains[r.Domain] && opts.ACMEStagingCA != "" {
-			stagingDomains = append(stagingDomains, r.Domain)
-		} else {
-			prodDomains = append(prodDomains, r.Domain)
+		email := r.ACMEEmail
+		if email == "" {
+			email = opts.ACMEEmail
 		}
+		staging := opts.StagingDomains[r.Domain] && opts.ACMEStagingCA != ""
+		key := policyKey{staging: staging, email: email}
+		groups[key] = append(groups[key], r.Domain)
 	}
-	if len(prodDomains) == 0 && len(stagingDomains) == 0 {
+	if len(groups) == 0 {
 		return nil
 	}
-	sort.Strings(prodDomains)
-	sort.Strings(stagingDomains)
-
-	var policies []any
-	// Staging policy first (deterministic order: staging before prod) so the
-	// rendered JSON is golden-stable.
-	if len(stagingDomains) > 0 {
-		policies = append(policies, tlsPolicy(stagingDomains, opts.ACMEStagingCA, opts.ACMEEmail))
+	// Stable policy order: staging policies first (preserves the historical
+	// staging-before-prod ordering for golden tests), then by email
+	// alphabetical. Domains within each policy sorted alphabetically.
+	keys := make([]policyKey, 0, len(groups))
+	for k := range groups {
+		keys = append(keys, k)
 	}
-	if len(prodDomains) > 0 {
-		policies = append(policies, tlsPolicy(prodDomains, opts.ACMECA, opts.ACMEEmail))
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].staging != keys[j].staging {
+			return keys[i].staging // staging first → true sorts before false
+		}
+		return keys[i].email < keys[j].email
+	})
+	var policies []any
+	for _, k := range keys {
+		domains := groups[k]
+		sort.Strings(domains)
+		ca := opts.ACMECA
+		if k.staging {
+			ca = opts.ACMEStagingCA
+		}
+		policies = append(policies, tlsPolicy(domains, ca, k.email))
 	}
 	return policies
 }

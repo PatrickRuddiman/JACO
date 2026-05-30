@@ -172,6 +172,7 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 			JacoYaml:         da.GetJacoYaml(),
 			ComposeYaml:      da.GetComposeYaml(),
 			Services:         da.GetServices(),
+			AcmeEmail:        da.GetAcmeEmail(),
 			UpdatedAt:        cmd.GetTs(),
 		}, idx)
 		// Replace-set the deployment's routes: prune any the new revision no

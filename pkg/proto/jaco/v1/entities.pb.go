@@ -656,8 +656,14 @@ type Deployment struct {
 	ComposeYaml      []byte                 `protobuf:"bytes,7,opt,name=compose_yaml,json=composeYaml,proto3" json:"compose_yaml,omitempty"`
 	Services         []*ServiceSpec         `protobuf:"bytes,8,rep,name=services,proto3" json:"services,omitempty"`
 	UpdatedAt        *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// acme_email is this deployment's ACME (Let's Encrypt) contact address,
+	// sourced from the top-level `acme_email:` field in the stack's
+	// jaco.yaml. Empty = fall back to the cluster-wide jacod.yaml
+	// `acme_email`. Each unique non-empty value yields its own Caddy
+	// automation policy (separate ACME account / contact). See #102.
+	AcmeEmail     string `protobuf:"bytes,10,opt,name=acme_email,json=acmeEmail,proto3" json:"acme_email,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Deployment) Reset() {
@@ -751,6 +757,13 @@ func (x *Deployment) GetUpdatedAt() *timestamppb.Timestamp {
 		return x.UpdatedAt
 	}
 	return nil
+}
+
+func (x *Deployment) GetAcmeEmail() string {
+	if x != nil {
+		return x.AcmeEmail
+	}
+	return ""
 }
 
 type ReplicaDesired struct {
@@ -1978,7 +1991,7 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\x15PLACEMENT_MODE_SPREAD\x10\x01\x12\x17\n" +
 	"\x13PLACEMENT_MODE_PACK\x10\x02\x12\x18\n" +
 	"\x14PLACEMENT_MODE_HOSTS\x10\x03\x12\x19\n" +
-	"\x15PLACEMENT_MODE_GLOBAL\x10\x04J\x04\b\x05\x10\x06R\x0fcompose_service\"\xe9\x03\n" +
+	"\x15PLACEMENT_MODE_GLOBAL\x10\x04J\x04\b\x05\x10\x06R\x0fcompose_service\"\x88\x04\n" +
 	"\n" +
 	"Deployment\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12)\n" +
@@ -1990,7 +2003,10 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\fcompose_yaml\x18\a \x01(\fR\vcomposeYaml\x120\n" +
 	"\bservices\x18\b \x03(\v2\x14.jaco.v1.ServiceSpecR\bservices\x129\n" +
 	"\n" +
-	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x1a@\n" +
+	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x1d\n" +
+	"\n" +
+	"acme_email\x18\n" +
+	" \x01(\tR\tacmeEmail\x1a@\n" +
 	"\x12StatusDetailsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb9\x01\n" +

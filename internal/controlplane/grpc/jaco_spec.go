@@ -2,6 +2,7 @@ package grpcsrv
 
 import (
 	"fmt"
+	"net/mail"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,6 +34,13 @@ type JacoYAML struct {
 	// for dev/internal deployments that don't want JACO racing the operator
 	// to Let's Encrypt.
 	ACME string `yaml:"acme"`
+	// ACMEEmail is this stack's ACME (Let's Encrypt) contact address.
+	// Empty (the default) means fall back to the cluster-wide jacod.yaml
+	// `acme_email`. Each stack with a distinct non-empty value gets its
+	// own Caddy automation policy and its own ACME account, so renewal
+	// notifications reach that stack's owner instead of one global ops
+	// inbox (issue #102).
+	ACMEEmail string `yaml:"acme_email"`
 }
 
 // JacoServiceDecl is one service-override entry. Name must equal a service
@@ -147,6 +155,18 @@ func validateJacoYAML(j *JacoYAML) (code string, message string, ok bool) {
 	case "", "on", "off":
 	default:
 		return "validation_failed", fmt.Sprintf("acme %q is unknown (want on|off)", j.ACME), false
+	}
+	// Syntactic email validation only when ACME is on (i.e. not explicitly
+	// "off"; empty defaults to on). A malformed contact would surface as
+	// an opaque CA-side rejection mid-issuance; catching it at apply time
+	// gives a clean error pointing at the manifest. Empty is allowed and
+	// means "fall back to the cluster-wide acme_email" (#102).
+	if j.ACMEEmail != "" && !strings.EqualFold(j.ACME, "off") {
+		if _, err := mail.ParseAddress(j.ACMEEmail); err != nil {
+			return "validation_failed",
+				fmt.Sprintf("acme_email %q is not a valid email address: %v", j.ACMEEmail, err),
+				false
+		}
 	}
 	serviceNames := map[string]bool{}
 	for _, s := range j.Services {
