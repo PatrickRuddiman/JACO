@@ -93,6 +93,7 @@ message ServiceSpec {
     PLACEMENT_MODE_SPREAD = 1;
     PLACEMENT_MODE_PACK = 2;
     PLACEMENT_MODE_HOSTS = 3;
+    PLACEMENT_MODE_GLOBAL = 4;
   }
   string name = 1;
   int32 replicas = 2;

@@ -10,6 +10,12 @@
 //     hostname-lex tiebreak.
 //   - HOSTS: spec.Hosts ∩ healthy_nodes. If fewer than spec.Replicas
 //     candidates survive, raise cannot_satisfy_host_placement.
+//
+// GLOBAL (daemonset) is NOT decided in this package: the scheduler reconcile
+// loop handles it directly, placing exactly one replica per ready node and
+// ignoring spec.Replicas. EligibleHosts still returns the ready hosts for a
+// GLOBAL service (the HOSTS-intersection branch is skipped), which the
+// scheduler maps one-per-host; PlaceReplica is never called for GLOBAL.
 package placement
 
 import (

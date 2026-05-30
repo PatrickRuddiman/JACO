@@ -140,10 +140,13 @@ func validateJacoYAML(j *JacoYAML) (code string, message string, ok bool) {
 			return "validation_failed", fmt.Sprintf("service %q replicas must be >= 0", s.Name), false
 		}
 		switch s.Placement {
-		case "spread", "pack", "hosts":
+		case "spread", "pack", "hosts", "global":
 		default:
-			return "validation_failed", fmt.Sprintf("service %q has unknown placement %q (want spread|pack|hosts)", s.Name, s.Placement), false
+			return "validation_failed", fmt.Sprintf("service %q has unknown placement %q (want spread|pack|hosts|global)", s.Name, s.Placement), false
 		}
+		// `placement: global` (daemonset) runs one replica per ready node;
+		// `replicas:` is ignored (not rejected). The scheduler logs the
+		// override at reconcile time; validation has no warning channel.
 		if s.Placement == "hosts" && len(s.Hosts) == 0 {
 			return "validation_failed", fmt.Sprintf("service %q uses placement=hosts but hosts is empty", s.Name), false
 		}
@@ -303,6 +306,8 @@ func placementToProto(s string) pb.ServiceSpec_PlacementMode {
 		return pb.ServiceSpec_PLACEMENT_MODE_PACK
 	case "hosts":
 		return pb.ServiceSpec_PLACEMENT_MODE_HOSTS
+	case "global":
+		return pb.ServiceSpec_PLACEMENT_MODE_GLOBAL
 	default:
 		return pb.ServiceSpec_PLACEMENT_MODE_SPREAD
 	}

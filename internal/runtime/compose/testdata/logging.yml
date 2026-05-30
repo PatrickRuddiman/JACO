@@ -1,0 +1,11 @@
+services:
+  modern:
+    image: busybox
+    logging:
+      driver: json-file
+      options:
+        tag: "{{.Name}}"
+        max-size: 10m
+        max-file: "3"
+  none:
+    image: busybox

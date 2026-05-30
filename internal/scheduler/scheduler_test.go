@@ -101,6 +101,195 @@ func seedDeployment(t *testing.T, f *fsm.FSM, name string, replicas int32, compo
 	f.Apply(&hraft.Log{Index: *raftIdx, Data: data})
 }
 
+// seedDeploymentGlobal writes a Deployment whose single "web" service uses
+// PLACEMENT_MODE_GLOBAL (daemonset). replicas is set on the spec to prove the
+// scheduler ignores it under global placement.
+func seedDeploymentGlobal(t *testing.T, f *fsm.FSM, name string, replicas int32, composeYAML string, raftIdx *uint64) {
+	t.Helper()
+	*raftIdx++
+	cmd := &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_DeploymentApply{
+		DeploymentApply: &pb.DeploymentApply{
+			Deployment: name, Revision: 1, ComposeYaml: []byte(composeYAML),
+			Services: []*pb.ServiceSpec{{
+				Name: "web", Replicas: replicas,
+				Placement: pb.ServiceSpec_PLACEMENT_MODE_GLOBAL,
+			}},
+		},
+	}}
+	data, _ := proto.Marshal(cmd)
+	f.Apply(&hraft.Log{Index: *raftIdx, Data: data})
+}
+
+// unreadyNode flips a node out of NODE_STATUS_READY so EligibleHosts drops it
+// (simulating a node leaving/draining). Any non-READY status works; JOINING is
+// the status the FSM itself uses pre-promotion, so it's guaranteed to exist.
+func unreadyNode(t *testing.T, f *fsm.FSM, name string, raftIdx *uint64) {
+	t.Helper()
+	*raftIdx++
+	upd := &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_NodeStatusUpdate{
+		NodeStatusUpdate: &pb.NodeStatusUpdate{
+			Hostname: name, Status: pb.NodeStatus_NODE_STATUS_JOINING,
+		},
+	}}
+	data, _ := proto.Marshal(upd)
+	f.Apply(&hraft.Log{Index: *raftIdx, Data: data})
+}
+
+func TestReconcile_GlobalPlacementOneReplicaPerReadyNode(t *testing.T) {
+	s, st, f, _ := newScheduler(t, true)
+	var raftIdx uint64
+
+	seedNode(t, f, "node-a", &raftIdx)
+	seedNode(t, f, "node-b", &raftIdx)
+	seedNode(t, f, "node-c", &raftIdx)
+	// replicas:99 must be ignored under global.
+	seedDeploymentGlobal(t, f, "sample", 99, sampleCompose, &raftIdx)
+
+	s.Reconcile(context.Background())
+
+	replicas := st.ReplicasDesired.List()
+	if got := len(replicas); got != 3 {
+		t.Fatalf("global ReplicasDesired count = %d, want 3 (one per ready node)", got)
+	}
+	hosts := map[string]int{}
+	for _, r := range replicas {
+		hosts[r.GetHost()]++
+	}
+	if len(hosts) != 3 {
+		t.Errorf("hosts used = %d (%v); want 3 distinct hosts", len(hosts), hosts)
+	}
+	for h, c := range hosts {
+		if c != 1 {
+			t.Errorf("host %s got %d replicas; want exactly 1 under global", h, c)
+		}
+	}
+}
+
+func TestReconcile_GlobalPlacementGrowsOnNodeJoin(t *testing.T) {
+	s, st, f, _ := newScheduler(t, true)
+	var raftIdx uint64
+
+	seedNode(t, f, "node-a", &raftIdx)
+	seedNode(t, f, "node-b", &raftIdx)
+	seedDeploymentGlobal(t, f, "sample", 0, sampleCompose, &raftIdx)
+
+	s.Reconcile(context.Background())
+	if got := st.ReplicasDesired.Len(); got != 2 {
+		t.Fatalf("before join: ReplicasDesired = %d, want 2", got)
+	}
+
+	// New node joins → count must climb to 3.
+	seedNode(t, f, "node-c", &raftIdx)
+	s.Reconcile(context.Background())
+
+	replicas := st.ReplicasDesired.List()
+	if got := len(replicas); got != 3 {
+		t.Fatalf("after join: ReplicasDesired = %d, want 3", got)
+	}
+	hosts := map[string]bool{}
+	for _, r := range replicas {
+		hosts[r.GetHost()] = true
+	}
+	for _, want := range []string{"node-a", "node-b", "node-c"} {
+		if !hosts[want] {
+			t.Errorf("after join: missing replica on %s (hosts=%v)", want, hosts)
+		}
+	}
+}
+
+func TestReconcile_GlobalPlacementShrinksOnNodeLeave(t *testing.T) {
+	s, st, f, _ := newScheduler(t, true)
+	var raftIdx uint64
+
+	seedNode(t, f, "node-a", &raftIdx)
+	seedNode(t, f, "node-b", &raftIdx)
+	seedNode(t, f, "node-c", &raftIdx)
+	seedDeploymentGlobal(t, f, "sample", 0, sampleCompose, &raftIdx)
+
+	s.Reconcile(context.Background())
+	if got := st.ReplicasDesired.Len(); got != 3 {
+		t.Fatalf("before leave: ReplicasDesired = %d, want 3", got)
+	}
+
+	// node-b leaves (no longer READY) → its replica must be removed.
+	unreadyNode(t, f, "node-b", &raftIdx)
+	s.Reconcile(context.Background())
+
+	replicas := st.ReplicasDesired.List()
+	if got := len(replicas); got != 2 {
+		t.Fatalf("after leave: ReplicasDesired = %d, want 2", got)
+	}
+	for _, r := range replicas {
+		if r.GetHost() == "node-b" {
+			t.Errorf("after leave: replica %s still pinned to drained node-b", r.GetId())
+		}
+	}
+}
+
+// TestReconcile_GlobalPlacementSurvivorIDsStableOnNodeLeave guards the
+// host-keyed replica id: when one node leaves, the surviving nodes' replicas
+// must keep their exact ids so their containers are not torn down and
+// recreated. A position-keyed id would re-index survivors and churn every
+// container for one unrelated departure.
+func TestReconcile_GlobalPlacementSurvivorIDsStableOnNodeLeave(t *testing.T) {
+	s, st, f, _ := newScheduler(t, true)
+	var raftIdx uint64
+	seedNode(t, f, "node-a", &raftIdx)
+	seedNode(t, f, "node-b", &raftIdx)
+	seedNode(t, f, "node-c", &raftIdx)
+	seedDeploymentGlobal(t, f, "sample", 0, sampleCompose, &raftIdx)
+
+	s.Reconcile(context.Background())
+	before := map[string]string{} // host -> replica id
+	for _, r := range st.ReplicasDesired.List() {
+		before[r.GetHost()] = r.GetId()
+	}
+	if before["node-a"] == "" || before["node-c"] == "" {
+		t.Fatalf("expected replicas on node-a and node-c, got %v", before)
+	}
+
+	// node-b (lexically in the middle) leaves.
+	raftIdx++
+	upd := &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_NodeStatusUpdate{
+		NodeStatusUpdate: &pb.NodeStatusUpdate{
+			Hostname: "node-b", Status: pb.NodeStatus_NODE_STATUS_JOINING,
+		},
+	}}
+	data, _ := proto.Marshal(upd)
+	f.Apply(&hraft.Log{Index: raftIdx, Data: data})
+	s.Reconcile(context.Background())
+
+	after := map[string]string{}
+	for _, r := range st.ReplicasDesired.List() {
+		after[r.GetHost()] = r.GetId()
+	}
+	if len(after) != 2 {
+		t.Fatalf("want 2 replicas after node-b leaves, got %d (%v)", len(after), after)
+	}
+	if after["node-a"] != before["node-a"] {
+		t.Errorf("node-a replica id churned: %q -> %q", before["node-a"], after["node-a"])
+	}
+	if after["node-c"] != before["node-c"] {
+		t.Errorf("node-c replica id churned: %q -> %q", before["node-c"], after["node-c"])
+	}
+}
+
+func TestReconcile_GlobalPlacementIgnoresReplicasField(t *testing.T) {
+	s, st, f, _ := newScheduler(t, true)
+	var raftIdx uint64
+
+	seedNode(t, f, "node-a", &raftIdx)
+	seedNode(t, f, "node-b", &raftIdx)
+	// replicas:1 set, but global must still place one per node → 2.
+	seedDeploymentGlobal(t, f, "sample", 1, sampleCompose, &raftIdx)
+
+	s.Reconcile(context.Background())
+
+	if got := st.ReplicasDesired.Len(); got != 2 {
+		t.Fatalf("global with replicas:1 → ReplicasDesired = %d, want 2 (count == nodes)", got)
+	}
+}
+
 func TestReconcile_ThreeReplicaDeploymentEvenlySpreadAcrossThreeNodes(t *testing.T) {
 	s, st, f, _ := newScheduler(t, true)
 	var raftIdx uint64

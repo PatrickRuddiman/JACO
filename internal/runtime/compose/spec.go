@@ -39,6 +39,7 @@ func ToContainerSpec(svc types.ServiceConfig, opts SpecOptions) ContainerSpec {
 	spec.Healthcheck = healthcheckFromCompose(svc.HealthCheck)
 	spec.Networks = networksFromCompose(svc.Networks, opts.Deployment)
 	spec.Ports = portsFromCompose(svc.Ports)
+	spec.LogConfig = logConfigFromCompose(svc.Logging)
 
 	res := resolveResources(svc)
 	spec.NanoCPUs = res.NanoCPUs
@@ -303,6 +304,21 @@ func portsFromCompose(ports []types.ServicePortConfig) []PortDecl {
 		out = append(out, decl)
 	}
 	return out
+}
+
+// logConfigFromCompose resolves a service's container log configuration from
+// the modern compose `logging:` block (driver + options). Returns nil when the
+// service declares no logging so docker's default driver applies. Only the
+// modern block is supported — compose-go's loader rejects the legacy top-level
+// `log_driver`/`log_opt` keys before they could ever reach JACO.
+func logConfigFromCompose(logging *types.LoggingConfig) *LogConfig {
+	if logging == nil || (logging.Driver == "" && len(logging.Options) == 0) {
+		return nil
+	}
+	return &LogConfig{
+		Driver:  logging.Driver,
+		Options: mapStringToMap(types.Mapping(logging.Options)),
+	}
 }
 
 func cloneStringList(in []string) []string {
