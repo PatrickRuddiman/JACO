@@ -185,6 +185,7 @@ func ingressBuilder(st *state.State, acme ingressACMEOpts, logger *slog.Logger) 
 				Port:       int(r.GetPort()),
 				TLSAuto:    r.GetTlsAuto(),
 				Path:       r.GetPath(),
+				StripPath:  r.GetStripPath(),
 			})
 		}
 
