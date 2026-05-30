@@ -150,3 +150,28 @@ func itoa(n int32) string {
 	}
 	return string(buf[i:])
 }
+
+// TestPlan_GlobalServiceReplicaDroppedNotMigrated guards the daemonset drain
+// rule: a GLOBAL service runs one replica per node, so the draining host's
+// replica must be DROPPED (no migration) — migrating it would double-place the
+// daemonset on a node that already runs its own copy.
+func TestPlan_GlobalServiceReplicaDroppedNotMigrated(t *testing.T) {
+	f, st := newFSMState(t)
+	var idx uint64
+	seedNodeReady(t, f, "node-a", &idx)
+	seedNodeReady(t, f, "node-b", &idx)
+	seedDeploymentWithSvc(t, f, "sample", &pb.ServiceSpec{
+		Name: "agent", Placement: pb.ServiceSpec_PLACEMENT_MODE_GLOBAL,
+	}, &idx)
+	// One global replica per node (host-keyed ids).
+	seedDesired(t, f, "sample", "agent", "sample-agent-node-a", "node-a", &idx)
+	seedDesired(t, f, "sample", "agent", "sample-agent-node-b", "node-b", &idx)
+
+	migs, err := drain.Plan(st, "node-a")
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(migs) != 0 {
+		t.Fatalf("global replica must be dropped, not migrated; got %d migration(s): %+v", len(migs), migs)
+	}
+}
