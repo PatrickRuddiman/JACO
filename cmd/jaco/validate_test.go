@@ -47,10 +47,10 @@ func TestValidateCmd_BadJaco(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation error, got nil")
 	}
-	// Error should reference the unknown service.
+	// Error should reference the unknown placement value.
 	combined := errBuf.String() + err.Error()
-	if !strings.Contains(combined, "unknown service") && !strings.Contains(combined, "validation_failed") {
-		t.Errorf("expected validation error message referencing unknown service, got stderr=%q err=%v", errBuf.String(), err)
+	if !strings.Contains(combined, "unknown placement") && !strings.Contains(combined, "validation_failed") {
+		t.Errorf("expected validation error message referencing unknown placement, got stderr=%q err=%v", errBuf.String(), err)
 	}
 }
 
