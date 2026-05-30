@@ -116,6 +116,12 @@ message Deployment {
   bytes compose_yaml = 7;
   repeated ServiceSpec services = 8;
   google.protobuf.Timestamp updated_at = 9;
+  // acme_email is this deployment's ACME (Let's Encrypt) contact address,
+  // sourced from the top-level `acme_email:` field in the stack's
+  // jaco.yaml. Empty = fall back to the cluster-wide jacod.yaml
+  // `acme_email`. Each unique non-empty value yields its own Caddy
+  // automation policy (separate ACME account / contact). See #102.
+  string acme_email = 10;
 }
 
 message ReplicaDesired {

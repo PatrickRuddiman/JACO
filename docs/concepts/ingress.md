@@ -108,6 +108,24 @@ CertMagic's renewal scheduler runs on every node. The lock prevents a
 thundering herd: only one node performs the renewal; others observe
 the new cert via watch.
 
+### Per-stack ACME contact email
+
+A stack's `jaco.yaml` may set a top-level `acme_email:` (issue #102).
+When set, that stack's `tls: auto` domains register and renew under
+that contact instead of the cluster-wide `acme_email` from
+`jacod.yaml`. The rendered Caddy config groups domains by
+`(staging, effective-email)` so each unique non-empty email gets its
+own automation policy and its own ACME account; stacks that omit the
+field fall into the cluster-default policy.
+
+- Two stacks that share an email collapse into one policy (one ACME
+  account).
+- Changing a stack's `acme_email` triggers a new ACME account
+  registration on the next issuance / renewal; the existing valid
+  cert keeps serving until renewal.
+- The cluster-wide opt-out (`acme_enabled: false`) still wins — no
+  automation block at all is emitted, regardless of per-stack emails.
+
 Renewal threshold: CertMagic default (~1/3 of remaining validity).
 On failure, cert state in raft transitions `renewing → failed` with
 exponential backoff capped at 1 hour; existing cert continues to

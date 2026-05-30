@@ -118,6 +118,9 @@ message DeploymentApply {
   repeated ServiceSpec services = 5;
   repeated Route routes = 6;
   repeated TCPRoute tcp_routes = 7;
+  // acme_email is this stack's ACME contact (see Deployment.acme_email).
+  // Empty = fall back to cluster-wide jacod.yaml acme_email. #102.
+  string acme_email = 8;
 }
 
 message DeploymentRollback {
