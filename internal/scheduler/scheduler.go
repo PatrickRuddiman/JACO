@@ -223,18 +223,44 @@ func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, no
 		index int32
 	}
 	var desired []desiredReplica
-	for i := int32(0); i < svc.GetReplicas(); i++ {
-		host, err := placement.PlaceReplica(dep.GetName(), svc, eligible, int(i), currentCounts)
-		if err != nil {
-			// Pinned-host placement failure → DeploymentStatusUpdate
-			// pending, place no replicas for this service this pass.
-			return []*pb.Command{deploymentStatusPending(dep.GetName(), err.Error())}
+	if svc.GetPlacement() == pb.ServiceSpec_PLACEMENT_MODE_GLOBAL {
+		if svc.GetReplicas() != 0 {
+			s.log().Warn("placement=global ignores replicas; running one replica per ready node",
+				"deployment", dep.GetName(), "service", svc.GetName(),
+				"replicas", svc.GetReplicas(), "ready_nodes", len(eligible))
 		}
-		desired = append(desired, desiredReplica{
-			id:    counter.ReplicaID(dep.GetName(), svc.GetName(), uint64(i)),
-			host:  host,
-			index: i,
-		})
+		// GLOBAL (daemonset): exactly one replica per ready (eligible)
+		// host. `replicas:` is ignored — the count is always the number
+		// of eligible hosts. The replica id is keyed by HOST, not by a
+		// positional index, so a node's replica keeps a stable id even as
+		// other nodes join or leave. (A position-keyed id would re-index
+		// every surviving replica when a lexically-earlier node departs,
+		// tearing down and recreating their containers for an unrelated
+		// change.) `eligible` is already sorted, so `index` stays
+		// deterministic for display/rollout ordering. As nodes join/leave,
+		// `eligible` grows/shrinks and the desired-vs-current diff below
+		// adds the new host's replica / removes only the departed host's.
+		for i, host := range eligible {
+			desired = append(desired, desiredReplica{
+				id:    counter.ReplicaIDForHost(dep.GetName(), svc.GetName(), host),
+				host:  host,
+				index: int32(i),
+			})
+		}
+	} else {
+		for i := int32(0); i < svc.GetReplicas(); i++ {
+			host, err := placement.PlaceReplica(dep.GetName(), svc, eligible, int(i), currentCounts)
+			if err != nil {
+				// Pinned-host placement failure → DeploymentStatusUpdate
+				// pending, place no replicas for this service this pass.
+				return []*pb.Command{deploymentStatusPending(dep.GetName(), err.Error())}
+			}
+			desired = append(desired, desiredReplica{
+				id:    counter.ReplicaID(dep.GetName(), svc.GetName(), uint64(i)),
+				host:  host,
+				index: i,
+			})
+		}
 	}
 
 	// Image-change detection. If the formal rollout state machine is
@@ -247,8 +273,13 @@ func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, no
 	rolling := isRollingImageChange(currentByID, image)
 	imageChangedThisPass := false
 	rolloutStep := int32(-1) // -1 = no plan driving this pass
+	// GLOBAL ignores `replicas:`; its replica count is len(eligible).
+	totalSteps := int32(svc.GetReplicas())
+	if svc.GetPlacement() == pb.ServiceSpec_PLACEMENT_MODE_GLOBAL {
+		totalSteps = int32(len(eligible))
+	}
 	if s.rollouts != nil && rolling {
-		rolloutStep = s.driveRollout(dep, svc, int32(svc.GetReplicas()))
+		rolloutStep = s.driveRollout(dep, svc, totalSteps)
 	}
 
 	// 2. Adds + updates.

@@ -19,7 +19,7 @@ func seedNode(st *state.State, name string) {
 
 func seedReplica(st *state.State, dep, svc, host string, idx int32) {
 	st.ReplicasDesired.Apply(&pb.ReplicaDesired{
-		Id: dep + "-" + svc + "-" + itoa(idx),
+		Id:         dep + "-" + svc + "-" + itoa(idx),
 		Deployment: dep, Service: svc, Index: idx, Host: host, Image: "img:1",
 	}, 1)
 }
@@ -149,4 +149,28 @@ func itoa(n int32) string {
 		buf[i] = '-'
 	}
 	return string(buf[i:])
+}
+
+// TestPlan_GlobalServiceReplicaDroppedNotMigrated guards the daemonset drain
+// rule: a GLOBAL service runs one replica per node, so the draining host's
+// replica must be DROPPED (no migration) — migrating it would double-place the
+// daemonset on a node that already runs its own copy.
+func TestPlan_GlobalServiceReplicaDroppedNotMigrated(t *testing.T) {
+	st := makeState()
+	seedNode(st, "node-a")
+	seedNode(st, "node-b")
+	seedDeployment(st, "sample", &pb.ServiceSpec{
+		Name: "agent", Placement: pb.ServiceSpec_PLACEMENT_MODE_GLOBAL,
+	})
+	// One global replica per node.
+	seedReplica(st, "sample", "agent", "node-a", 0)
+	seedReplica(st, "sample", "agent", "node-b", 1)
+
+	migs, err := drain.Plan(st, "node-a")
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(migs) != 0 {
+		t.Fatalf("global replica must be dropped, not migrated; got %d migration(s): %+v", len(migs), migs)
+	}
 }

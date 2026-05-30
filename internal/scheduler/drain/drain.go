@@ -83,6 +83,15 @@ func Plan(st *state.State, hostname string) ([]Migration, error) {
 			// Service no longer declared in the Deployment — leave it alone.
 			continue
 		}
+		// GLOBAL (daemonset) replicas are not migrated: the service runs
+		// exactly one replica per node, so the draining host's replica is
+		// simply dropped (the scheduler will not recreate it elsewhere — a
+		// node that already runs the service must not get a second copy).
+		// Migrating it would double-place the daemonset on the target host.
+		if spec.GetPlacement() == pb.ServiceSpec_PLACEMENT_MODE_GLOBAL {
+			continue
+		}
+
 		eligible := placement.EligibleHosts(spec, remaining)
 
 		// Current per-host counts for PACK, excluding the draining host.
