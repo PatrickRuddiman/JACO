@@ -4,7 +4,12 @@ import (
 	"testing"
 
 	"github.com/PatrickRuddiman/jaco/internal/runtime/compose"
+	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
+
+// intPtr returns a pointer to an int literal. Used to populate
+// JacoServiceDecl.Replicas (a *int) from inline test fixtures.
+func intPtr(v int) *int { return &v }
 
 // TestValidateJacoYAML_RejectsEveryBranch — drives the validation
 // rule each guard fires on. The helper is package-private; covered
@@ -21,11 +26,6 @@ func TestValidateJacoYAML_RejectsEveryBranch(t *testing.T) {
 			want: "deployment name is required",
 		},
 		{
-			name: "no services",
-			j:    &JacoYAML{Deployment: "d"},
-			want: "at least one service is required",
-		},
-		{
 			name: "service name empty",
 			j: &JacoYAML{
 				Deployment: "d",
@@ -37,7 +37,7 @@ func TestValidateJacoYAML_RejectsEveryBranch(t *testing.T) {
 			name: "negative replicas",
 			j: &JacoYAML{
 				Deployment: "d",
-				Services:   []JacoServiceDecl{{Name: "w", Replicas: -1, Placement: "spread"}},
+				Services:   []JacoServiceDecl{{Name: "w", Replicas: intPtr(-1), Placement: "spread"}},
 			},
 			want: "replicas must be >= 0",
 		},
@@ -69,6 +69,14 @@ func TestValidateJacoYAML_RejectsEveryBranch(t *testing.T) {
 			want: "declared more than once",
 		},
 		{
+			name: "global placement with explicit replicas",
+			j: &JacoYAML{
+				Deployment: "d",
+				Services:   []JacoServiceDecl{{Name: "w", Placement: "global", Replicas: intPtr(3)}},
+			},
+			want: "placement=global",
+		},
+		{
 			name: "route empty domain",
 			j: &JacoYAML{
 				Deployment: "d",
@@ -78,13 +86,13 @@ func TestValidateJacoYAML_RejectsEveryBranch(t *testing.T) {
 			want: "route domain is required",
 		},
 		{
-			name: "route references unknown service",
+			name: "route empty service",
 			j: &JacoYAML{
 				Deployment: "d",
 				Services:   []JacoServiceDecl{{Name: "w", Placement: "spread"}},
-				Routes:     []JacoRouteDecl{{Domain: "a", Service: "ghost", Port: 80, TLS: "auto"}},
+				Routes:     []JacoRouteDecl{{Domain: "a", Port: 80, TLS: "auto"}},
 			},
-			want: "references unknown service",
+			want: "service is required",
 		},
 		{
 			name: "route bad port",
@@ -123,8 +131,8 @@ func TestValidateJacoYAML_HappyPath(t *testing.T) {
 	j := &JacoYAML{
 		Deployment: "d",
 		Services: []JacoServiceDecl{
-			{Name: "w", Placement: "spread", Replicas: 2},
-			{Name: "api", Placement: "hosts", Hosts: []string{"host-a"}, Replicas: 1},
+			{Name: "w", Placement: "spread", Replicas: intPtr(2)},
+			{Name: "api", Placement: "hosts", Hosts: []string{"host-a"}, Replicas: intPtr(1)},
 		},
 		Routes: []JacoRouteDecl{
 			{Domain: "a.example", Service: "w", Port: 80, TLS: "auto"},
@@ -134,6 +142,64 @@ func TestValidateJacoYAML_HappyPath(t *testing.T) {
 	_, _, ok := validateJacoYAML(j)
 	if !ok {
 		t.Errorf("happy-path JacoYAML failed validation")
+	}
+}
+
+// TestValidateJacoYAML_EmptyServicesAccepted — issue #99: a slim jaco.yaml
+// that declares only routes (no `services:`) is valid intrinsically; compose
+// supplies the container set, and route → service cross-validation runs at
+// Apply time against the merged set.
+func TestValidateJacoYAML_EmptyServicesAccepted(t *testing.T) {
+	cases := []struct {
+		name string
+		j    *JacoYAML
+	}{
+		{
+			name: "nil services slice",
+			j: &JacoYAML{
+				Deployment: "d",
+				Routes: []JacoRouteDecl{
+					{Domain: "a.example", Service: "anything", Port: 80, TLS: "auto"},
+				},
+			},
+		},
+		{
+			name: "empty services slice",
+			j: &JacoYAML{
+				Deployment: "d",
+				Services:   []JacoServiceDecl{},
+				Routes: []JacoRouteDecl{
+					{Domain: "a.example", Service: "anything", Port: 80, TLS: "auto"},
+				},
+			},
+		},
+		{
+			name: "routes also empty",
+			j:    &JacoYAML{Deployment: "d"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			code, msg, ok := validateJacoYAML(c.j)
+			if !ok {
+				t.Fatalf("validation rejected slim jaco.yaml: code=%q msg=%q", code, msg)
+			}
+		})
+	}
+}
+
+// TestValidateJacoYAML_RouteUnknownServiceDeferred — validateJacoYAML no
+// longer rejects routes whose service field doesn't appear in jaco.yaml's
+// `services:` list. The compose project may supply the service; the check
+// runs at Apply time against the merged set (deploy.go).
+func TestValidateJacoYAML_RouteUnknownServiceDeferred(t *testing.T) {
+	j := &JacoYAML{
+		Deployment: "d",
+		Services:   []JacoServiceDecl{{Name: "w", Placement: "spread"}},
+		Routes:     []JacoRouteDecl{{Domain: "a", Service: "ghost", Port: 80, TLS: "auto"}},
+	}
+	if _, msg, ok := validateJacoYAML(j); !ok {
+		t.Fatalf("validateJacoYAML rejected route→unknown-service in-package; that check moved to Apply: %q", msg)
 	}
 }
 
@@ -228,6 +294,46 @@ services:
 	}
 	if j.Services[0].Placement != "spread" {
 		t.Errorf("default placement = %q; want spread", j.Services[0].Placement)
+	}
+	if j.Services[0].Replicas == nil || *j.Services[0].Replicas != 2 {
+		t.Errorf("Replicas = %v; want *2", j.Services[0].Replicas)
+	}
+}
+
+// TestParseJacoYAML_ReplicasUnsetStaysNil — issue #99: omitting `replicas:`
+// on a JACO entry must round-trip as nil so MergeServiceDefaults can tell
+// "no override" apart from "explicit zero".
+func TestParseJacoYAML_ReplicasUnsetStaysNil(t *testing.T) {
+	input := []byte(`deployment: myapp
+services:
+  - name: web
+`)
+	j, err := ParseJacoYAML(input)
+	if err != nil {
+		t.Fatalf("ParseJacoYAML: %v", err)
+	}
+	if got := j.Services[0].Replicas; got != nil {
+		t.Errorf("Replicas = %v; want nil (unset)", *got)
+	}
+}
+
+// TestParseJacoYAML_ReplicasZeroHonored — explicit `replicas: 0` parses to
+// a pointer to zero, distinguishable from "unset" (nil).
+func TestParseJacoYAML_ReplicasZeroHonored(t *testing.T) {
+	input := []byte(`deployment: myapp
+services:
+  - name: web
+    replicas: 0
+`)
+	j, err := ParseJacoYAML(input)
+	if err != nil {
+		t.Fatalf("ParseJacoYAML: %v", err)
+	}
+	if j.Services[0].Replicas == nil {
+		t.Fatal("Replicas = nil; want *0")
+	}
+	if *j.Services[0].Replicas != 0 {
+		t.Errorf("*Replicas = %d; want 0", *j.Services[0].Replicas)
 	}
 }
 
@@ -530,4 +636,273 @@ services:
 	if err == nil {
 		t.Fatalf("expected rejection of acme: maybe")
 	}
+}
+
+// TestMergeServiceDefaults_ComposeReplicasFlowThrough — issue #99 acceptance
+// criterion: compose `deploy.replicas: 3` flows through when JACO omits
+// replicas.
+func TestMergeServiceDefaults_ComposeReplicasFlowThrough(t *testing.T) {
+	project, err := compose.LoadBytes([]byte(`services:
+  web:
+    image: nginx:1.27
+    deploy:
+      replicas: 3
+`), "x.yml")
+	if err != nil {
+		t.Fatalf("compose.LoadBytes: %v", err)
+	}
+	jaco := &JacoYAML{
+		Deployment: "sample",
+		Services:   []JacoServiceDecl{{Name: "web", Placement: "spread"}}, // no replicas override
+	}
+	specs, err := MergeServiceDefaults(jaco, project)
+	if err != nil {
+		t.Fatalf("MergeServiceDefaults: %v", err)
+	}
+	if len(specs) != 1 {
+		t.Fatalf("specs len = %d, want 1", len(specs))
+	}
+	if got := specs[0].GetReplicas(); got != 3 {
+		t.Errorf("ServiceSpec.Replicas = %d, want 3 (from compose deploy.replicas)", got)
+	}
+}
+
+// TestMergeServiceDefaults_JacoReplicasOverrideCompose — JACO override
+// wins over compose's deploy.replicas, including an explicit zero (which
+// is documented as legal and distinct from "unset").
+func TestMergeServiceDefaults_JacoReplicasOverrideCompose(t *testing.T) {
+	project, err := compose.LoadBytes([]byte(`services:
+  web:
+    image: nginx:1.27
+    deploy:
+      replicas: 3
+`), "x.yml")
+	if err != nil {
+		t.Fatalf("compose.LoadBytes: %v", err)
+	}
+	cases := []struct {
+		name     string
+		override int
+	}{
+		{"override to 5", 5},
+		{"override to 0", 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			jaco := &JacoYAML{
+				Deployment: "sample",
+				Services:   []JacoServiceDecl{{Name: "web", Placement: "spread", Replicas: intPtr(c.override)}},
+			}
+			specs, err := MergeServiceDefaults(jaco, project)
+			if err != nil {
+				t.Fatalf("MergeServiceDefaults: %v", err)
+			}
+			if got := specs[0].GetReplicas(); got != int32(c.override) {
+				t.Errorf("ServiceSpec.Replicas = %d, want %d (JACO override wins)", got, c.override)
+			}
+		})
+	}
+}
+
+// TestMergeServiceDefaults_DefaultReplicasIsOne — no JACO override, no
+// compose deploy.replicas: the default is one replica.
+func TestMergeServiceDefaults_DefaultReplicasIsOne(t *testing.T) {
+	project, err := compose.LoadBytes([]byte(`services:
+  web:
+    image: nginx:1.27
+`), "x.yml")
+	if err != nil {
+		t.Fatalf("compose.LoadBytes: %v", err)
+	}
+	jaco := &JacoYAML{Deployment: "sample"}
+	specs, err := MergeServiceDefaults(jaco, project)
+	if err != nil {
+		t.Fatalf("MergeServiceDefaults: %v", err)
+	}
+	if got := specs[0].GetReplicas(); got != 1 {
+		t.Errorf("ServiceSpec.Replicas = %d, want 1 (default)", got)
+	}
+}
+
+// TestMergeServiceDefaults_ComposeOnlyServiceAppears — issue #99: a compose
+// service with no JACO entry still produces a ServiceSpec with
+// placement=spread and the compose-derived networks/replicas.
+func TestMergeServiceDefaults_ComposeOnlyServiceAppears(t *testing.T) {
+	project, err := compose.LoadBytes([]byte(`services:
+  worker:
+    image: busybox:1.36
+    networks: [backplane]
+networks:
+  backplane: {}
+`), "x.yml")
+	if err != nil {
+		t.Fatalf("compose.LoadBytes: %v", err)
+	}
+	jaco := &JacoYAML{Deployment: "sample"}
+	specs, err := MergeServiceDefaults(jaco, project)
+	if err != nil {
+		t.Fatalf("MergeServiceDefaults: %v", err)
+	}
+	if len(specs) != 1 {
+		t.Fatalf("specs len = %d, want 1", len(specs))
+	}
+	s := specs[0]
+	if s.GetName() != "worker" {
+		t.Errorf("Name = %q, want worker", s.GetName())
+	}
+	if s.GetPlacement() != pb.ServiceSpec_PLACEMENT_MODE_SPREAD {
+		t.Errorf("Placement = %v, want SPREAD", s.GetPlacement())
+	}
+	if s.GetReplicas() != 1 {
+		t.Errorf("Replicas = %d, want 1", s.GetReplicas())
+	}
+	if got, want := s.GetNetworks(), []string{"backplane"}; !equalStrings(got, want) {
+		t.Errorf("Networks = %v, want %v (compose default)", got, want)
+	}
+}
+
+// TestMergeServiceDefaults_JacoNetworksOverrideCompose — when JACO declares
+// `networks:`, it wins over the compose service's networks (issue #99: per-
+// service networks are no longer double-declared; compose is the default).
+func TestMergeServiceDefaults_JacoNetworksOverrideCompose(t *testing.T) {
+	project, err := compose.LoadBytes([]byte(`services:
+  web:
+    image: nginx:1.27
+    networks: [frontend]
+networks:
+  frontend: {}
+  backend: {}
+`), "x.yml")
+	if err != nil {
+		t.Fatalf("compose.LoadBytes: %v", err)
+	}
+	jaco := &JacoYAML{
+		Deployment: "sample",
+		Services: []JacoServiceDecl{
+			{Name: "web", Placement: "spread", Networks: []string{"backend"}},
+		},
+	}
+	specs, err := MergeServiceDefaults(jaco, project)
+	if err != nil {
+		t.Fatalf("MergeServiceDefaults: %v", err)
+	}
+	if got, want := specs[0].GetNetworks(), []string{"backend"}; !equalStrings(got, want) {
+		t.Errorf("Networks = %v, want %v (JACO override)", got, want)
+	}
+}
+
+// TestMergeServiceDefaults_ComposeNetworksHonored — when JACO leaves
+// `networks:` unset, the compose-declared per-service networks are used
+// (sorted alphabetically for determinism).
+func TestMergeServiceDefaults_ComposeNetworksHonored(t *testing.T) {
+	project, err := compose.LoadBytes([]byte(`services:
+  gateway:
+    image: nginx:1.27
+    networks: [frontend, backend]
+networks:
+  frontend: {}
+  backend: {}
+`), "x.yml")
+	if err != nil {
+		t.Fatalf("compose.LoadBytes: %v", err)
+	}
+	jaco := &JacoYAML{
+		Deployment: "sample",
+		Services:   []JacoServiceDecl{{Name: "gateway", Placement: "spread"}}, // no networks
+	}
+	specs, err := MergeServiceDefaults(jaco, project)
+	if err != nil {
+		t.Fatalf("MergeServiceDefaults: %v", err)
+	}
+	if got, want := specs[0].GetNetworks(), []string{"backend", "frontend"}; !equalStrings(got, want) {
+		t.Errorf("Networks = %v, want %v (compose, sorted)", got, want)
+	}
+}
+
+// TestMergeServiceDefaults_SortedByName — output is sorted by service name
+// so the raft command + scheduler observe a deterministic order.
+func TestMergeServiceDefaults_SortedByName(t *testing.T) {
+	project, err := compose.LoadBytes([]byte(`services:
+  zeta:
+    image: nginx:1.27
+  alpha:
+    image: nginx:1.27
+  middle:
+    image: nginx:1.27
+`), "x.yml")
+	if err != nil {
+		t.Fatalf("compose.LoadBytes: %v", err)
+	}
+	jaco := &JacoYAML{Deployment: "sample"}
+	specs, err := MergeServiceDefaults(jaco, project)
+	if err != nil {
+		t.Fatalf("MergeServiceDefaults: %v", err)
+	}
+	got := []string{specs[0].GetName(), specs[1].GetName(), specs[2].GetName()}
+	want := []string{"alpha", "middle", "zeta"}
+	if !equalStrings(got, want) {
+		t.Errorf("order = %v, want %v", got, want)
+	}
+}
+
+// TestMergeServiceDefaults_JacoUnknownComposeService — defense-in-depth:
+// if a JACO override names a service the compose file doesn't declare,
+// MergeServiceDefaults returns an error (deploy.go runs the same check
+// earlier and is the user-visible source of truth).
+func TestMergeServiceDefaults_JacoUnknownComposeService(t *testing.T) {
+	project, err := compose.LoadBytes([]byte(`services:
+  web:
+    image: nginx:1.27
+`), "x.yml")
+	if err != nil {
+		t.Fatalf("compose.LoadBytes: %v", err)
+	}
+	jaco := &JacoYAML{
+		Deployment: "sample",
+		Services:   []JacoServiceDecl{{Name: "ghost", Placement: "spread"}},
+	}
+	if _, err := MergeServiceDefaults(jaco, project); err == nil {
+		t.Fatal("MergeServiceDefaults accepted a JACO entry with no matching compose service")
+	}
+}
+
+// TestMergeServiceDefaults_PlacementOverride — JACO `placement:` overrides
+// the default spread; hosts list flows through.
+func TestMergeServiceDefaults_PlacementOverride(t *testing.T) {
+	project, err := compose.LoadBytes([]byte(`services:
+  db:
+    image: postgres:16
+`), "x.yml")
+	if err != nil {
+		t.Fatalf("compose.LoadBytes: %v", err)
+	}
+	jaco := &JacoYAML{
+		Deployment: "data",
+		Services: []JacoServiceDecl{{
+			Name: "db", Placement: "hosts", Hosts: []string{"storage-1"}, Replicas: intPtr(1),
+		}},
+	}
+	specs, err := MergeServiceDefaults(jaco, project)
+	if err != nil {
+		t.Fatalf("MergeServiceDefaults: %v", err)
+	}
+	s := specs[0]
+	if s.GetPlacement() != pb.ServiceSpec_PLACEMENT_MODE_HOSTS {
+		t.Errorf("Placement = %v, want HOSTS", s.GetPlacement())
+	}
+	if got, want := s.GetHosts(), []string{"storage-1"}; !equalStrings(got, want) {
+		t.Errorf("Hosts = %v, want %v", got, want)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

@@ -55,7 +55,12 @@ func (d *deployServer) Apply(ctx context.Context, req *pb.ApplyRequest) (*pb.App
 		return nil, errorStatus(codes.InvalidArgument, "validation_failed", err.Error())
 	}
 
-	// Confirm every service name matches a key in the compose file.
+	// Confirm every JACO service override targets an existing compose service.
+	// Compose is the source of truth for the container set (issue #99); a
+	// compose-only service (no JACO entry) is fine and picks up defaults via
+	// MergeServiceDefaults below. But a JACO entry that names a service the
+	// compose file doesn't declare can't be applied — there's nothing to
+	// override.
 	composeNames := map[string]bool{}
 	for _, s := range composeProject.Services {
 		composeNames[s.Name] = true
@@ -65,6 +70,28 @@ func (d *deployServer) Apply(ctx context.Context, req *pb.ApplyRequest) (*pb.App
 			return nil, errorStatus(codes.InvalidArgument, "validation_failed",
 				fmt.Sprintf("service %q not found in the compose file; name must equal a compose service key",
 					s.Name))
+		}
+	}
+
+	// Merge compose defaults with JACO overrides up front: this is the
+	// authoritative service set for the rest of the apply (route cross-check,
+	// raft command, scheduler-visible Deployment.services).
+	services, err := MergeServiceDefaults(jacoSpec, composeProject)
+	if err != nil {
+		return nil, errorStatus(codes.InvalidArgument, "validation_failed", err.Error())
+	}
+
+	// Cross-validate routes against the merged service set, not just JACO.
+	// A route may legitimately reference a compose-only service that has no
+	// JACO override entry (issue #99). Unknown names still reject.
+	mergedNames := make(map[string]bool, len(services))
+	for _, s := range services {
+		mergedNames[s.GetName()] = true
+	}
+	for _, r := range jacoSpec.Routes {
+		if !mergedNames[r.Service] {
+			return nil, errorStatus(codes.InvalidArgument, "validation_failed",
+				fmt.Sprintf("route %q references unknown service %q", r.Domain, r.Service))
 		}
 	}
 
@@ -118,7 +145,7 @@ func (d *deployServer) Apply(ctx context.Context, req *pb.ApplyRequest) (*pb.App
 			Revision:    targetRev,
 			JacoYaml:    req.GetJacoYaml(),
 			ComposeYaml: req.GetComposeYaml(),
-			Services:    toServiceSpecs(jacoSpec.Services),
+			Services:    services,
 			Routes:      toRoutes(jacoSpec.Deployment, jacoSpec.Routes),
 			TcpRoutes:   tcpRoutes,
 		}},

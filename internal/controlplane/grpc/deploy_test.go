@@ -352,6 +352,328 @@ func TestDeploy_ReapplySamePortNoConflict(t *testing.T) {
 	}
 }
 
+// --- Issue #99: slim jaco.yaml + compose-as-source-of-truth ------------------
+
+// TestDeploy_ApplyEmptyServicesValidatesWhenRoutesValid — issue #99: a
+// jaco.yaml that omits `services:` entirely is valid as long as the routes
+// resolve against the compose service set. The compose web service supplies
+// the default ServiceSpec.
+func TestDeploy_ApplyEmptyServicesValidatesWhenRoutesValid(t *testing.T) {
+	c := setupTwoNodeCluster(t)
+	deploy := newDeployClient(t, c)
+	ctx := authContext(c.OperatorToken)
+
+	const slimJaco = `deployment: slim
+routes:
+  - domain: slim.example.com
+    service: web
+    port: 80
+    tls: auto
+`
+	const composeYAML = `services:
+  web:
+    image: nginx:1.27
+`
+	resp, err := deploy.Apply(ctx, &pb.ApplyRequest{
+		JacoYaml:    []byte(slimJaco),
+		ComposeYaml: []byte(composeYAML),
+	})
+	if err != nil {
+		t.Fatalf("Apply with empty services rejected: %v", err)
+	}
+	if resp.GetAppliedRevision() != 1 {
+		t.Errorf("applied_revision = %d, want 1", resp.GetAppliedRevision())
+	}
+	dep, ok := c.A.State.Deployments.Get("slim")
+	if !ok {
+		t.Fatalf("Deployment slim missing after apply")
+	}
+	specs := dep.GetServices()
+	if len(specs) != 1 || specs[0].GetName() != "web" {
+		t.Fatalf("Deployment.services = %+v, want [web]", specs)
+	}
+	if specs[0].GetReplicas() != 1 {
+		t.Errorf("web Replicas = %d, want 1 (default for compose-only)", specs[0].GetReplicas())
+	}
+	if specs[0].GetPlacement() != pb.ServiceSpec_PLACEMENT_MODE_SPREAD {
+		t.Errorf("web Placement = %v, want SPREAD", specs[0].GetPlacement())
+	}
+}
+
+// TestDeploy_ApplyComposeReplicasFlowThrough — issue #99 acceptance: when
+// JACO omits replicas, compose `deploy.replicas: 3` lands on
+// ServiceSpec.Replicas.
+func TestDeploy_ApplyComposeReplicasFlowThrough(t *testing.T) {
+	c := setupTwoNodeCluster(t)
+	deploy := newDeployClient(t, c)
+	ctx := authContext(c.OperatorToken)
+
+	const jacoYAML = `deployment: scaled
+services:
+  - name: web
+    placement: spread
+routes:
+  - domain: scaled.example.com
+    service: web
+    port: 80
+    tls: auto
+`
+	const composeYAML = `services:
+  web:
+    image: nginx:1.27
+    deploy:
+      replicas: 3
+`
+	if _, err := deploy.Apply(ctx, &pb.ApplyRequest{
+		JacoYaml:    []byte(jacoYAML),
+		ComposeYaml: []byte(composeYAML),
+	}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	dep, ok := c.A.State.Deployments.Get("scaled")
+	if !ok {
+		t.Fatalf("Deployment scaled missing after apply")
+	}
+	specs := dep.GetServices()
+	if len(specs) != 1 {
+		t.Fatalf("services len = %d, want 1", len(specs))
+	}
+	if got := specs[0].GetReplicas(); got != 3 {
+		t.Errorf("Replicas = %d, want 3 (from compose deploy.replicas)", got)
+	}
+}
+
+// TestDeploy_ApplyComposeOnlyServiceProducesDefault — issue #99 acceptance:
+// a compose service with no JACO entry still produces a ServiceSpec with
+// placement=spread and replicas=1.
+func TestDeploy_ApplyComposeOnlyServiceProducesDefault(t *testing.T) {
+	c := setupTwoNodeCluster(t)
+	deploy := newDeployClient(t, c)
+	ctx := authContext(c.OperatorToken)
+
+	const jacoYAML = `deployment: mixed
+services:
+  - name: web
+    replicas: 2
+routes:
+  - domain: mixed.example.com
+    service: web
+    port: 80
+    tls: auto
+`
+	const composeYAML = `services:
+  web:
+    image: nginx:1.27
+  worker:
+    image: busybox:1.36
+`
+	if _, err := deploy.Apply(ctx, &pb.ApplyRequest{
+		JacoYaml:    []byte(jacoYAML),
+		ComposeYaml: []byte(composeYAML),
+	}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	dep, _ := c.A.State.Deployments.Get("mixed")
+	specs := dep.GetServices()
+	if len(specs) != 2 {
+		t.Fatalf("services len = %d, want 2 (web + worker)", len(specs))
+	}
+	// Specs are sorted by name.
+	if specs[0].GetName() != "web" || specs[0].GetReplicas() != 2 {
+		t.Errorf("web spec = %+v, want name=web replicas=2", specs[0])
+	}
+	if specs[1].GetName() != "worker" || specs[1].GetReplicas() != 1 ||
+		specs[1].GetPlacement() != pb.ServiceSpec_PLACEMENT_MODE_SPREAD {
+		t.Errorf("worker spec = %+v, want name=worker replicas=1 placement=SPREAD", specs[1])
+	}
+}
+
+// TestDeploy_ApplyRejectsGlobalWithReplicas — issue #99: `placement: global`
+// runs one replica per ready node, so an explicit `replicas:` is mutually
+// exclusive and rejected at Apply.
+func TestDeploy_ApplyRejectsGlobalWithReplicas(t *testing.T) {
+	c := setupTwoNodeCluster(t)
+	deploy := newDeployClient(t, c)
+	ctx := authContext(c.OperatorToken)
+
+	const jacoYAML = `deployment: agent
+services:
+  - name: probe
+    placement: global
+    replicas: 3
+`
+	const composeYAML = `services:
+  probe:
+    image: busybox:1.36
+`
+	_, err := deploy.Apply(ctx, &pb.ApplyRequest{
+		JacoYaml:    []byte(jacoYAML),
+		ComposeYaml: []byte(composeYAML),
+	})
+	if err == nil {
+		t.Fatalf("expected rejection for placement=global + explicit replicas")
+	}
+	sErr, _ := status.FromError(err)
+	if sErr.Code() != codes.InvalidArgument {
+		t.Errorf("code = %v, want InvalidArgument", sErr.Code())
+	}
+	if !strings.Contains(sErr.Message(), "validation_failed") {
+		t.Errorf("message = %q; want substring 'validation_failed'", sErr.Message())
+	}
+	if !errorDetailContains(t, err, "placement=global") {
+		t.Errorf("error details missing 'placement=global'; full err = %v", err)
+	}
+}
+
+// TestDeploy_ApplyRouteReferencesComposeOnlyService — issue #99: a route
+// may target a service that has no JACO `services:` entry as long as the
+// compose project declares it.
+func TestDeploy_ApplyRouteReferencesComposeOnlyService(t *testing.T) {
+	c := setupTwoNodeCluster(t)
+	deploy := newDeployClient(t, c)
+	ctx := authContext(c.OperatorToken)
+
+	const jacoYAML = `deployment: routed
+routes:
+  - domain: routed.example.com
+    service: web
+    port: 80
+    tls: auto
+`
+	const composeYAML = `services:
+  web:
+    image: nginx:1.27
+`
+	if _, err := deploy.Apply(ctx, &pb.ApplyRequest{
+		JacoYaml:    []byte(jacoYAML),
+		ComposeYaml: []byte(composeYAML),
+	}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if _, ok := c.A.State.Routes.Get(state.RouteKey("routed.example.com", "")); !ok {
+		t.Errorf("routed.example.com route missing after apply")
+	}
+}
+
+// TestDeploy_ApplyRejectsRouteReferencingUnknownService — a route whose
+// service field doesn't match ANY entry (neither JACO nor compose) is still
+// rejected. The check now runs at Apply against the merged set; the error
+// surface stays the same.
+func TestDeploy_ApplyRejectsRouteReferencingUnknownService(t *testing.T) {
+	c := setupTwoNodeCluster(t)
+	deploy := newDeployClient(t, c)
+	ctx := authContext(c.OperatorToken)
+
+	const jacoYAML = `deployment: bad
+routes:
+  - domain: bad.example.com
+    service: ghost
+    port: 80
+    tls: auto
+`
+	const composeYAML = `services:
+  web:
+    image: nginx:1.27
+`
+	_, err := deploy.Apply(ctx, &pb.ApplyRequest{
+		JacoYaml:    []byte(jacoYAML),
+		ComposeYaml: []byte(composeYAML),
+	})
+	if err == nil {
+		t.Fatalf("expected rejection for route → unknown service")
+	}
+	sErr, _ := status.FromError(err)
+	if sErr.Code() != codes.InvalidArgument {
+		t.Errorf("code = %v, want InvalidArgument", sErr.Code())
+	}
+	if !errorDetailContains(t, err, "unknown service") {
+		t.Errorf("error details missing 'unknown service'; full err = %v", err)
+	}
+}
+
+// TestDeploy_ApplyJacoNetworksOverrideCompose — when both JACO and compose
+// declare networks, JACO wins; when only compose declares them, compose's
+// list flows through. End-to-end version of the MergeServiceDefaults unit.
+func TestDeploy_ApplyJacoNetworksOverrideCompose(t *testing.T) {
+	c := setupTwoNodeCluster(t)
+	deploy := newDeployClient(t, c)
+	ctx := authContext(c.OperatorToken)
+
+	const jacoYAML = `deployment: netmix
+services:
+  - name: web
+    networks: [backend]
+`
+	const composeYAML = `services:
+  web:
+    image: nginx:1.27
+    networks: [frontend]
+  gateway:
+    image: nginx:1.27
+    networks: [frontend, backend]
+networks:
+  frontend: {}
+  backend: {}
+`
+	if _, err := deploy.Apply(ctx, &pb.ApplyRequest{
+		JacoYaml:    []byte(jacoYAML),
+		ComposeYaml: []byte(composeYAML),
+	}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	dep, _ := c.A.State.Deployments.Get("netmix")
+	var web, gateway *pb.ServiceSpec
+	for _, s := range dep.GetServices() {
+		switch s.GetName() {
+		case "web":
+			web = s
+		case "gateway":
+			gateway = s
+		}
+	}
+	if web == nil || gateway == nil {
+		t.Fatalf("missing services in deployment: %+v", dep.GetServices())
+	}
+	// JACO override wins: web on backend only.
+	if got, want := web.GetNetworks(), []string{"backend"}; !equalDeployStrings(got, want) {
+		t.Errorf("web Networks = %v, want %v (JACO override)", got, want)
+	}
+	// Compose default flows through: gateway on alphabetically sorted backend+frontend.
+	if got, want := gateway.GetNetworks(), []string{"backend", "frontend"}; !equalDeployStrings(got, want) {
+		t.Errorf("gateway Networks = %v, want %v (compose default)", got, want)
+	}
+}
+
+// --- end issue #99 -----------------------------------------------------------
+
+func equalDeployStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// errorDetailContains reports whether the pb.Error riding in the gRPC
+// status details contains substr. errorStatus embeds the human message in
+// the typed Error proto, not in the status' top-level message (which only
+// carries the stable code like "validation_failed"); tests that need to
+// assert on the message text MUST read it from details.
+func errorDetailContains(t *testing.T, err error, substr string) bool {
+	t.Helper()
+	sErr, _ := status.FromError(err)
+	for _, d := range sErr.Details() {
+		if e, ok := d.(*pb.Error); ok && strings.Contains(e.GetMessage(), substr) {
+			return true
+		}
+	}
+	return false
+}
+
 // --- helpers -----------------------------------------------------------------
 
 func newDeployClient(t *testing.T, c *twoNodeCluster) pb.DeployClient {
