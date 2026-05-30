@@ -117,6 +117,21 @@ func (d *deployServer) Apply(ctx context.Context, req *pb.ApplyRequest) (*pb.App
 		}
 	}
 
+	// Privileged-workload gate (issue #119). Validator already rejected
+	// `privileged:` / `security_opt:` services that lack the matching
+	// `jaco.io/allow-privileged: "true"` label, so reaching here means
+	// every gated service carries the label; Apply only has to confirm
+	// the caller's token also carries the `allows_privileged` flag. Run
+	// before the dry-run short-circuit so dry-run mirrors the live admit
+	// decision.
+	identity := admission.IdentityFromContext(ctx)
+	privileged := collectPrivilegedServices(composeProject)
+	if len(privileged) > 0 {
+		if err := checkPrivilegedAdmission(d.state, identity, privileged); err != nil {
+			return nil, err
+		}
+	}
+
 	currentRev := uint64(0)
 	if existing, ok := d.state.Deployments.Get(jacoSpec.Deployment); ok {
 		currentRev = existing.GetAppliedRevision()
@@ -138,7 +153,7 @@ func (d *deployServer) Apply(ctx context.Context, req *pb.ApplyRequest) (*pb.App
 	// Internal.EnsureSubnet on first placement.
 
 	cmd := &pb.Command{
-		Identity: admission.IdentityFromContext(ctx),
+		Identity: identity,
 		Ts:       timestamppb.Now(),
 		Payload: &pb.Command_DeploymentApply{DeploymentApply: &pb.DeploymentApply{
 			Deployment:  jacoSpec.Deployment,
@@ -153,6 +168,14 @@ func (d *deployServer) Apply(ctx context.Context, req *pb.ApplyRequest) (*pb.App
 	}
 	if err := applyRaftCommand(d.raft, cmd); err != nil {
 		return nil, errorStatus(codes.Internal, "raft_apply_failed", err.Error())
+	}
+
+	// Audit privileged-workload admission AFTER the DeploymentApply commits
+	// so the audit log only records workloads that actually landed. Best
+	// effort — emit failure is logged but does not fail the apply, mirroring
+	// challenge.go's pattern.
+	for _, p := range privileged {
+		emitPrivilegedAdmittedAudit(d.raft, identity, jacoSpec.Deployment, p)
 	}
 
 	return &pb.ApplyResponse{

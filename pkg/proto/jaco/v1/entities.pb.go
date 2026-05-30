@@ -265,6 +265,11 @@ const (
 	AuditEventType_AUDIT_EVENT_TYPE_ROLLOUT_INVARIANT_HOLD       AuditEventType = 17
 	AuditEventType_AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_UPSERT   AuditEventType = 18
 	AuditEventType_AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_REMOVE   AuditEventType = 19
+	// Privileged workload admitted by Apply (issue #119): emitted exactly
+	// once per admitted manifest that carries `privileged:` or
+	// `security_opt:`. Payload: deployment, service, identity (token id),
+	// fields (csv of which fields were set on the service).
+	AuditEventType_AUDIT_EVENT_TYPE_PRIVILEGED_WORKLOAD_ADMITTED AuditEventType = 20
 )
 
 // Enum value maps for AuditEventType.
@@ -290,6 +295,7 @@ var (
 		17: "AUDIT_EVENT_TYPE_ROLLOUT_INVARIANT_HOLD",
 		18: "AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_UPSERT",
 		19: "AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_REMOVE",
+		20: "AUDIT_EVENT_TYPE_PRIVILEGED_WORKLOAD_ADMITTED",
 	}
 	AuditEventType_value = map[string]int32{
 		"AUDIT_EVENT_TYPE_UNSPECIFIED":                  0,
@@ -312,6 +318,7 @@ var (
 		"AUDIT_EVENT_TYPE_ROLLOUT_INVARIANT_HOLD":       17,
 		"AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_UPSERT":   18,
 		"AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_REMOVE":   19,
+		"AUDIT_EVENT_TYPE_PRIVILEGED_WORKLOAD_ADMITTED": 20,
 	}
 )
 
@@ -1363,13 +1370,17 @@ func (x *CertBlob) GetUpdatedAt() *timestamppb.Timestamp {
 }
 
 type Token struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Identity      string                 `protobuf:"bytes,1,opt,name=identity,proto3" json:"identity,omitempty"`
-	HashedSecret  []byte                 `protobuf:"bytes,2,opt,name=hashed_secret,json=hashedSecret,proto3" json:"hashed_secret,omitempty"`
-	IssuedAt      *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=issued_at,json=issuedAt,proto3" json:"issued_at,omitempty"`
-	RevokedAt     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=revoked_at,json=revokedAt,proto3" json:"revoked_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Identity     string                 `protobuf:"bytes,1,opt,name=identity,proto3" json:"identity,omitempty"`
+	HashedSecret []byte                 `protobuf:"bytes,2,opt,name=hashed_secret,json=hashedSecret,proto3" json:"hashed_secret,omitempty"`
+	IssuedAt     *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=issued_at,json=issuedAt,proto3" json:"issued_at,omitempty"`
+	RevokedAt    *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=revoked_at,json=revokedAt,proto3" json:"revoked_at,omitempty"`
+	// allows_privileged gates manifests that set `privileged:` or
+	// `security_opt:` (issue #119). Bootstrap-issued tokens default false;
+	// operators opt in explicitly via `jaco token issue --allow-privileged`.
+	AllowsPrivileged bool `protobuf:"varint,5,opt,name=allows_privileged,json=allowsPrivileged,proto3" json:"allows_privileged,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *Token) Reset() {
@@ -1428,6 +1439,13 @@ func (x *Token) GetRevokedAt() *timestamppb.Timestamp {
 		return x.RevokedAt
 	}
 	return nil
+}
+
+func (x *Token) GetAllowsPrivileged() bool {
+	if x != nil {
+		return x.AllowsPrivileged
+	}
+	return false
 }
 
 type JoinToken struct {
@@ -2075,13 +2093,14 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\x129\n" +
 	"\n" +
-	"updated_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xbc\x01\n" +
+	"updated_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xe9\x01\n" +
 	"\x05Token\x12\x1a\n" +
 	"\bidentity\x18\x01 \x01(\tR\bidentity\x12#\n" +
 	"\rhashed_secret\x18\x02 \x01(\fR\fhashedSecret\x127\n" +
 	"\tissued_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\bissuedAt\x129\n" +
 	"\n" +
-	"revoked_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\trevokedAt\"\xe1\x01\n" +
+	"revoked_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\trevokedAt\x12+\n" +
+	"\x11allows_privileged\x18\x05 \x01(\bR\x10allowsPrivileged\"\xe1\x01\n" +
 	"\tJoinToken\x12#\n" +
 	"\rhashed_secret\x18\x01 \x01(\fR\fhashedSecret\x127\n" +
 	"\tissued_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\bissuedAt\x129\n" +
@@ -2165,7 +2184,7 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\x10DeploymentStatus\x12!\n" +
 	"\x1dDEPLOYMENT_STATUS_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19DEPLOYMENT_STATUS_PENDING\x10\x01\x12\x1c\n" +
-	"\x18DEPLOYMENT_STATUS_ACTIVE\x10\x02*\x93\x06\n" +
+	"\x18DEPLOYMENT_STATUS_ACTIVE\x10\x02*\xc6\x06\n" +
 	"\x0eAuditEventType\x12 \n" +
 	"\x1cAUDIT_EVENT_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16AUDIT_EVENT_TYPE_APPLY\x10\x01\x12\x1b\n" +
@@ -2187,7 +2206,8 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\x1fAUDIT_EVENT_TYPE_UPGRADE_FAILED\x10\x10\x12+\n" +
 	"'AUDIT_EVENT_TYPE_ROLLOUT_INVARIANT_HOLD\x10\x11\x12/\n" +
 	"+AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_UPSERT\x10\x12\x12/\n" +
-	"+AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_REMOVE\x10\x13B:Z8github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1;jacov1b\x06proto3"
+	"+AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_REMOVE\x10\x13\x121\n" +
+	"-AUDIT_EVENT_TYPE_PRIVILEGED_WORKLOAD_ADMITTED\x10\x14B:Z8github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1;jacov1b\x06proto3"
 
 var (
 	file_jaco_v1_entities_proto_rawDescOnce sync.Once

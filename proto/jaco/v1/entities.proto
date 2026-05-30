@@ -61,6 +61,11 @@ enum AuditEventType {
   AUDIT_EVENT_TYPE_ROLLOUT_INVARIANT_HOLD = 17;
   AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_UPSERT = 18;
   AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_REMOVE = 19;
+  // Privileged workload admitted by Apply (issue #119): emitted exactly
+  // once per admitted manifest that carries `privileged:` or
+  // `security_opt:`. Payload: deployment, service, identity (token id),
+  // fields (csv of which fields were set on the service).
+  AUDIT_EVENT_TYPE_PRIVILEGED_WORKLOAD_ADMITTED = 20;
 }
 
 // ----- Cluster-level entities -----
@@ -211,6 +216,10 @@ message Token {
   bytes hashed_secret = 2;
   google.protobuf.Timestamp issued_at = 3;
   google.protobuf.Timestamp revoked_at = 4;
+  // allows_privileged gates manifests that set `privileged:` or
+  // `security_opt:` (issue #119). Bootstrap-issued tokens default false;
+  // operators opt in explicitly via `jaco token issue --allow-privileged`.
+  bool allows_privileged = 5;
 }
 
 message JoinToken {

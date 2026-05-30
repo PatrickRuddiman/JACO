@@ -241,6 +241,7 @@ message SubnetFree {
 message TokenIssue {
   string identity = 1;
   bytes hashed_secret = 2;
+  bool allows_privileged = 3;
 }
 
 message TokenRevoke {

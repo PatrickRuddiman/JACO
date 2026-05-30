@@ -55,8 +55,9 @@ func (t *tokensServer) Issue(ctx context.Context, req *pb.TokenIssueRequest) (*p
 		Identity: admission.IdentityFromContext(ctx),
 		Ts:       issuedAt,
 		Payload: &pb.Command_TokenIssue{TokenIssue: &pb.TokenIssue{
-			Identity:     req.GetIdentity(),
-			HashedSecret: hash[:],
+			Identity:         req.GetIdentity(),
+			HashedSecret:     hash[:],
+			AllowsPrivileged: req.GetAllowsPrivileged(),
 		}},
 	}
 	if err := applyRaftCommand(t.raft, cmd); err != nil {
@@ -103,9 +104,10 @@ func (t *tokensServer) List(_ context.Context, _ *pb.TokenListRequest) (*pb.Toke
 	out := make([]*pb.TokenInfo, 0, len(all))
 	for _, tok := range all {
 		out = append(out, &pb.TokenInfo{
-			Identity:  tok.GetIdentity(),
-			IssuedAt:  tok.GetIssuedAt(),
-			RevokedAt: tok.GetRevokedAt(),
+			Identity:         tok.GetIdentity(),
+			IssuedAt:         tok.GetIssuedAt(),
+			RevokedAt:        tok.GetRevokedAt(),
+			AllowsPrivileged: tok.GetAllowsPrivileged(),
 		})
 	}
 	return &pb.TokenListResponse{Tokens: out}, nil

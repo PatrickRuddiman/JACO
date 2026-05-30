@@ -200,6 +200,9 @@ service Tokens {
 
 message TokenIssueRequest {
   string identity = 1;
+  // allows_privileged stamps the issued token with the gate that lets it
+  // apply manifests using `privileged:` or `security_opt:` (issue #119).
+  bool allows_privileged = 2;
 }
 message TokenIssueResponse {
   string identity = 1;
@@ -220,6 +223,7 @@ message TokenInfo {
   string identity = 1;
   google.protobuf.Timestamp issued_at = 2;
   google.protobuf.Timestamp revoked_at = 3;
+  bool allows_privileged = 4;
 }
 
 // ----- RegistryCredentials service -----
