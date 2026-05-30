@@ -156,16 +156,15 @@ func itoa(n int32) string {
 // replica must be DROPPED (no migration) — migrating it would double-place the
 // daemonset on a node that already runs its own copy.
 func TestPlan_GlobalServiceReplicaDroppedNotMigrated(t *testing.T) {
-	f, st := newFSMState(t)
-	var idx uint64
-	seedNodeReady(t, f, "node-a", &idx)
-	seedNodeReady(t, f, "node-b", &idx)
-	seedDeploymentWithSvc(t, f, "sample", &pb.ServiceSpec{
+	st := makeState()
+	seedNode(st, "node-a")
+	seedNode(st, "node-b")
+	seedDeployment(st, "sample", &pb.ServiceSpec{
 		Name: "agent", Placement: pb.ServiceSpec_PLACEMENT_MODE_GLOBAL,
-	}, &idx)
-	// One global replica per node (host-keyed ids).
-	seedDesired(t, f, "sample", "agent", "sample-agent-node-a", "node-a", &idx)
-	seedDesired(t, f, "sample", "agent", "sample-agent-node-b", "node-b", &idx)
+	})
+	// One global replica per node.
+	seedReplica(st, "sample", "agent", "node-a", 0)
+	seedReplica(st, "sample", "agent", "node-b", 1)
 
 	migs, err := drain.Plan(st, "node-a")
 	if err != nil {
