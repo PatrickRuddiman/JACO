@@ -1,3 +1,10 @@
+---
+sources:
+  - internal/controlplane/grpc/
+  - internal/runtime/compose/
+  - proto/jaco/v1/entities.proto
+---
+
 # Status and errors
 
 Every gRPC handler returns a typed envelope:

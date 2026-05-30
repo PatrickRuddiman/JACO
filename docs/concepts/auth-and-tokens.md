@@ -1,3 +1,12 @@
+---
+sources:
+  - internal/controlplane/admission/
+  - internal/controlplane/grpc/token.go
+  - internal/controlplane/grpc/cluster.go
+  - internal/controlplane/ca/
+  - internal/daemon/admission/
+---
+
 # Auth and tokens
 
 JACO has three distinct credentials and one filesystem-permission trust

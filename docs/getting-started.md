@@ -1,3 +1,12 @@
+---
+sources:
+  - cmd/jaco/
+  - cmd/jacod/main.go
+  - internal/controlplane/bootstrap/
+  - internal/controlplane/grpc/jaco_spec.go
+  - README.md
+---
+
 # Getting started
 
 Install JACO on three Linux hosts, form a cluster, and ship a deployment.

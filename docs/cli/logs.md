@@ -1,3 +1,10 @@
+---
+sources:
+  - cmd/jaco/logs.go
+  - internal/runtime/logs/
+  - internal/daemon/grpc/
+---
+
 # `jaco logs`
 
 Stream container logs from every replica of a service from any node.

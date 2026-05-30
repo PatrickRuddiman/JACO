@@ -1,3 +1,11 @@
+---
+sources:
+  - internal/logging/
+  - internal/controlplane/grpc/audit.go
+  - cmd/jacod/main.go
+  - proto/jaco/v1/entities.proto
+---
+
 # Observability
 
 JACO emits three streams of telemetry: **OpenTelemetry traces +

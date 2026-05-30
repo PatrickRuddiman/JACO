@@ -1,3 +1,9 @@
+---
+sources:
+  - cmd/jaco/self_upgrade.go
+  - internal/packaging/
+---
+
 # `jaco self-upgrade`
 
 Verify + atomically swap the local `jaco` and `jacod` binaries from a

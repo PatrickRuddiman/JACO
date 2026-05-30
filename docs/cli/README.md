@@ -1,3 +1,9 @@
+---
+sources:
+  - cmd/jaco/
+  - internal/cliclient/
+---
+
 # CLI reference
 
 `jaco` is the operator and developer CLI. It drives a daemon either via
