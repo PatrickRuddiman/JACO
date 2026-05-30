@@ -568,6 +568,23 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 	// Discovery: nftables firewall reconciler. Skipped when `nft` isn't
 	// available on PATH or the kernel netfilter API is unreachable.
 	if err := firewall.IsAvailable(); err == nil {
+		// applyOrForward writes a raft command on the leader directly; on
+		// followers it dials the leader's Internal.Submit. Bug #88: the
+		// firewall reconciler's Audit + UpdateStatus callbacks used to call
+		// node.Apply directly, which fails with ErrNotLeader on every real
+		// reconcile on a follower — manifesting in journal as
+		// "Audit(ISOLATION_RULESET_RECONCILED action=applied) failed" +
+		// "firewall.Reconciler.Tick failed" even though the nft apply
+		// succeeded.
+		applyOrForward := func(ctx context.Context, data []byte) error {
+			return applyOrForwardCommand(
+				ctx, data,
+				func(b []byte) (uint64, error) { return node.Apply(b, 0) },
+				func(ctx context.Context, b []byte) error {
+					return dialAndSubmit(ctx, leaderGRPCAddr(st, node), b)
+				},
+			)
+		}
 		fw := &firewall.Reconciler{
 			Lister:  firewall.NftList,
 			Applier: firewall.NftApply,
@@ -585,8 +602,7 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 				if err != nil {
 					return err
 				}
-				_, err = node.Apply(data, 0)
-				return err
+				return applyOrForward(ctx, data)
 			},
 			UpdateStatus: func(ctx context.Context, statusStr, reason string) error {
 				cmd := &pb.Command{
@@ -601,8 +617,7 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 				if err != nil {
 					return err
 				}
-				_, err = node.Apply(data, 0)
-				return err
+				return applyOrForward(ctx, data)
 			},
 			Render: func() firewall.RuleInput {
 				var subs []firewall.Subnet
