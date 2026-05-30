@@ -1,0 +1,13 @@
+services:
+  web:
+    image: nginx:1.27
+    environment:
+      WIN_OVER_FILE: "from_env"
+      EXISTING: "stays"
+    env_file:
+      - .env.web
+      - .env.web2
+  api:
+    image: api:1.0
+networks:
+  default: {}

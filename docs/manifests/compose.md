@@ -27,7 +27,7 @@ create:
 | `command`      | overrides image CMD                                            |
 | `entrypoint`   | overrides image ENTRYPOINT                                     |
 | `environment`  | env vars                                                       |
-| `env_file`     | env file(s); paths resolve against the compose file's dir      |
+| `env_file`     | env file(s); merged into `environment` **client-side** before apply (see [§ `env_file` resolution](#env_file-resolution)) |
 | `volumes`      | named volumes and host bind mounts                             |
 | `ports`        | declares cluster-wide TCP listeners (see below)                |
 | `depends_on`   | **ordering only**; runtime starts in topological order         |
@@ -90,6 +90,41 @@ cluster-wide).
 
 Entries with no published host side (`"6379"` alone) are documentation
 and silently pass.
+
+## `env_file` resolution
+
+`env_file:` is resolved **client-side** by `jaco apply`, before the
+compose document crosses the wire. The daemon node does not have the
+operator's local `.env` files on disk, so a daemon-side resolution is
+impossible; instead the CLI loads each referenced file relative to the
+compose file's directory, folds the contents into the service's
+`environment:` map, and ships a compose document that no longer
+mentions `env_file:`. The daemon rejects any compose document that
+still carries `env_file:` with the stable error code
+`env_file_unresolved` — an old CLI talking to a new daemon fails
+loudly rather than silently dropping the variables.
+
+Precedence follows compose-spec semantics, enforced end-to-end by
+`compose-go`:
+
+1. an explicit `environment:` value wins over anything in `env_file`;
+2. when multiple `env_file:` entries declare the same key, the **later
+   file wins**.
+
+Variables with no value (`FOO:` with nothing after the colon, the
+compose convention for "inherit from the process environment at apply
+time") round-trip through the resolver as YAML null and reach the
+runtime as `FOO=`.
+
+Two practical consequences:
+
+- `--compose <path>` (or auto-discovery next to `jaco.yaml`) is the
+  only supported source for compose documents that use `env_file:`.
+  Piping a compose document through stdin while it references
+  `env_file:` is rejected up front — there is no defensible base
+  directory for relative paths.
+- `jaco apply --dry-run` runs the resolver before computing the diff,
+  so the diff reflects the values the daemon would actually see.
 
 ## Rejected fields
 

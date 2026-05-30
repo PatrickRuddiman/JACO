@@ -6,11 +6,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/PatrickRuddiman/jaco/internal/cliclient"
+	"github.com/PatrickRuddiman/jaco/internal/runtime/compose"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -38,7 +41,16 @@ func applyCmd() *cobra.Command {
 
 	c.RunE = func(_ *cobra.Command, args []string) error {
 		jacoPath := args[0]
-		jacoBytes, composeBytes, err := readManifestPair(jacoPath, composePath)
+		jacoBytes, composeBytes, resolvedComposePath, err := readManifestPair(jacoPath, composePath)
+		if err != nil {
+			return err
+		}
+		// env_file is resolved CLIENT-SIDE — the daemon does not have the
+		// operator's .env files on disk. resolvedComposePath is always set
+		// here (the CLI's only source of compose bytes today is a file);
+		// when a stdin source is added it must pass "" and this guard will
+		// refuse env_file outright.
+		composeBytes, err = resolveComposeEnvFiles(composeBytes, resolvedComposePath)
 		if err != nil {
 			return err
 		}
@@ -98,11 +110,13 @@ func renderDiff(out io.Writer, diff *pb.Diff) {
 
 // readManifestPair loads the jaco.yaml + compose file from disk. composeOverride
 // is honored when set; otherwise the compose file is resolved as
-// `<dir of jaco.yaml>/compose.yml` (falling back to `.yaml`).
-func readManifestPair(jacoPath, composeOverride string) ([]byte, []byte, error) {
+// `<dir of jaco.yaml>/compose.yml` (falling back to `.yaml`). The resolved
+// compose path is returned so the caller can use its directory as the
+// env_file base dir.
+func readManifestPair(jacoPath, composeOverride string) ([]byte, []byte, string, error) {
 	jacoBytes, err := os.ReadFile(jacoPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read %s: %w", jacoPath, err)
+		return nil, nil, "", fmt.Errorf("read %s: %w", jacoPath, err)
 	}
 	composePath := composeOverride
 	if composePath == "" {
@@ -115,12 +129,70 @@ func readManifestPair(jacoPath, composeOverride string) ([]byte, []byte, error) 
 			}
 		}
 		if composePath == "" {
-			return nil, nil, fmt.Errorf("no compose file found next to %s; pass --compose explicitly", jacoPath)
+			return nil, nil, "", fmt.Errorf("no compose file found next to %s; pass --compose explicitly", jacoPath)
 		}
 	}
 	composeBytes, err := os.ReadFile(composePath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read %s: %w", composePath, err)
+		return nil, nil, "", fmt.Errorf("read %s: %w", composePath, err)
 	}
-	return jacoBytes, composeBytes, nil
+	return jacoBytes, composeBytes, composePath, nil
+}
+
+// resolveComposeEnvFiles merges every service's env_file into its environment
+// map before the bytes leave the CLI (issue #103). The daemon node does not
+// have the operator's .env files, so resolution at apply time on the daemon
+// is impossible — the daemon-side LoadBytes will fail loud with
+// env_file_unresolved if the CLI ever skips this step.
+//
+// composePath is the file the bytes came from; its directory is the base for
+// relative env_file paths. An empty composePath means the compose document
+// arrived from a non-file source (e.g. stdin in a future iteration); in that
+// case env_file is rejected outright because there is no defensible base
+// directory to resolve against.
+func resolveComposeEnvFiles(composeBytes []byte, composePath string) ([]byte, error) {
+	if composePath == "" {
+		// Probe rather than hand the bytes to ResolveEnvFiles with an empty
+		// baseDir — we want a clear "use --compose <path>" message, not a
+		// file-not-found error against ".".
+		if name, ok := composeHasEnvFile(composeBytes); ok {
+			return nil, fmt.Errorf(
+				"service %q uses env_file but the compose document has no path on disk; "+
+					"env_file paths can only be resolved relative to a real file — pass --compose <path>",
+				name)
+		}
+		return composeBytes, nil
+	}
+	out, err := compose.ResolveEnvFiles(composeBytes, filepath.Dir(composePath))
+	if err != nil {
+		return nil, fmt.Errorf("resolve env_file in %s: %w", composePath, err)
+	}
+	return out, nil
+}
+
+// composeHasEnvFile reports the first service that declares env_file:, mostly
+// so the stdin-mode rejection message can name the offending service. A YAML
+// parse failure here is swallowed — ResolveEnvFiles would have surfaced it
+// in the with-path branch, and the stdin branch never reaches the loader.
+func composeHasEnvFile(body []byte) (string, bool) {
+	var probe struct {
+		Services map[string]struct {
+			EnvFile []any `yaml:"env_file"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(body, &probe); err != nil {
+		return "", false
+	}
+	// Deterministic pick of the first offender for the error message.
+	names := make([]string, 0, len(probe.Services))
+	for name, svc := range probe.Services {
+		if len(svc.EnvFile) > 0 {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return "", false
+	}
+	sort.Strings(names)
+	return names[0], true
 }
