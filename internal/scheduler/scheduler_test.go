@@ -226,6 +226,54 @@ func TestReconcile_GlobalPlacementShrinksOnNodeLeave(t *testing.T) {
 	}
 }
 
+// TestReconcile_GlobalPlacementSurvivorIDsStableOnNodeLeave guards the
+// host-keyed replica id: when one node leaves, the surviving nodes' replicas
+// must keep their exact ids so their containers are not torn down and
+// recreated. A position-keyed id would re-index survivors and churn every
+// container for one unrelated departure.
+func TestReconcile_GlobalPlacementSurvivorIDsStableOnNodeLeave(t *testing.T) {
+	s, st, f, _ := newScheduler(t, true)
+	var raftIdx uint64
+	seedNode(t, f, "node-a", &raftIdx)
+	seedNode(t, f, "node-b", &raftIdx)
+	seedNode(t, f, "node-c", &raftIdx)
+	seedDeploymentGlobal(t, f, "sample", 0, sampleCompose, &raftIdx)
+
+	s.Reconcile(context.Background())
+	before := map[string]string{} // host -> replica id
+	for _, r := range st.ReplicasDesired.List() {
+		before[r.GetHost()] = r.GetId()
+	}
+	if before["node-a"] == "" || before["node-c"] == "" {
+		t.Fatalf("expected replicas on node-a and node-c, got %v", before)
+	}
+
+	// node-b (lexically in the middle) leaves.
+	raftIdx++
+	upd := &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_NodeStatusUpdate{
+		NodeStatusUpdate: &pb.NodeStatusUpdate{
+			Hostname: "node-b", Status: pb.NodeStatus_NODE_STATUS_NOT_READY,
+		},
+	}}
+	data, _ := proto.Marshal(upd)
+	f.Apply(&hraft.Log{Index: raftIdx, Data: data})
+	s.Reconcile(context.Background())
+
+	after := map[string]string{}
+	for _, r := range st.ReplicasDesired.List() {
+		after[r.GetHost()] = r.GetId()
+	}
+	if len(after) != 2 {
+		t.Fatalf("want 2 replicas after node-b leaves, got %d (%v)", len(after), after)
+	}
+	if after["node-a"] != before["node-a"] {
+		t.Errorf("node-a replica id churned: %q -> %q", before["node-a"], after["node-a"])
+	}
+	if after["node-c"] != before["node-c"] {
+		t.Errorf("node-c replica id churned: %q -> %q", before["node-c"], after["node-c"])
+	}
+}
+
 func TestReconcile_GlobalPlacementIgnoresReplicasField(t *testing.T) {
 	s, st, f, _ := newScheduler(t, true)
 	var raftIdx uint64
