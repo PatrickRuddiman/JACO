@@ -59,6 +59,35 @@ func TestProxies_TokensListReachesHandler(t *testing.T) {
 	}
 }
 
+// TestProxies_RegistryCredentialsListReachesHandler — same check for
+// RegistryCredentials.List. Catches the wiring gap discovered during
+// integration testing: the controlplane handler existed but the daemon
+// never registered the service, so the CLI got `Unimplemented` against
+// the live daemon while every unit test against the controlplane-only
+// server passed.
+func TestProxies_RegistryCredentialsListReachesHandler(t *testing.T) {
+	conn, s := startServerWithDataDir(t, t.TempDir())
+	defer conn.Close()
+	c := pb.NewClusterClient(conn)
+	resp, err := c.Init(context.Background(), &pb.ClusterInitRequest{})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	waitForOperatorToken(t, s)
+
+	authCtx := withOperatorAuth(context.Background(), resp.GetOperatorToken())
+	reg := pb.NewRegistryCredentialsClient(conn)
+	_, err = reg.List(authCtx, &pb.RegistryCredentialListRequest{})
+	if err != nil {
+		if contains(err.Error(), "Unimplemented") {
+			t.Fatalf("RegistryCredentials.List returned Unimplemented — service not registered on daemon gRPC server: %v", err)
+		}
+		if contains(err.Error(), "state_unavailable") {
+			t.Errorf("RegistryCredentials.List hit proxy fallback: %v", err)
+		}
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

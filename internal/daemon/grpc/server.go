@@ -58,11 +58,12 @@ type Server struct {
 	tcpAddr      string // resolved listener bind address (the port may be 0 → ephemeral)
 	tcpAdvertise string // host:port to gossip in publishSelf + NodeJoin (falls back to tcpAddr)
 
-	cluster *clusterServer
-	tokens  *tokensProxy
-	deploy  *deployProxy
-	audit   *auditProxy
-	watch   *watchProxy
+	cluster  *clusterServer
+	tokens   *tokensProxy
+	deploy   *deployProxy
+	audit    *auditProxy
+	watch    *watchProxy
+	registry *registryProxy
 
 	// Populated by OpenRaft after Cluster.Init or Cluster.Join lands. The
 	// pre-OpenRaft state is "raft handle nil; RPCs that need raft return
@@ -363,10 +364,12 @@ func New(opts Options) (*Server, error) {
 	server.deploy = &deployProxy{server: server}
 	server.audit = &auditProxy{}
 	server.watch = &watchProxy{}
+	server.registry = &registryProxy{}
 	pb.RegisterTokensServer(gs, server.tokens)
 	pb.RegisterDeployServer(gs, server.deploy)
 	pb.RegisterAuditServer(gs, server.audit)
 	pb.RegisterWatchServer(gs, server.watch)
+	pb.RegisterRegistryCredentialsServer(gs, server.registry)
 
 	return server, nil
 }

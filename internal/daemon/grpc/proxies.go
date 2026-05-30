@@ -118,7 +118,32 @@ func (p *watchProxy) Subscribe(req *pb.SubscribeRequest, stream pb.Watch_Subscri
 	return p.get().Subscribe(req, stream)
 }
 
-// wireControlPlane fills the four proxies once state + raft are populated.
+// registryProxy delegates RegistryCredentials RPCs to the lazily-set
+// grpcsrv-backed handler. Same lifecycle as the other proxies.
+type registryProxy struct {
+	pb.UnimplementedRegistryCredentialsServer
+	mu     sync.RWMutex
+	target pb.RegistryCredentialsServer
+}
+
+func (p *registryProxy) set(t pb.RegistryCredentialsServer) { p.mu.Lock(); p.target = t; p.mu.Unlock() }
+func (p *registryProxy) get() pb.RegistryCredentialsServer {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.target
+}
+
+func (p *registryProxy) Add(ctx context.Context, req *pb.RegistryCredentialAddRequest) (*pb.RegistryCredentialAddResponse, error) {
+	return p.get().Add(ctx, req)
+}
+func (p *registryProxy) Remove(ctx context.Context, req *pb.RegistryCredentialRemoveRequest) (*pb.RegistryCredentialRemoveResponse, error) {
+	return p.get().Remove(ctx, req)
+}
+func (p *registryProxy) List(ctx context.Context, req *pb.RegistryCredentialListRequest) (*pb.RegistryCredentialListResponse, error) {
+	return p.get().List(ctx, req)
+}
+
+// wireControlPlane fills the proxies once state + raft are populated.
 // Called from Server.startSubsystems before MarkInitialized flips the
 // InitGate open.
 func (s *Server) wireControlPlane() {
@@ -133,5 +158,8 @@ func (s *Server) wireControlPlane() {
 	}
 	if s.watch != nil {
 		s.watch.set(grpcsrv.NewWatchServer(s.state, s.brokers))
+	}
+	if s.registry != nil {
+		s.registry.set(grpcsrv.NewRegistryCredentialsServer(s.state, s.raft))
 	}
 }
