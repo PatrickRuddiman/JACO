@@ -1,3 +1,11 @@
+---
+sources:
+  - cmd/jaco/registry.go
+  - internal/controlplane/grpc/registry_credential.go
+  - internal/controlplane/state/registry_credentials.go
+  - internal/controlplane/watch/registry.go
+---
+
 # `jaco registry`
 
 Manage container-registry credentials that are replicated across the
