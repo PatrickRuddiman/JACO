@@ -39,7 +39,7 @@ func ToContainerSpec(svc types.ServiceConfig, opts SpecOptions) ContainerSpec {
 	spec.Healthcheck = healthcheckFromCompose(svc.HealthCheck)
 	spec.Networks = networksFromCompose(svc.Networks, opts.Deployment)
 	spec.Ports = portsFromCompose(svc.Ports)
-	spec.LogConfig = logConfigFromCompose(svc.Logging, svc.LogDriver, svc.LogOpt)
+	spec.LogConfig = logConfigFromCompose(svc.Logging)
 
 	res := resolveResources(svc)
 	spec.NanoCPUs = res.NanoCPUs
@@ -306,25 +306,19 @@ func portsFromCompose(ports []types.ServicePortConfig) []PortDecl {
 	return out
 }
 
-// logConfigFromCompose resolves a service's container log configuration. The
-// modern `logging:` block wins outright whenever it is present (mirroring the
-// resolveResources policy — it is NOT a field-by-field merge); otherwise JACO
-// falls back to the legacy top-level `log_driver`/`log_opt` keys. Returns nil
-// when neither source declares anything so docker's default log driver applies.
-func logConfigFromCompose(logging *types.LoggingConfig, legacyDriver string, legacyOpt map[string]string) *LogConfig {
-	if logging != nil && (logging.Driver != "" || len(logging.Options) != 0) {
-		return &LogConfig{
-			Driver:  logging.Driver,
-			Options: mapStringToMap(types.Mapping(logging.Options)),
-		}
+// logConfigFromCompose resolves a service's container log configuration from
+// the modern compose `logging:` block (driver + options). Returns nil when the
+// service declares no logging so docker's default driver applies. Only the
+// modern block is supported — compose-go's loader rejects the legacy top-level
+// `log_driver`/`log_opt` keys before they could ever reach JACO.
+func logConfigFromCompose(logging *types.LoggingConfig) *LogConfig {
+	if logging == nil || (logging.Driver == "" && len(logging.Options) == 0) {
+		return nil
 	}
-	if legacyDriver != "" || len(legacyOpt) != 0 {
-		return &LogConfig{
-			Driver:  legacyDriver,
-			Options: mapStringToMap(types.Mapping(legacyOpt)),
-		}
+	return &LogConfig{
+		Driver:  logging.Driver,
+		Options: mapStringToMap(types.Mapping(logging.Options)),
 	}
-	return nil
 }
 
 func cloneStringList(in []string) []string {

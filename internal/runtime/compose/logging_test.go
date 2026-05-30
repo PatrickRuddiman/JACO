@@ -8,26 +8,18 @@ import (
 )
 
 // TestToContainerSpec_ModernLogging — a service's modern `logging:` block
-// (driver + options incl. tag) projects onto ContainerSpec.LogConfig.
+// (driver + options incl. tag) projects onto ContainerSpec.LogConfig (fixture
+// service "modern").
 func TestToContainerSpec_ModernLogging(t *testing.T) {
-	project, err := compose.LoadBytes([]byte(`services:
-  web:
-    image: nginx
-    logging:
-      driver: json-file
-      options:
-        tag: "{{.Name}}"
-        max-size: "10m"
-        max-file: "3"
-`), "memory.yml")
+	project, _, err := compose.Load(filepath.Join("testdata", "logging.yml"))
 	if err != nil {
-		t.Fatalf("LoadBytes: %v", err)
+		t.Fatalf("Load logging.yml: %v", err)
 	}
-	s, ok := lookupService(project, "web")
+	s, ok := lookupService(project, "modern")
 	if !ok {
-		t.Fatal("web service missing")
+		t.Fatal("modern service missing")
 	}
-	spec := compose.ToContainerSpec(s, compose.SpecOptions{Deployment: "sample", Service: "web"})
+	spec := compose.ToContainerSpec(s, compose.SpecOptions{Deployment: "sample", Service: "modern"})
 	if spec.LogConfig == nil {
 		t.Fatal("LogConfig nil; want json-file driver populated")
 	}
@@ -45,55 +37,28 @@ func TestToContainerSpec_ModernLogging(t *testing.T) {
 	}
 }
 
-// TestToContainerSpec_LegacyLogging — the legacy top-level log_driver/log_opt
-// keys project onto LogConfig when no modern block is present (fixture service
-// "legacy").
-func TestToContainerSpec_LegacyLogging(t *testing.T) {
-	project, _, err := compose.Load(filepath.Join("testdata", "logging.yml"))
+// TestToContainerSpec_InlineModernLogging — a driver-only logging block (no
+// options) still projects, with a nil Options map.
+func TestToContainerSpec_InlineModernLogging(t *testing.T) {
+	project, err := compose.LoadBytes([]byte(`services:
+  web:
+    image: nginx
+    logging:
+      driver: journald
+`), "memory.yml")
 	if err != nil {
-		t.Fatalf("Load logging.yml: %v", err)
+		t.Fatalf("LoadBytes: %v", err)
 	}
-	s, ok := lookupService(project, "legacy")
+	s, ok := lookupService(project, "web")
 	if !ok {
-		t.Fatal("legacy service missing")
+		t.Fatal("web service missing")
 	}
-	spec := compose.ToContainerSpec(s, compose.SpecOptions{Deployment: "sample", Service: "legacy"})
-	if spec.LogConfig == nil {
-		t.Fatal("LogConfig nil; want syslog from legacy keys")
+	spec := compose.ToContainerSpec(s, compose.SpecOptions{Deployment: "sample", Service: "web"})
+	if spec.LogConfig == nil || spec.LogConfig.Driver != "journald" {
+		t.Fatalf("LogConfig = %+v, want driver journald", spec.LogConfig)
 	}
-	if spec.LogConfig.Driver != "syslog" {
-		t.Errorf("Driver = %q, want syslog", spec.LogConfig.Driver)
-	}
-	if got := spec.LogConfig.Options["syslog-address"]; got != "tcp://127.0.0.1:514" {
-		t.Errorf("Options[syslog-address] = %q, want tcp://127.0.0.1:514", got)
-	}
-}
-
-// TestToContainerSpec_ModernLoggingWinsOverLegacy — when a service declares
-// BOTH a modern `logging:` block and legacy log_driver/log_opt, the modern
-// block wins outright (fixture service "both": modern json-file vs legacy
-// syslog). Mirrors the resolveResources modern-wins policy.
-func TestToContainerSpec_ModernLoggingWinsOverLegacy(t *testing.T) {
-	project, _, err := compose.Load(filepath.Join("testdata", "logging.yml"))
-	if err != nil {
-		t.Fatalf("Load logging.yml: %v", err)
-	}
-	s, ok := lookupService(project, "both")
-	if !ok {
-		t.Fatal("both service missing")
-	}
-	spec := compose.ToContainerSpec(s, compose.SpecOptions{Deployment: "sample", Service: "both"})
-	if spec.LogConfig == nil {
-		t.Fatal("LogConfig nil; want modern json-file")
-	}
-	if spec.LogConfig.Driver != "json-file" {
-		t.Errorf("Driver = %q, want json-file (modern wins, not syslog)", spec.LogConfig.Driver)
-	}
-	if got := spec.LogConfig.Options["max-size"]; got != "5m" {
-		t.Errorf("Options[max-size] = %q, want 5m (modern options)", got)
-	}
-	if _, leaked := spec.LogConfig.Options["syslog-address"]; leaked {
-		t.Errorf("legacy syslog-address leaked into modern options: %v", spec.LogConfig.Options)
+	if len(spec.LogConfig.Options) != 0 {
+		t.Errorf("Options = %v, want empty for a driver-only block", spec.LogConfig.Options)
 	}
 }
 
@@ -114,12 +79,12 @@ func TestToContainerSpec_NoLogging(t *testing.T) {
 	}
 }
 
-// TestValidate_LoggingAccepted — the logging:/log_driver/log_opt keys are in
-// the allowed closed field set, so a fixture using all three validates clean
-// (previously they were silently rejected as unknown fields).
+// TestValidate_LoggingAccepted — the modern `logging:` key is in the allowed
+// closed field set, so a fixture using it validates clean (previously it was
+// silently rejected as an unknown field).
 func TestValidate_LoggingAccepted(t *testing.T) {
 	body := loadFixture(t, "logging.yml")
 	if err := compose.Validate(body); err != nil {
-		t.Fatalf("Validate(logging.yml) should accept logging/log_driver/log_opt; got %v", err)
+		t.Fatalf("Validate(logging.yml) should accept logging:; got %v", err)
 	}
 }
