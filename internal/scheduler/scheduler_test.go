@@ -252,7 +252,7 @@ func TestReconcile_GlobalPlacementSurvivorIDsStableOnNodeLeave(t *testing.T) {
 	raftIdx++
 	upd := &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_NodeStatusUpdate{
 		NodeStatusUpdate: &pb.NodeStatusUpdate{
-			Hostname: "node-b", Status: pb.NodeStatus_NODE_STATUS_NOT_READY,
+			Hostname: "node-b", Status: pb.NodeStatus_NODE_STATUS_JOINING,
 		},
 	}}
 	data, _ := proto.Marshal(upd)
