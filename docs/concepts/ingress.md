@@ -31,6 +31,21 @@ Multiple routes for the same domain with different `path` prefixes
 co-exist; Caddy is fed routes longest-prefix-first so the more
 specific path wins.
 
+### Path stripping
+
+When a route sets `strip_path: true` and `path` is non-empty, JACO
+renders a Caddy `rewrite` handler ahead of the reverse proxy that
+strips the matched prefix from the request URI before it reaches the
+upstream. With `path: /api` and `strip_path: true`, an inbound `GET
+/api/foo?x=1` arrives at the container as `GET /foo?x=1`. The query
+string is preserved; only the path prefix is removed.
+
+`strip_path` has no effect when `path` is empty (a catch-all route has
+nothing to strip) and defaults to `false`, which forwards the original
+URI byte-for-byte — the historical behavior. Declare it in
+`jaco.yaml`'s `routes` block; see
+[`jaco.yaml` schema](../manifests/jaco-yaml.md).
+
 A static fallback route for unknown hosts returns HTTP 404 with a
 `Server: jaco` header.
 

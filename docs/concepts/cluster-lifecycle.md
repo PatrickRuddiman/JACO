@@ -105,7 +105,10 @@ The scheduler's drain machine:
 2. For each, computes a new host via the placement rules on the
    remaining eligible set and writes `ReplicaDesired{id, host:
    new_host}`. The old replica on the leaving host remains running
-   and routable until its replacement passes health.
+   and routable until its replacement passes health. **`placement:
+   global`** replicas skip migration and are dropped instead —
+   surviving nodes already host their own daemonset replica, and a
+   migration would double-place it.
 3. When all replacements report `running`, writes `ReplicaDesired{id,
    host: removed}`; runtime on the leaving node stops + removes
    containers.

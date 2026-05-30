@@ -36,6 +36,7 @@ create:
 | `ulimits`      | resource ulimits                                               |
 | `read_only`    | read-only root filesystem                                      |
 | `networks`     | per-(deployment, network) bridge attach (see below)            |
+| `logging`      | modern compose `logging:` block (`driver` + `options`); projected onto docker's container log config. Nil/absent uses docker's default driver. Legacy top-level `log_driver`/`log_opt` are rejected by the compose loader |
 
 Plus the top-level `networks:` block, which declares the networks
 service-level entries may reference.

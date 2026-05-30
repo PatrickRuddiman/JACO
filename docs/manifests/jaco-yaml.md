@@ -17,7 +17,7 @@ deployment: <name>           # required, string
 services:                    # required, list
   - name: <service>
     replicas: <int >= 0>
-    placement: spread | pack | hosts
+    placement: spread | pack | hosts | global
     hosts: [host-a, host-b]
     networks: [net-a, net-b]
 routes:                      # optional, list
@@ -26,6 +26,7 @@ routes:                      # optional, list
     port: <int>
     tls: auto | off
     path: <url-prefix>
+    strip_path: <bool>
 ```
 
 Only `deployment`, `services`, and `routes` are accepted at the top
@@ -43,7 +44,7 @@ cluster.
 |--------------|-------------------------------|----------|----------------------|
 | `name`       | string                        | yes      | —                    |
 | `replicas`   | int ≥ 0                       | yes      | —                    |
-| `placement`  | `spread \| pack \| hosts`     | no       | `spread`             |
+| `placement`  | `spread \| pack \| hosts \| global` | no | `spread`     |
 | `hosts`      | list of hostnames             | when `placement: hosts` | — |
 | `networks`   | list of compose network names | no       | `[_default]`         |
 
@@ -72,10 +73,17 @@ certs.
   the apply succeeds but the deployment status becomes `pending` with
   details `{reason: cannot_satisfy_host_placement, missing: [...]}`
   visible in `jaco status` — no replicas are scheduled elsewhere.
+- **`global`** (daemonset) — exactly one replica per ready node.
+  `replicas:` is **ignored** under `global`; the effective count is
+  the number of eligible nodes, and grows or shrinks automatically as
+  nodes join or leave. `hosts:` is also ignored. Replica ids are keyed
+  by hostname (not a positional index), so a surviving node's replica
+  is unchanged when a peer departs.
 
 `placement` and `hosts` interact: `placement: hosts` requires `hosts`;
-`placement: spread | pack` ignores `hosts`. The closed enum is
-enforced by the proto `ServiceSpec.PlacementMode`.
+`placement: spread | pack | global` ignores `hosts`. The closed enum
+is enforced by the proto `ServiceSpec.PlacementMode`
+([`proto/jaco/v1/entities.proto`](../../proto/jaco/v1/entities.proto)).
 
 ### `networks`
 
@@ -93,13 +101,14 @@ See [Networking](../concepts/networking.md) and
 Optional list. Each entry declares one public HTTP(S) route serviced
 by the embedded Caddy on every cluster node.
 
-| field      | type                  | required | default | meaning                                            |
-|------------|-----------------------|----------|---------|----------------------------------------------------|
-| `domain`   | FQDN                  | yes      | —       | host header to match                               |
-| `service`  | service name          | yes      | —       | upstream service within this deployment            |
-| `port`     | int                   | yes      | —       | container port to dial                             |
-| `tls`      | `auto \| off`         | no       | `auto`  | ACME-issued cert (`auto`) or plaintext (`off`)     |
-| `path`     | URL prefix            | no       | `""`    | longest-prefix-first; default is catch-all         |
+| field        | type                  | required | default | meaning                                            |
+|--------------|-----------------------|----------|---------|----------------------------------------------------|
+| `domain`     | FQDN                  | yes      | —       | host header to match                               |
+| `service`    | service name          | yes      | —       | upstream service within this deployment            |
+| `port`       | int                   | yes      | —       | container port to dial                             |
+| `tls`        | `auto \| off`         | no       | `auto`  | ACME-issued cert (`auto`) or plaintext (`off`)     |
+| `path`       | URL prefix            | no       | `""`    | longest-prefix-first; default is catch-all         |
+| `strip_path` | bool                  | no       | `false` | strip `path` prefix from the request URI upstream  |
 
 - `tls: auto` triggers ACME issuance for `domain`. JACO retries with
   exponential backoff capped at 1 hour on failure; while pending,
@@ -109,6 +118,11 @@ by the embedded Caddy on every cluster node.
 - `path` allows two routes for the same `domain` provided their paths
   differ. Caddy is fed routes longest-prefix-first so the more
   specific path wins.
+- `strip_path: true` rewrites the request URI to remove `path` before
+  proxying to the upstream — e.g. with `path: /api` and `strip_path:
+  true`, an inbound `GET /api/foo` reaches the container as
+  `GET /foo`. Has no effect when `path` is empty. Default `false`
+  forwards the full URI byte-for-byte (the legacy behavior).
 
 Raw-TCP ingress is not declared in `routes`. It is implicit: any
 compose service with `ports: ["H:C"]` registers a cluster-wide TCP
