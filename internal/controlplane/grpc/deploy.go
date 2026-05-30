@@ -95,6 +95,30 @@ func (d *deployServer) Apply(ctx context.Context, req *pb.ApplyRequest) (*pb.App
 		}
 	}
 
+	// network_mode + route mutual exclusion (issue #121). A service with
+	// `network_mode: none` has no listener at all; `network_mode:
+	// service:<name>` shares another service's netns and any listener is
+	// the target's, not the sidecar's. Either way an ingress route
+	// targeting the sidecar can never reach a usable listener, so reject
+	// the manifest at apply time with a typed validation_failed error
+	// instead of admitting silently-broken ingress. The compose-side
+	// validator already restricted network_mode to the closed accept-set;
+	// here we only check the cross-field invariant the validator cannot
+	// see (it has no jaco.yaml route visibility).
+	composeNetworkMode := map[string]string{}
+	for _, s := range composeProject.Services {
+		if s.NetworkMode != "" {
+			composeNetworkMode[s.Name] = s.NetworkMode
+		}
+	}
+	for _, r := range jacoSpec.Routes {
+		if mode, isolated := composeNetworkMode[r.Service]; isolated {
+			return nil, errorStatus(codes.InvalidArgument, "validation_failed",
+				fmt.Sprintf("route %q targets service %q which sets network_mode: %s; routes on a service with network_mode are unreachable",
+					r.Domain, r.Service, mode))
+		}
+	}
+
 	// Derive the TCP ingress listeners from compose published ports and reject
 	// host-port collisions before anything is applied. A node binds a published
 	// port once, so the port is cluster-global.

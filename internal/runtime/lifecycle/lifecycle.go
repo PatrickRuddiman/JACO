@@ -47,6 +47,16 @@ type IsolationGate struct {
 	State        *state.State
 	SelfHostname string
 	AuthResolver pull.AuthResolver
+
+	// NetworkModeResolver, when non-nil, resolves a `network_mode:
+	// service:<name>` reference to the currently-running primary replica
+	// container id within the same deployment (issue #121). Nil
+	// disables the lookup — any `service:<name>` spec then fails with
+	// ErrNetworkModeTargetNotReady, which the reconciler treats as a
+	// retry-able transient. Production callers wire this from
+	// state.ReplicasObserved + state.ReplicasDesired; tests pass an
+	// inline fn (or nil for `none` / no network_mode).
+	NetworkModeResolver NetworkModeResolver
 }
 
 // Start brings spec's container up. Idempotent on the (replica_id, raft_index)
@@ -132,7 +142,14 @@ func StartWithPullState(ctx context.Context, d dockerx.Docker, spec compose.Cont
 		}
 	}
 
-	cfg, hostCfg, netCfg := buildConfig(spec)
+	var netResolver NetworkModeResolver
+	if len(gate) > 0 {
+		netResolver = gate[0].NetworkModeResolver
+	}
+	cfg, hostCfg, netCfg, err := buildConfig(spec, netResolver)
+	if err != nil {
+		return "", fmt.Errorf("buildConfig: %w", err)
+	}
 	name := compose.ContainerName(compose.SpecOptions{ReplicaID: spec.ReplicaID})
 	resp, err := d.ContainerCreate(ctx, cfg, hostCfg, netCfg, nil, name)
 	if err != nil {
@@ -142,12 +159,19 @@ func StartWithPullState(ctx context.Context, d dockerx.Docker, spec compose.Cont
 	// BEFORE starting it. Bug 010: spec.Networks[0] is already attached
 	// at create-time via NetworkingConfig.EndpointsConfig, so we skip it
 	// here and NetworkConnect any additional networks.
-	for i, net := range spec.Networks {
-		if i == 0 {
-			continue
-		}
-		if err := d.NetworkConnect(ctx, net, resp.ID, &network.EndpointSettings{Aliases: serviceAliases(spec)}); err != nil {
-			return "", fmt.Errorf("NetworkConnect %s -> %s: %w", net, resp.ID, err)
+	//
+	// Issue #121: when network_mode is set the container shares another
+	// container's netns (or has none); attaching to per-deployment
+	// bridges is mutually exclusive at the docker level, so skip the
+	// loop entirely.
+	if spec.NetworkMode == "" {
+		for i, net := range spec.Networks {
+			if i == 0 {
+				continue
+			}
+			if err := d.NetworkConnect(ctx, net, resp.ID, &network.EndpointSettings{Aliases: serviceAliases(spec)}); err != nil {
+				return "", fmt.Errorf("NetworkConnect %s -> %s: %w", net, resp.ID, err)
+			}
 		}
 	}
 	if err := d.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {

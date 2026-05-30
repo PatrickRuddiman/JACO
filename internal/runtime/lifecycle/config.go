@@ -1,6 +1,10 @@
 package lifecycle
 
 import (
+	"errors"
+	"fmt"
+	"strings"
+
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
@@ -10,12 +14,38 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/runtime/compose"
 )
 
+// NetworkModeResolver looks up the currently-running primary replica
+// container id for (deployment, service) within the local cluster (issue
+// #121). Returns ok=false when no replica is RUNNING yet — the lifecycle
+// path translates that into ErrNetworkModeTargetNotReady so the runtime
+// reconciler retries on the next tick. A nil resolver is treated as a
+// permanently-unresolvable lookup; existing call sites that never use
+// network_mode pass nil and behave exactly as they did before.
+type NetworkModeResolver func(deployment, service string) (containerID string, ok bool)
+
+// ErrNetworkModeTargetNotReady is the typed retry-able error buildConfig
+// returns when a `network_mode: service:<name>` reference can't be
+// resolved to a running container id yet (issue #121). The reconciler's
+// existing per-replica retry loop translates this into "try again on the
+// next reconcile" — sidecars naturally bounce once or twice waiting for
+// their primary on the first deploy, steady-state cost is zero. Use
+// errors.Is to detect it.
+var ErrNetworkModeTargetNotReady = errors.New("network_mode target service has no running replica yet")
+
 // buildConfig projects a compose.ContainerSpec into docker's three config
 // structs. The first declared network attaches at create-time via
 // NetworkingConfig.EndpointsConfig; additional networks attach via
 // NetworkConnect after create. NetworkMode=none (the previous default)
 // was rejected by Docker when followed by a NetworkConnect — see bug 010.
-func buildConfig(spec compose.ContainerSpec) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
+//
+// When spec.NetworkMode is set (issue #121), `none` / `service:<name>`
+// take over: the per-deployment bridge attach is skipped and
+// HostConfig.NetworkMode is set to docker's equivalent (`none` verbatim or
+// `container:<id>` after resolving the target). A `service:<name>` whose
+// target has no RUNNING replica yet returns ErrNetworkModeTargetNotReady
+// so the reconciler retries on the next tick. resolver may be nil when
+// spec.NetworkMode is empty or `none`; only `service:<name>` consults it.
+func buildConfig(spec compose.ContainerSpec, resolver NetworkModeResolver) (*container.Config, *container.HostConfig, *network.NetworkingConfig, error) {
 	cfg := &container.Config{
 		Image:       spec.Image,
 		Cmd:         strslice.StrSlice(spec.Command),
@@ -94,6 +124,53 @@ func buildConfig(spec compose.ContainerSpec) (*container.Config, *container.Host
 	}
 
 	netCfg := &network.NetworkingConfig{}
+
+	// network_mode (#121) is mutually exclusive with attaching to the
+	// per-deployment bridges: it sets HostConfig.NetworkMode directly
+	// and leaves the EndpointsConfig empty so the runtime's
+	// NetworkConnect loop in lifecycle.Start is a no-op for this
+	// container. The validator already restricted spec.NetworkMode to
+	// "", "none", or "service:<name>"; any other value here is a bug
+	// upstream and surfaces as a typed error rather than silently
+	// falling through to the bridge attach.
+	if spec.NetworkMode != "" {
+		// When NetworkMode is set the container either has no network
+		// (`none`) or shares another container's netns (`service:<name>`
+		// → `container:<id>`). Docker rejects ContainerCreate with
+		// "conflicting options: dns and the network mode" if we leave
+		// any of dns / dns_search / dns_opt / hostname / domainname /
+		// mac_address / extra_hosts populated — the joined netns owns
+		// those, not us. Zero them rather than failing the apply:
+		// the operator wrote `network_mode:` knowing the trade-off,
+		// and copying defaults from a bridge they aren't on would be
+		// a bug regardless of docker's veto.
+		cfg.Hostname = ""
+		cfg.Domainname = ""
+		cfg.MacAddress = ""
+		hostCfg.DNS = nil
+		hostCfg.DNSSearch = nil
+		hostCfg.DNSOptions = nil
+		hostCfg.ExtraHosts = nil
+		switch {
+		case spec.NetworkMode == "none":
+			hostCfg.NetworkMode = container.NetworkMode("none")
+		case strings.HasPrefix(spec.NetworkMode, "service:"):
+			target := strings.TrimPrefix(spec.NetworkMode, "service:")
+			if resolver == nil {
+				return nil, nil, nil, fmt.Errorf("network_mode service:%s: %w", target, ErrNetworkModeTargetNotReady)
+			}
+			containerID, ok := resolver(spec.Deployment, target)
+			if !ok || containerID == "" {
+				return nil, nil, nil, fmt.Errorf("network_mode service:%s: %w", target, ErrNetworkModeTargetNotReady)
+			}
+			hostCfg.NetworkMode = container.NetworkMode("container:" + containerID)
+		default:
+			// Should never happen — validator restricts the closed set.
+			return nil, nil, nil, fmt.Errorf("network_mode %q: unsupported form (validator should have rejected)", spec.NetworkMode)
+		}
+		return cfg, hostCfg, netCfg, nil
+	}
+
 	if len(spec.Networks) > 0 {
 		// Bug 010: attach the first network at create-time. Subsequent
 		// networks attach via NetworkConnect in lifecycle.Start.
@@ -104,7 +181,7 @@ func buildConfig(spec compose.ContainerSpec) (*container.Config, *container.Host
 			spec.Networks[0]: {Aliases: serviceAliases(spec)},
 		}
 	}
-	return cfg, hostCfg, netCfg
+	return cfg, hostCfg, netCfg, nil
 }
 
 // serviceAliases are the names Docker's embedded DNS (127.0.0.11) resolves to

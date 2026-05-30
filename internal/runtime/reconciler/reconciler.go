@@ -345,9 +345,10 @@ func (r *Reconciler) runStart(workCtx, watchCtx context.Context, rep *pb.Replica
 		}
 	}
 	containerID, err := lifecycle.StartWithPullState(workCtx, r.docker, spec, onPull, lifecycle.IsolationGate{
-		State:        r.state,
-		SelfHostname: r.hostname,
-		AuthResolver: r.authResolver(),
+		State:               r.state,
+		SelfHostname:        r.hostname,
+		AuthResolver:        r.authResolver(),
+		NetworkModeResolver: r.resolveNetworkModeTarget,
 	})
 	if err != nil {
 		return fmt.Errorf("lifecycle.Start: %w", err)
@@ -508,4 +509,55 @@ func (r *Reconciler) authResolver() pull.AuthResolver {
 		}
 		return pull.BuildRegistryAuth(cred)
 	}
+}
+
+// resolveNetworkModeTarget answers "what container id is the currently-running
+// primary replica of (deployment, service) on THIS host?" — used by lifecycle
+// to translate compose `network_mode: service:<name>` into docker's
+// `container:<id>` form (issue #121).
+//
+// Docker's `--network container:<id>` requires the joined container to live
+// on the same docker daemon — cross-node netns sharing is not a thing. So
+// the resolver only considers replicas the scheduler has placed on the same
+// node as the calling sidecar. The placement story for landing both on the
+// same node is the operator's responsibility today (matching `placement:`
+// rules, host pins, or a single-host deployment); a future scheduler change
+// could promote `network_mode: service:` into an implicit co-placement
+// constraint, but that is out of scope here.
+//
+// We walk every desired replica for (deployment, service, host=self),
+// look up its observed state, and return the container id of the first
+// one in RUNNING. "Primary" here means "any running same-host replica"
+// — for the sidecar pattern the target is almost always replicas=1, and
+// if it's >1 docker only lets us join one netns anyway, so picking the
+// first running one is correct.
+//
+// Returns ok=false when no same-host replica is RUNNING yet. buildConfig
+// translates that into ErrNetworkModeTargetNotReady so the per-replica
+// retry loop in the reconciler tries again on the next tick; the sidecar
+// bounces a few times waiting for its primary on the first deploy, with
+// zero steady-state cost once both are up. If the primary is on a
+// different host, the sidecar retries forever and the operator sees
+// "no running same-host replica" in the journal — louder than a silent
+// docker error, and the right signal that the placement needs fixing.
+func (r *Reconciler) resolveNetworkModeTarget(deployment, service string) (string, bool) {
+	for _, des := range r.state.ReplicasDesired.List() {
+		if des.GetDeployment() != deployment || des.GetService() != service {
+			continue
+		}
+		if des.GetHost() != r.hostname {
+			continue
+		}
+		obs, ok := r.state.ReplicasObserved.Get(des.GetId())
+		if !ok {
+			continue
+		}
+		if obs.GetState() != pb.ReplicaState_REPLICA_STATE_RUNNING {
+			continue
+		}
+		if id := obs.GetContainerId(); id != "" {
+			return id, true
+		}
+	}
+	return "", false
 }
