@@ -35,10 +35,12 @@ Source of truth: [`render.go`](../../internal/discovery/firewall/render.go)
 ## The ruleset
 
 JACO manages a single nftables table, `inet jaco`. With one workload
-deployment `front` on the default network, the rendered table looks
+deployment `front` on the default network, the rendered ruleset looks
 like:
 
 ```
+add table inet jaco
+delete table inet jaco
 table inet jaco {
     set dep_net_front__default {
         type ipv4_addr
@@ -67,6 +69,12 @@ table inet jaco {
     }
 }
 ```
+
+The leading `add table inet jaco` / `delete table inet jaco` pair is the
+atomic-replace prelude (see [Atomic reload](#atomic-reload)): `add`
+creates the table if it's absent so the following `delete` can't fail on
+a cold host, and `delete` drops the entire prior generation so a
+re-apply rebuilds the table from scratch instead of appending to it.
 
 ### Named sets
 
@@ -153,6 +161,23 @@ relevant watch event (Subnets, ReplicaObserved, Nodes), debounced at
 200 ms, and submits the whole thing as one transaction via `nft -f`.
 Partial state is impossible — either the new ruleset is in place or
 the old one still is.
+
+The rendered file leads with `add table inet jaco` then
+`delete table inet jaco` before the `table inet jaco { … }` body. This
+matters because `nft -f` **appends** to an existing chain rather than
+replacing it: re-applying the table body on every reconcile would stack
+a fresh generation of forward rules onto the live chain each time. An
+earlier generation's `@jaco_pool … drop` then sits *ahead* of a
+later-deployed stack's per-scope `accept`, shadowing it — silently
+breaking cross-host traffic for every deployment except the first
+applied (same-host traffic L2-switches within one bridge and never hits
+the forward hook, which is what made the bug subtle; issue #89).
+Deleting the table first means each apply recreates it from scratch
+within the one `nft -f` transaction, so the chains never accumulate. The
+`add` ahead of the `delete` keeps the `delete` from failing on a cold
+host where the table doesn't exist yet. The SNAT/overlay exemptions live
+in Docker's own `nat`/`raw` tables (re-asserted each tick), so flushing
+`inet jaco` doesn't disturb them.
 
 ## Self-test on startup
 
