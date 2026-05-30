@@ -1,6 +1,6 @@
 services:
   web:
     image: nginx:1.27
-    cgroup_parent: /custom.slice
+    privileged: true
 networks:
   default: {}

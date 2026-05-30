@@ -17,13 +17,17 @@ import (
 // was rejected by Docker when followed by a NetworkConnect — see bug 010.
 func buildConfig(spec compose.ContainerSpec) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
 	cfg := &container.Config{
-		Image:      spec.Image,
-		Cmd:        strslice.StrSlice(spec.Command),
-		Entrypoint: strslice.StrSlice(spec.Entrypoint),
-		Env:        spec.Env,
-		WorkingDir: spec.WorkingDir,
-		User:       spec.User,
-		Labels:     spec.Labels,
+		Image:       spec.Image,
+		Cmd:         strslice.StrSlice(spec.Command),
+		Entrypoint:  strslice.StrSlice(spec.Entrypoint),
+		Env:         spec.Env,
+		WorkingDir:  spec.WorkingDir,
+		User:        spec.User,
+		Labels:      spec.Labels,
+		Hostname:    spec.Hostname,
+		Domainname:  spec.Domainname,
+		StopSignal:  spec.StopSignal,
+		StopTimeout: spec.StopGracePeriodSeconds,
 	}
 	if hc := spec.Healthcheck; hc != nil {
 		cfg.Healthcheck = &container.HealthConfig{
@@ -35,6 +39,14 @@ func buildConfig(spec compose.ContainerSpec) (*container.Config, *container.Host
 		}
 	}
 
+	// DNS precedence (issue #117): an explicit compose `dns:` overrides
+	// the runtime-resolved per-bridge DNSServers. Empty compose `dns:` →
+	// keep the runtime resolvers so JACO's per-bridge DNS Manager wins
+	// (same behavior as before #117).
+	dnsServers := spec.DNS
+	if len(dnsServers) == 0 {
+		dnsServers = spec.DNSServers
+	}
 	hostCfg := &container.HostConfig{
 		ReadonlyRootfs: spec.ReadOnly,
 		CapAdd:         spec.CapAdd,
@@ -42,7 +54,18 @@ func buildConfig(spec compose.ContainerSpec) (*container.Config, *container.Host
 		Sysctls:        spec.Sysctls,
 		Mounts:         toDockerMounts(spec.Mounts),
 		Tmpfs:          toTmpfsMap(spec.Tmpfs),
-		DNS:            spec.DNSServers,
+		DNS:            dnsServers,
+		DNSSearch:      spec.DNSSearch,
+		DNSOptions:     spec.DNSOptions,
+		ExtraHosts:     spec.ExtraHosts,
+		Init:           spec.Init,
+		ShmSize:        spec.ShmSizeBytes,
+		IpcMode:        container.IpcMode(spec.IpcMode),
+		PidMode:        container.PidMode(spec.PidMode),
+		UTSMode:        container.UTSMode(spec.UTSMode),
+		UsernsMode:     container.UsernsMode(spec.UsernsMode),
+		CgroupnsMode:   container.CgroupnsMode(spec.CgroupnsMode),
+
 		LogConfig:      toDockerLogConfig(spec.LogConfig),
 		Resources: container.Resources{
 			Ulimits: toUlimitsList(spec.Ulimits),
@@ -55,6 +78,7 @@ func buildConfig(spec compose.ContainerSpec) (*container.Config, *container.Host
 			CPUShares:         spec.CPUShares,
 			CpusetCpus:        spec.CpusetCpus,
 			PidsLimit:         spec.PidsLimit,
+			CgroupParent:      spec.CgroupParent,
 		},
 	}
 

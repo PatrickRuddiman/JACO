@@ -146,8 +146,12 @@ func StartWithPullState(ctx context.Context, d dockerx.Docker, spec compose.Cont
 	return resp.ID, nil
 }
 
-// Stop sends SIGTERM (followed by SIGKILL after gracePeriodSeconds) to the
-// container associated with replicaID. No-op when the container isn't found.
+// Stop sends the container's configured StopSignal (compose `stop_signal`,
+// docker default SIGTERM) and waits up to gracePeriodSeconds before SIGKILL.
+// gracePeriodSeconds<0 defers to the container's persisted Config.StopTimeout
+// (compose `stop_grace_period`) — used by the runtime reconciler so each
+// service honors its own grace period without the reconciler tracking specs.
+// No-op when the container isn't found.
 func Stop(ctx context.Context, d dockerx.Docker, replicaID string, gracePeriodSeconds int) error {
 	c, err := findContainerByReplicaID(ctx, d, replicaID)
 	if err != nil {
@@ -156,8 +160,12 @@ func Stop(ctx context.Context, d dockerx.Docker, replicaID string, gracePeriodSe
 	if c == nil {
 		return nil
 	}
-	timeout := gracePeriodSeconds
-	return d.ContainerStop(ctx, c.ID, container.StopOptions{Timeout: &timeout})
+	opts := container.StopOptions{}
+	if gracePeriodSeconds >= 0 {
+		t := gracePeriodSeconds
+		opts.Timeout = &t
+	}
+	return d.ContainerStop(ctx, c.ID, opts)
 }
 
 // Remove force-removes the container associated with replicaID. No-op when

@@ -31,6 +31,7 @@ type fakeDocker struct {
 	createErr  error
 	attached   map[string][]string // containerID → list of network names
 	aliases    map[string][]string // containerID → aliases from the last NetworkConnect
+	lastStop   map[string]container.StopOptions // containerID → last StopOptions seen
 }
 
 type fakeContainer struct {
@@ -91,9 +92,13 @@ func (f *fakeDocker) ContainerStart(_ context.Context, id string, _ container.St
 	return fmt.Errorf("no such container %s", id)
 }
 
-func (f *fakeDocker) ContainerStop(_ context.Context, id string, _ container.StopOptions) error {
+func (f *fakeDocker) ContainerStop(_ context.Context, id string, opts container.StopOptions) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.lastStop == nil {
+		f.lastStop = map[string]container.StopOptions{}
+	}
+	f.lastStop[id] = opts
 	if c, ok := f.containers[id]; ok {
 		c.State = "exited"
 		return nil
@@ -418,5 +423,43 @@ func TestStart_RequiresReplicaIDAndImage(t *testing.T) {
 	}
 	if _, err := lifecycle.Start(context.Background(), d, compose.ContainerSpec{ReplicaID: "x"}); err == nil {
 		t.Errorf("expected error on missing image")
+	}
+}
+
+// TestStop_NegativeGraceDefersToPersistedStopTimeout — issue #114: passing
+// a negative gracePeriodSeconds yields a StopOptions with Timeout=nil, so
+// docker honors the container's persisted Config.StopTimeout (compose
+// `stop_grace_period`) instead of overriding it.
+func TestStop_NegativeGraceDefersToPersistedStopTimeout(t *testing.T) {
+	d := newFakeDocker()
+	id, _ := lifecycle.Start(context.Background(), d, sampleSpec("sample-web-0", 42))
+	if err := lifecycle.Stop(context.Background(), d, "sample-web-0", -1); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	opts, ok := d.lastStop[id]
+	if !ok {
+		t.Fatalf("ContainerStop was not called")
+	}
+	if opts.Timeout != nil {
+		t.Errorf("StopOptions.Timeout = %v, want nil (defer to persisted)", *opts.Timeout)
+	}
+}
+
+// TestStop_PositiveGraceOverridesPersisted — passing a non-negative
+// gracePeriodSeconds yields a StopOptions with that value as Timeout,
+// overriding docker's persisted Config.StopTimeout. Models the pre-#114
+// behavior so callers (tests, ad-hoc CLI) can still force a specific grace.
+func TestStop_PositiveGraceOverridesPersisted(t *testing.T) {
+	d := newFakeDocker()
+	id, _ := lifecycle.Start(context.Background(), d, sampleSpec("sample-web-0", 42))
+	if err := lifecycle.Stop(context.Background(), d, "sample-web-0", 7); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	opts, ok := d.lastStop[id]
+	if !ok {
+		t.Fatalf("ContainerStop was not called")
+	}
+	if opts.Timeout == nil || *opts.Timeout != 7 {
+		t.Errorf("StopOptions.Timeout = %v, want *7", opts.Timeout)
 	}
 }
