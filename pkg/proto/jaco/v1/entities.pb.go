@@ -958,7 +958,12 @@ type Route struct {
 	// catch-all. Caddy matches routes in declaration order (first match
 	// wins); JACO is responsible for emitting routes longest-prefix-first
 	// so the more specific path is tried before the catch-all.
-	Path          string `protobuf:"bytes,6,opt,name=path,proto3" json:"path,omitempty"`
+	Path string `protobuf:"bytes,6,opt,name=path,proto3" json:"path,omitempty"`
+	// strip_path, when true and path is non-empty, strips the matched path
+	// prefix from the request URI before proxying upstream (Caddy
+	// strip_path_prefix rewrite). E.g. with path "/api", GET /api/foo reaches
+	// the upstream as GET /foo. Default false forwards the full URI unchanged.
+	StripPath     bool `protobuf:"varint,7,opt,name=strip_path,json=stripPath,proto3" json:"strip_path,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1033,6 +1038,13 @@ func (x *Route) GetPath() string {
 		return x.Path
 	}
 	return ""
+}
+
+func (x *Route) GetStripPath() bool {
+	if x != nil {
+		return x.StripPath
+	}
+	return false
 }
 
 // TCPRoute is a raw-TCP (L4) ingress listener derived from a compose
@@ -1922,7 +1934,7 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\x0elast_health_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\flastHealthAt\x1a:\n" +
 	"\fDetailsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x9c\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbb\x01\n" +
 	"\x05Route\x12\x16\n" +
 	"\x06domain\x18\x01 \x01(\tR\x06domain\x12\x1e\n" +
 	"\n" +
@@ -1931,7 +1943,9 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\aservice\x18\x03 \x01(\tR\aservice\x12\x12\n" +
 	"\x04port\x18\x04 \x01(\x05R\x04port\x12\x19\n" +
 	"\btls_auto\x18\x05 \x01(\bR\atlsAuto\x12\x12\n" +
-	"\x04path\x18\x06 \x01(\tR\x04path\"\x92\x01\n" +
+	"\x04path\x18\x06 \x01(\tR\x04path\x12\x1d\n" +
+	"\n" +
+	"strip_path\x18\a \x01(\bR\tstripPath\"\x92\x01\n" +
 	"\bTCPRoute\x12%\n" +
 	"\x0epublished_port\x18\x01 \x01(\x05R\rpublishedPort\x12\x1e\n" +
 	"\n" +

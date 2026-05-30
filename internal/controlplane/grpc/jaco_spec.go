@@ -43,11 +43,12 @@ type JacoServiceDecl struct {
 
 // JacoRouteDecl is one Caddy-served HTTP(S) route.
 type JacoRouteDecl struct {
-	Domain  string `yaml:"domain"`
-	Service string `yaml:"service"`
-	Port    int    `yaml:"port"`
-	TLS     string `yaml:"tls"`            // "auto" (default) | "off"
-	Path    string `yaml:"path,omitempty"` // optional URL path prefix; "" = catch-all
+	Domain    string `yaml:"domain"`
+	Service   string `yaml:"service"`
+	Port      int    `yaml:"port"`
+	TLS       string `yaml:"tls"`                  // "auto" (default) | "off"
+	Path      string `yaml:"path,omitempty"`       // optional URL path prefix; "" = catch-all
+	StripPath bool   `yaml:"strip_path,omitempty"` // strip the matched path prefix before proxying
 }
 
 // ParseJacoYAML unmarshals the manifest and applies defaults (Placement spread,
@@ -258,6 +259,7 @@ func toRoutes(deployment string, decls []JacoRouteDecl) []*pb.Route {
 			Port:       int32(d.Port),
 			TlsAuto:    d.TLS == "auto",
 			Path:       d.Path,
+			StripPath:  d.StripPath,
 		})
 	}
 	return out
