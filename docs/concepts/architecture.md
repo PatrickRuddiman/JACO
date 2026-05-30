@@ -78,19 +78,25 @@ v1.
 
 ## Project status
 
-Pre-release. Functional for single-host and multi-host clusters via the
-two-binary path described above. Known open gaps (this is the canonical
-list; other pages link here instead of repeating it):
+Tagged releases through `v0.1.2`, functional for single-host and
+multi-host clusters via the two-binary path described above. The earlier
+open gaps are now implemented:
 
-- TLS on the cross-host gRPC listener — currently plaintext, with the
-  expectation that operators wrap the wire in an overlay (Tailscale,
-  WireGuard, VPC) and authenticate via bearer tokens. Cluster-CA TLS
-  with cert pinning lands in a follow-up.
+- **Cross-host gRPC TLS** — the listener serves a node certificate
+  signed by the cluster CA; the CLI and peer daemons verify against the
+  CA (cert pinning), with the operator bearer token authenticating the
+  caller on top.
 - Follower → leader forwarding of `ReplicaObserved` updates.
-- The Caddy v2 ingress reload loop fully integrated with the rebuild
-  debounce window.
+- The Caddy v2 ingress reload loop integrated with the rebuild debounce
+  window.
 - Rollout state-machine integration with the scheduler's reconcile.
 - The drain step machine for `jaco node remove`.
+
+Known remaining item (this is the canonical list; other pages link here
+instead of repeating it): the **raft transport** (`:7001`) is still
+plaintext TCP — run it over a private network or overlay you control. A
+few bootstrap hops (a node join before it holds the CA, and follower →
+leader submit/log forwarding) negotiate TLS without verifying the peer.
 
 A handful of CLI subcommands (`rollback`, `delete`, `token *`,
 `node list`) currently require `--server`; the unix-socket path for
