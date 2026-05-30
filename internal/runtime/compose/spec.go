@@ -39,6 +39,7 @@ func ToContainerSpec(svc types.ServiceConfig, opts SpecOptions) ContainerSpec {
 	spec.Healthcheck = healthcheckFromCompose(svc.HealthCheck)
 	spec.Networks = networksFromCompose(svc.Networks, opts.Deployment)
 	spec.Ports = portsFromCompose(svc.Ports)
+	spec.LogConfig = logConfigFromCompose(svc.Logging, svc.LogDriver, svc.LogOpt)
 
 	res := resolveResources(svc)
 	spec.NanoCPUs = res.NanoCPUs
@@ -303,6 +304,27 @@ func portsFromCompose(ports []types.ServicePortConfig) []PortDecl {
 		out = append(out, decl)
 	}
 	return out
+}
+
+// logConfigFromCompose resolves a service's container log configuration. The
+// modern `logging:` block wins outright whenever it is present (mirroring the
+// resolveResources policy — it is NOT a field-by-field merge); otherwise JACO
+// falls back to the legacy top-level `log_driver`/`log_opt` keys. Returns nil
+// when neither source declares anything so docker's default log driver applies.
+func logConfigFromCompose(logging *types.LoggingConfig, legacyDriver string, legacyOpt map[string]string) *LogConfig {
+	if logging != nil && (logging.Driver != "" || len(logging.Options) != 0) {
+		return &LogConfig{
+			Driver:  logging.Driver,
+			Options: mapStringToMap(types.Mapping(logging.Options)),
+		}
+	}
+	if legacyDriver != "" || len(legacyOpt) != 0 {
+		return &LogConfig{
+			Driver:  legacyDriver,
+			Options: mapStringToMap(types.Mapping(legacyOpt)),
+		}
+	}
+	return nil
 }
 
 func cloneStringList(in []string) []string {

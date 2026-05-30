@@ -39,6 +39,12 @@ type ContainerSpec struct {
 	Ulimits  map[string]Ulimit
 	ReadOnly bool
 
+	// LogConfig is the container log driver + options projected from compose's
+	// modern `logging:` block (or the legacy top-level `log_driver`/`log_opt`
+	// keys — issue #94). Nil means "unset" so docker's default log driver
+	// applies. The runtime re-projects this into docker's container.LogConfig.
+	LogConfig *LogConfig
+
 	// Resource limits (issue #49). Resolved from either compose's modern
 	// `deploy.resources.{limits,reservations}` block or the legacy top-level
 	// keys (modern wins when both are present — see resolveResources). Every
@@ -87,6 +93,12 @@ type Mount struct {
 type Ulimit struct {
 	Soft int64
 	Hard int64
+}
+
+// LogConfig mirrors docker's container.LogConfig (driver + options).
+type LogConfig struct {
+	Driver  string            // e.g. "json-file", "journald", "fluentd"
+	Options map[string]string // e.g. {"tag": "...", "max-size": "10m", "max-file": "3"}
 }
 
 // PortDecl mirrors a compose `ports:` entry. JACO never publishes the port to
