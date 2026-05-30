@@ -84,6 +84,9 @@ Why each subsystem is shaped the way it is.
   releases are cut, signed, and published.
 - [Testing](contributing/testing.md) — unit, integration, the privileged
   isolation rig, and the comparative samples bench.
+- [Architecture decision records](adr/README.md) — load-bearing design
+  decisions for multi-PR efforts (volume migration, pressure-based
+  scheduling, orchestrator benchmark).
 
 ## License
 
