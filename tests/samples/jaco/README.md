@@ -7,8 +7,8 @@ Bootstrap a 3-node JACO cluster on the [testbed](../../testbed) and deploy the
 
 ```
 jaco/
-├── jaco.yaml            # deployment, replicas, single ingress route (jaco.sh → web)
-├── docker-compose.yml   # service shapes + per-service resource limits
+├── jaco.yaml            # deployment, replicas/placement (incl. a global node-agent), ingress routes (jaco.sh → web, jaco.sh/api → api with strip_path)
+├── docker-compose.yml   # service shapes + per-service resource limits + an api logging: tag
 └── bootstrap/
     ├── bootstrap.sh     # operator-side: install, form cluster, build/push, apply
     └── install-node.sh  # runs on each node: docker + jacod + insecure registry
