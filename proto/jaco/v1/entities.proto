@@ -148,6 +148,11 @@ message Route {
   // wins); JACO is responsible for emitting routes longest-prefix-first
   // so the more specific path is tried before the catch-all.
   string path = 6;
+  // strip_path, when true and path is non-empty, strips the matched path
+  // prefix from the request URI before proxying upstream (Caddy
+  // strip_path_prefix rewrite). E.g. with path "/api", GET /api/foo reaches
+  // the upstream as GET /foo. Default false forwards the full URI unchanged.
+  bool strip_path = 7;
 }
 
 // TCPRoute is a raw-TCP (L4) ingress listener derived from a compose

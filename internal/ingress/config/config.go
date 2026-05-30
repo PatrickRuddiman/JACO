@@ -34,6 +34,10 @@ type Route struct {
 	// catch-all. Multiple routes for the same domain are emitted into one
 	// Caddy host block ordered longest-prefix-first.
 	Path string
+	// StripPath, when true and Path is non-empty, strips the matched path
+	// prefix from the request URI before proxying upstream. Default false
+	// forwards the full URI unchanged (byte-for-byte the legacy behavior).
+	StripPath bool
 }
 
 // TCPRoute is a published-port L4 listener the caller pulls from
@@ -403,39 +407,59 @@ func buildSingleRoute(domain string, route Route, healthyByService map[string][]
 		match["path"] = pathMatchers(route.Path)
 	}
 	return map[string]any{
-		"match": []any{match},
-		"handle": []any{map[string]any{
-			"handler":   "reverse_proxy",
-			"upstreams": buildUpstreams(route, healthyByService, services),
-			"load_balancing": map[string]any{
-				"selection_policy": map[string]any{"policy": "random"},
-				"retries":          2,
-				"try_duration":     "0s",
-			},
-			"health_checks": map[string]any{
-				"passive": map[string]any{"fail_duration": "10s"},
-			},
-		}},
+		"match":  []any{match},
+		"handle": buildHandleChain(route, healthyByService, services),
 	}
 }
 
 // buildPathRoute emits a subroute entry for a path-prefixed route.
 func buildPathRoute(route Route, healthyByService map[string][]ReplicaObservedView, services map[string]ServiceMeta) any {
 	return map[string]any{
-		"match": []any{map[string]any{"path": pathMatchers(route.Path)}},
-		"handle": []any{map[string]any{
-			"handler":   "reverse_proxy",
-			"upstreams": buildUpstreams(route, healthyByService, services),
-			"load_balancing": map[string]any{
-				"selection_policy": map[string]any{"policy": "random"},
-				"retries":          2,
-				"try_duration":     "0s",
-			},
-			"health_checks": map[string]any{
-				"passive": map[string]any{"fail_duration": "10s"},
-			},
-		}},
+		"match":  []any{map[string]any{"path": pathMatchers(route.Path)}},
+		"handle": buildHandleChain(route, healthyByService, services),
 	}
+}
+
+// buildHandleChain returns the ordered handler list for a route. When the
+// route opts into StripPath (and has a non-empty Path), a Caddy `rewrite`
+// handler with strip_path_prefix is emitted BEFORE the reverse_proxy so the
+// matched prefix is removed from the request URI upstream. The default
+// (StripPath false) emits the reverse_proxy handler alone — byte-for-byte the
+// legacy output.
+func buildHandleChain(route Route, healthyByService map[string][]ReplicaObservedView, services map[string]ServiceMeta) []any {
+	proxy := map[string]any{
+		"handler":   "reverse_proxy",
+		"upstreams": buildUpstreams(route, healthyByService, services),
+		"load_balancing": map[string]any{
+			"selection_policy": map[string]any{"policy": "random"},
+			"retries":          2,
+			"try_duration":     "0s",
+		},
+		"health_checks": map[string]any{
+			"passive": map[string]any{"fail_duration": "10s"},
+		},
+	}
+	if route.StripPath && route.Path != "" {
+		return []any{
+			map[string]any{
+				"handler":           "rewrite",
+				"strip_path_prefix": stripPrefix(route.Path),
+			},
+			proxy,
+		}
+	}
+	return []any{proxy}
+}
+
+// stripPrefix returns the literal path prefix Caddy's strip_path_prefix
+// removes from the request URI. It normalizes the operator-supplied Path the
+// same way pathMatchers does its "exact" form: a trailing glob "*" or trailing
+// "/" is dropped so "/api", "/api/", and "/api/*" all strip the "/api" prefix.
+func stripPrefix(path string) string {
+	if strings.HasSuffix(path, "*") {
+		path = strings.TrimSuffix(path, "*")
+	}
+	return strings.TrimSuffix(path, "/")
 }
 
 // pathMatchers returns the Caddy path-matcher patterns covering both the
