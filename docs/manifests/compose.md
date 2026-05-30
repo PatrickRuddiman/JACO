@@ -169,6 +169,22 @@ jaco validate --jaco ./hello/jaco.yaml --compose ./hello/docker-compose.yml
 
 See [`jaco validate`](../cli/validate.md).
 
+## Legacy v1/v2 spellings
+
+A handful of v1/v2-era compose keys were dropped from the modern
+spec. JACO rejects them at parse time with a typed
+`legacy_compose_field` error naming the modern equivalent, so a
+migration from an older compose file produces an actionable diagnostic
+instead of an opaque "unknown field":
+
+| legacy key | modern equivalent |
+|---|---|
+| `log_driver` | `logging.driver` |
+| `log_opt` | `logging.options` |
+| `net` | `network_mode` |
+| `volume_driver` | no direct equivalent; use long-form `volumes:` with `driver:` |
+| `dockerfile` (top-level service key) | `build.dockerfile` |
+
 ## See also
 
 - [`jaco.yaml` schema](jaco-yaml.md)
