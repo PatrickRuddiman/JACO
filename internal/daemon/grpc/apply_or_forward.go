@@ -13,12 +13,6 @@ import (
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
-// raftLocalApplier is the subset of *raftnode.Node that
-// applyOrForwardCommand needs. Tests substitute a fake.
-type raftLocalApplier interface {
-	Apply(cmd []byte, timeoutHint int64) (uint64, error)
-}
-
 // leaderForwarderFn forwards an already-marshaled command to whichever
 // node currently holds the raft leadership, via its Internal.Submit RPC.
 // Returns the same wrapped error shape as the inline production path so
