@@ -78,6 +78,24 @@ func Render(in RuleInput) string {
 	sort.Strings(allCIDRs)
 
 	var b strings.Builder
+
+	// Atomic replace: `nft -f` APPENDS to an existing chain rather than
+	// replacing it, so re-applying a `table inet jaco { ... }` block on every
+	// reconcile stacks another full generation of forward rules onto the live
+	// chain. Earlier generations' `@jaco_pool ... drop` then sits AHEAD of a
+	// later-deployed stack's per-scope accept, shadowing it — which silently
+	// breaks cross-host traffic for every deployment except the first one
+	// applied (same-host traffic L2-switches within one bridge and never hits
+	// the forward hook, so it stays reachable, which is what made this subtle).
+	//
+	// `add table` creates the table if absent (no-op if present) so the
+	// following `delete table` can't fail on a cold host; `delete` then drops
+	// the entire prior generation. Because `nft -f` runs the whole file as one
+	// atomic transaction, the table is recreated from scratch on every apply —
+	// the chains never accumulate. SNAT/overlay exemptions live in Docker's own
+	// nat/raw tables (re-asserted each tick), so flushing inet jaco is safe.
+	fmt.Fprintln(&b, "add table inet jaco")
+	fmt.Fprintln(&b, "delete table inet jaco")
 	fmt.Fprintln(&b, "table inet jaco {")
 
 	// Named sets — one per (deployment, network), holding every host's /24.
