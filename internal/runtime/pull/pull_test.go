@@ -46,7 +46,7 @@ func (c *fakeClock) Delays() []time.Duration {
 
 // fakePuller serves up canned responses to ImagePull keyed by call index.
 type fakePuller struct {
-	calls    int64
+	calls     int64
 	responses []func() (io.ReadCloser, error)
 }
 
@@ -94,7 +94,7 @@ func TestPull_SucceedsAfterTransientFailures(t *testing.T) {
 	}}
 	clock := newFakeClock()
 
-	err := pull.Pull(context.Background(), d, "nginx:1.27", clock.After, nil)
+	err := pull.Pull(context.Background(), d, "nginx:1.27", nil, clock.After, nil)
 	if err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestPull_BackoffSequenceCapsAt3600AtAttempt13(t *testing.T) {
 		}
 	}()
 
-	err := pull.Pull(ctx, d, "img", clock.After, nil)
+	err := pull.Pull(ctx, d, "img", nil, clock.After, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -168,14 +168,14 @@ func TestPull_CancellationReturnsContextErr(t *testing.T) {
 		cancel()
 	}()
 
-	err := pull.Pull(ctx, d, "img", after, nil)
+	err := pull.Pull(ctx, d, "img", nil, after, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
 	}
 }
 
 func TestPull_EmptyRefRejected(t *testing.T) {
-	err := pull.Pull(context.Background(), &fakePuller{}, "", newFakeClock().After, nil)
+	err := pull.Pull(context.Background(), &fakePuller{}, "", nil, newFakeClock().After, nil)
 	if err == nil {
 		t.Fatalf("expected error on empty ref")
 	}
@@ -194,7 +194,7 @@ func TestPull_StateCallbackTransitions(t *testing.T) {
 		attempts = append(attempts, attempt)
 	}
 
-	if err := pull.Pull(context.Background(), d, "img", clock.After, cb); err != nil {
+	if err := pull.Pull(context.Background(), d, "img", nil, clock.After, cb); err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
 	// Expected sequence: pulling(1), failed(1), pulling(2), failed(2), pulling(3), done(3).

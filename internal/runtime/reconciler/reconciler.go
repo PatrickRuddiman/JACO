@@ -347,6 +347,7 @@ func (r *Reconciler) runStart(workCtx, watchCtx context.Context, rep *pb.Replica
 	containerID, err := lifecycle.StartWithPullState(workCtx, r.docker, spec, onPull, lifecycle.IsolationGate{
 		State:        r.state,
 		SelfHostname: r.hostname,
+		AuthResolver: r.authResolver(),
 	})
 	if err != nil {
 		return fmt.Errorf("lifecycle.Start: %w", err)
@@ -481,3 +482,27 @@ func (r *Reconciler) stopReplica(ctx context.Context, rep *pb.ReplicaDesired) {
 
 // Watcher exposes the per-replica health watcher (useful for tests).
 func (r *Reconciler) Watcher() *health.Watcher { return r.watcher }
+
+// authResolver builds the per-replica pull.AuthResolver closure that the
+// lifecycle threads into pull.Pull. The closure is created fresh per Start
+// (rather than cached on the Reconciler) so a credential rotation lands on
+// the next pull attempt — pull.Pull invokes the resolver once per attempt.
+//
+// The closure canonicalizes the image ref (Docker Hub variants → "docker.io"),
+// looks the credential up in state.RegistryCredentials, and base64-encodes
+// it via pull.BuildRegistryAuth. A missing credential returns ("", nil) so
+// the pull proceeds anonymously; a canonicalization error is returned so the
+// reconciler surfaces it on ReplicaObserved instead of looping silently.
+func (r *Reconciler) authResolver() pull.AuthResolver {
+	return func(ref string) (string, error) {
+		host, err := pull.CanonicalHost(ref)
+		if err != nil {
+			return "", err
+		}
+		cred, ok := r.state.RegistryCredentials.Get(host)
+		if !ok {
+			return "", nil
+		}
+		return pull.BuildRegistryAuth(cred)
+	}
+}

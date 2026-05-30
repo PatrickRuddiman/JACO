@@ -14,23 +14,24 @@ import (
 // blob, then writes it to the snapshot sink in Persist.
 func (f *FSM) Snapshot() (hraft.FSMSnapshot, error) {
 	snap := &pb.FSMSnapshot{
-		Cluster:          f.State.Cluster.Get(),
-		Nodes:            f.State.Nodes.List(),
-		Deployments:      f.State.Deployments.List(),
-		ReplicasDesired:  f.State.ReplicasDesired.List(),
-		ReplicasObserved: f.State.ReplicasObserved.List(),
-		Routes:           f.State.Routes.List(),
-		TcpRoutes:        f.State.TCPRoutes.List(),
-		Certs:            f.State.Certs.List(),
-		CertBlobs:        f.State.CertBlobs.List(),
-		ChallengeTokens:  f.State.ChallengeTokens.List(),
-		Tokens:           f.State.Tokens.List(),
-		JoinTokens:       f.State.JoinTokens.List(),
-		Subnets:          f.State.Subnets.List(),
-		RolloutPlans:     f.State.RolloutPlans.List(),
-		ReplicaCounters:  f.State.ReplicaCounters.List(),
-		RestartCounters:  f.State.RestartCounters.List(),
-		AuditEvents:      f.State.AuditEvents.List(),
+		Cluster:             f.State.Cluster.Get(),
+		Nodes:               f.State.Nodes.List(),
+		Deployments:         f.State.Deployments.List(),
+		ReplicasDesired:     f.State.ReplicasDesired.List(),
+		ReplicasObserved:    f.State.ReplicasObserved.List(),
+		Routes:              f.State.Routes.List(),
+		TcpRoutes:           f.State.TCPRoutes.List(),
+		Certs:               f.State.Certs.List(),
+		CertBlobs:           f.State.CertBlobs.List(),
+		ChallengeTokens:     f.State.ChallengeTokens.List(),
+		Tokens:              f.State.Tokens.List(),
+		JoinTokens:          f.State.JoinTokens.List(),
+		Subnets:             f.State.Subnets.List(),
+		RolloutPlans:        f.State.RolloutPlans.List(),
+		ReplicaCounters:     f.State.ReplicaCounters.List(),
+		RestartCounters:     f.State.RestartCounters.List(),
+		AuditEvents:         f.State.AuditEvents.List(),
+		RegistryCredentials: f.State.RegistryCredentials.List(),
 	}
 	data, err := proto.Marshal(snap)
 	if err != nil {
@@ -109,6 +110,9 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 	}
 	for _, v := range snap.GetAuditEvents() {
 		f.State.AuditEvents.Append(v)
+	}
+	for _, v := range snap.GetRegistryCredentials() {
+		f.State.RegistryCredentials.Apply(v, 0)
 	}
 	return nil
 }

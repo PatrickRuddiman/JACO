@@ -14,23 +14,24 @@ import (
 // The keyed sub-stores share the generic Store[T] machinery from store.go.
 // AuditEvents is append-only; Cluster is a singleton — see their own files.
 type State struct {
-	Nodes            *Store[*pb.Node]
-	Deployments      *Store[*pb.Deployment]
-	ReplicasDesired  *Store[*pb.ReplicaDesired]
-	ReplicasObserved *Store[*pb.ReplicaObserved]
-	Routes           *Store[*pb.Route]
-	TCPRoutes        *Store[*pb.TCPRoute]
-	Certs            *Store[*pb.Cert]
-	CertBlobs        *Store[*pb.CertBlob]
-	ChallengeTokens  *Store[*pb.ChallengeToken]
-	Tokens           *Store[*pb.Token]
-	JoinTokens       *Store[*pb.JoinToken]
-	Subnets          *Store[*pb.Subnet]
-	RolloutPlans     *Store[*pb.RolloutPlan]
-	ReplicaCounters  *Store[*pb.ReplicaCounter]
-	RestartCounters  *Store[*pb.RestartCounter]
-	AuditEvents      *AuditEvents
-	Cluster          *Cluster
+	Nodes               *Store[*pb.Node]
+	Deployments         *Store[*pb.Deployment]
+	ReplicasDesired     *Store[*pb.ReplicaDesired]
+	ReplicasObserved    *Store[*pb.ReplicaObserved]
+	Routes              *Store[*pb.Route]
+	TCPRoutes           *Store[*pb.TCPRoute]
+	Certs               *Store[*pb.Cert]
+	CertBlobs           *Store[*pb.CertBlob]
+	ChallengeTokens     *Store[*pb.ChallengeToken]
+	Tokens              *Store[*pb.Token]
+	JoinTokens          *Store[*pb.JoinToken]
+	Subnets             *Store[*pb.Subnet]
+	RolloutPlans        *Store[*pb.RolloutPlan]
+	ReplicaCounters     *Store[*pb.ReplicaCounter]
+	RestartCounters     *Store[*pb.RestartCounter]
+	RegistryCredentials *Store[*pb.RegistryCredential]
+	AuditEvents         *AuditEvents
+	Cluster             *Cluster
 
 	// Logger is the state-subsystem logger. State mutations are intentionally
 	// quiet by default (issue #38: "not noisy by default"); this is the
@@ -42,22 +43,23 @@ type State struct {
 // New constructs an empty State wired to a broker registry.
 func New(brokers *watch.Registry) *State {
 	return &State{
-		Nodes:            newNodes(brokers.Nodes),
-		Deployments:      newDeployments(brokers.Deployments),
-		ReplicasDesired:  newReplicasDesired(brokers.ReplicasDesired),
-		ReplicasObserved: newReplicasObserved(brokers.ReplicasObserved),
-		Routes:           newRoutes(brokers.Routes),
-		TCPRoutes:        newTCPRoutes(brokers.TCPRoutes),
-		Certs:            newCerts(brokers.Certs),
-		CertBlobs:        newCertBlobs(brokers.CertBlobs),
-		ChallengeTokens:  newChallengeTokens(brokers.ChallengeTokens),
-		Tokens:           newTokens(brokers.Tokens),
-		JoinTokens:       newJoinTokens(brokers.JoinTokens),
-		Subnets:          newSubnets(brokers.Subnets),
-		RolloutPlans:     newRolloutPlans(brokers.RolloutPlans),
-		ReplicaCounters:  newReplicaCounters(brokers.ReplicaCounters),
-		RestartCounters:  newRestartCounters(brokers.RestartCounters),
-		AuditEvents:      newAuditEvents(brokers.AuditEvents),
-		Cluster:          newCluster(brokers.Cluster),
+		Nodes:               newNodes(brokers.Nodes),
+		Deployments:         newDeployments(brokers.Deployments),
+		ReplicasDesired:     newReplicasDesired(brokers.ReplicasDesired),
+		ReplicasObserved:    newReplicasObserved(brokers.ReplicasObserved),
+		Routes:              newRoutes(brokers.Routes),
+		TCPRoutes:           newTCPRoutes(brokers.TCPRoutes),
+		Certs:               newCerts(brokers.Certs),
+		CertBlobs:           newCertBlobs(brokers.CertBlobs),
+		ChallengeTokens:     newChallengeTokens(brokers.ChallengeTokens),
+		Tokens:              newTokens(brokers.Tokens),
+		JoinTokens:          newJoinTokens(brokers.JoinTokens),
+		Subnets:             newSubnets(brokers.Subnets),
+		RolloutPlans:        newRolloutPlans(brokers.RolloutPlans),
+		ReplicaCounters:     newReplicaCounters(brokers.ReplicaCounters),
+		RestartCounters:     newRestartCounters(brokers.RestartCounters),
+		RegistryCredentials: newRegistryCredentials(brokers.RegistryCredentials),
+		AuditEvents:         newAuditEvents(brokers.AuditEvents),
+		Cluster:             newCluster(brokers.Cluster),
 	}
 }

@@ -263,6 +263,8 @@ const (
 	AuditEventType_AUDIT_EVENT_TYPE_UPGRADE_SUCCEEDED            AuditEventType = 15
 	AuditEventType_AUDIT_EVENT_TYPE_UPGRADE_FAILED               AuditEventType = 16
 	AuditEventType_AUDIT_EVENT_TYPE_ROLLOUT_INVARIANT_HOLD       AuditEventType = 17
+	AuditEventType_AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_UPSERT   AuditEventType = 18
+	AuditEventType_AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_REMOVE   AuditEventType = 19
 )
 
 // Enum value maps for AuditEventType.
@@ -286,6 +288,8 @@ var (
 		15: "AUDIT_EVENT_TYPE_UPGRADE_SUCCEEDED",
 		16: "AUDIT_EVENT_TYPE_UPGRADE_FAILED",
 		17: "AUDIT_EVENT_TYPE_ROLLOUT_INVARIANT_HOLD",
+		18: "AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_UPSERT",
+		19: "AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_REMOVE",
 	}
 	AuditEventType_value = map[string]int32{
 		"AUDIT_EVENT_TYPE_UNSPECIFIED":                  0,
@@ -306,6 +310,8 @@ var (
 		"AUDIT_EVENT_TYPE_UPGRADE_SUCCEEDED":            15,
 		"AUDIT_EVENT_TYPE_UPGRADE_FAILED":               16,
 		"AUDIT_EVENT_TYPE_ROLLOUT_INVARIANT_HOLD":       17,
+		"AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_UPSERT":   18,
+		"AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_REMOVE":   19,
 	}
 )
 
@@ -1859,6 +1865,84 @@ func (x *RestartCounter) GetLastAttemptAt() *timestamppb.Timestamp {
 	return nil
 }
 
+// RegistryCredential is the raft-replicated container-registry credential
+// consumed at image-pull time. Keyed by canonical registry host:
+//   - "docker.io"   for Docker Hub (normalized from index.docker.io / docker.io)
+//   - "ghcr.io"     for GitHub Container Registry
+//   - "registry.example.com:5000"  for self-hosted registries on non-443 ports
+//
+// secret is the password / API token / PAT, held opaquely. Encoded
+// at-rest in raft alongside the cluster CA private key under the same
+// filesystem-permission + WireGuard-transport trust posture; see
+// docs/concepts/auth-and-tokens.md. Every list/audit surface MUST redact it.
+type RegistryCredential struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Registry      string                 `protobuf:"bytes,1,opt,name=registry,proto3" json:"registry,omitempty"`
+	Username      string                 `protobuf:"bytes,2,opt,name=username,proto3" json:"username,omitempty"`
+	Secret        []byte                 `protobuf:"bytes,3,opt,name=secret,proto3" json:"secret,omitempty"`
+	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegistryCredential) Reset() {
+	*x = RegistryCredential{}
+	mi := &file_jaco_v1_entities_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegistryCredential) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegistryCredential) ProtoMessage() {}
+
+func (x *RegistryCredential) ProtoReflect() protoreflect.Message {
+	mi := &file_jaco_v1_entities_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegistryCredential.ProtoReflect.Descriptor instead.
+func (*RegistryCredential) Descriptor() ([]byte, []int) {
+	return file_jaco_v1_entities_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *RegistryCredential) GetRegistry() string {
+	if x != nil {
+		return x.Registry
+	}
+	return ""
+}
+
+func (x *RegistryCredential) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *RegistryCredential) GetSecret() []byte {
+	if x != nil {
+		return x.Secret
+	}
+	return nil
+}
+
+func (x *RegistryCredential) GetUpdatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return nil
+}
+
 var File_jaco_v1_entities_proto protoreflect.FileDescriptor
 
 const file_jaco_v1_entities_proto_rawDesc = "" +
@@ -2034,7 +2118,13 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\n" +
 	"replica_id\x18\x01 \x01(\tR\treplicaId\x121\n" +
 	"\x14consecutive_failures\x18\x02 \x01(\x05R\x13consecutiveFailures\x12B\n" +
-	"\x0flast_attempt_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\rlastAttemptAt*\xeb\x01\n" +
+	"\x0flast_attempt_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\rlastAttemptAt\"\x9f\x01\n" +
+	"\x12RegistryCredential\x12\x1a\n" +
+	"\bregistry\x18\x01 \x01(\tR\bregistry\x12\x1a\n" +
+	"\busername\x18\x02 \x01(\tR\busername\x12\x16\n" +
+	"\x06secret\x18\x03 \x01(\fR\x06secret\x129\n" +
+	"\n" +
+	"updated_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt*\xeb\x01\n" +
 	"\fReplicaState\x12\x1d\n" +
 	"\x19REPLICA_STATE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15REPLICA_STATE_PENDING\x10\x01\x12\x19\n" +
@@ -2059,7 +2149,7 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\x10DeploymentStatus\x12!\n" +
 	"\x1dDEPLOYMENT_STATUS_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19DEPLOYMENT_STATUS_PENDING\x10\x01\x12\x1c\n" +
-	"\x18DEPLOYMENT_STATUS_ACTIVE\x10\x02*\xb1\x05\n" +
+	"\x18DEPLOYMENT_STATUS_ACTIVE\x10\x02*\x93\x06\n" +
 	"\x0eAuditEventType\x12 \n" +
 	"\x1cAUDIT_EVENT_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16AUDIT_EVENT_TYPE_APPLY\x10\x01\x12\x1b\n" +
@@ -2079,7 +2169,9 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\"AUDIT_EVENT_TYPE_RESTORE_COMPLETED\x10\x0e\x12&\n" +
 	"\"AUDIT_EVENT_TYPE_UPGRADE_SUCCEEDED\x10\x0f\x12#\n" +
 	"\x1fAUDIT_EVENT_TYPE_UPGRADE_FAILED\x10\x10\x12+\n" +
-	"'AUDIT_EVENT_TYPE_ROLLOUT_INVARIANT_HOLD\x10\x11B:Z8github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1;jacov1b\x06proto3"
+	"'AUDIT_EVENT_TYPE_ROLLOUT_INVARIANT_HOLD\x10\x11\x12/\n" +
+	"+AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_UPSERT\x10\x12\x12/\n" +
+	"+AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_REMOVE\x10\x13B:Z8github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1;jacov1b\x06proto3"
 
 var (
 	file_jaco_v1_entities_proto_rawDescOnce sync.Once
@@ -2094,7 +2186,7 @@ func file_jaco_v1_entities_proto_rawDescGZIP() []byte {
 }
 
 var file_jaco_v1_entities_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_jaco_v1_entities_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_jaco_v1_entities_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
 var file_jaco_v1_entities_proto_goTypes = []any{
 	(ReplicaState)(0),              // 0: jaco.v1.ReplicaState
 	(RolloutState)(0),              // 1: jaco.v1.RolloutState
@@ -2120,49 +2212,51 @@ var file_jaco_v1_entities_proto_goTypes = []any{
 	(*RolloutPlan)(nil),            // 21: jaco.v1.RolloutPlan
 	(*ReplicaCounter)(nil),         // 22: jaco.v1.ReplicaCounter
 	(*RestartCounter)(nil),         // 23: jaco.v1.RestartCounter
-	nil,                            // 24: jaco.v1.Node.StatusDetailsEntry
-	nil,                            // 25: jaco.v1.Deployment.StatusDetailsEntry
-	nil,                            // 26: jaco.v1.ReplicaObserved.DetailsEntry
-	nil,                            // 27: jaco.v1.AuditEvent.PayloadEntry
-	(*timestamppb.Timestamp)(nil),  // 28: google.protobuf.Timestamp
+	(*RegistryCredential)(nil),     // 24: jaco.v1.RegistryCredential
+	nil,                            // 25: jaco.v1.Node.StatusDetailsEntry
+	nil,                            // 26: jaco.v1.Deployment.StatusDetailsEntry
+	nil,                            // 27: jaco.v1.ReplicaObserved.DetailsEntry
+	nil,                            // 28: jaco.v1.AuditEvent.PayloadEntry
+	(*timestamppb.Timestamp)(nil),  // 29: google.protobuf.Timestamp
 }
 var file_jaco_v1_entities_proto_depIdxs = []int32{
-	28, // 0: jaco.v1.ClusterMeta.created_at:type_name -> google.protobuf.Timestamp
+	29, // 0: jaco.v1.ClusterMeta.created_at:type_name -> google.protobuf.Timestamp
 	2,  // 1: jaco.v1.Node.status:type_name -> jaco.v1.NodeStatus
-	24, // 2: jaco.v1.Node.status_details:type_name -> jaco.v1.Node.StatusDetailsEntry
-	28, // 3: jaco.v1.Node.joined_at:type_name -> google.protobuf.Timestamp
+	25, // 2: jaco.v1.Node.status_details:type_name -> jaco.v1.Node.StatusDetailsEntry
+	29, // 3: jaco.v1.Node.joined_at:type_name -> google.protobuf.Timestamp
 	5,  // 4: jaco.v1.ServiceSpec.placement:type_name -> jaco.v1.ServiceSpec.PlacementMode
 	3,  // 5: jaco.v1.Deployment.status:type_name -> jaco.v1.DeploymentStatus
-	25, // 6: jaco.v1.Deployment.status_details:type_name -> jaco.v1.Deployment.StatusDetailsEntry
+	26, // 6: jaco.v1.Deployment.status_details:type_name -> jaco.v1.Deployment.StatusDetailsEntry
 	8,  // 7: jaco.v1.Deployment.services:type_name -> jaco.v1.ServiceSpec
-	28, // 8: jaco.v1.Deployment.updated_at:type_name -> google.protobuf.Timestamp
+	29, // 8: jaco.v1.Deployment.updated_at:type_name -> google.protobuf.Timestamp
 	0,  // 9: jaco.v1.ReplicaObserved.state:type_name -> jaco.v1.ReplicaState
-	26, // 10: jaco.v1.ReplicaObserved.details:type_name -> jaco.v1.ReplicaObserved.DetailsEntry
-	28, // 11: jaco.v1.ReplicaObserved.started_at:type_name -> google.protobuf.Timestamp
-	28, // 12: jaco.v1.ReplicaObserved.last_health_at:type_name -> google.protobuf.Timestamp
-	28, // 13: jaco.v1.Cert.not_before:type_name -> google.protobuf.Timestamp
-	28, // 14: jaco.v1.Cert.not_after:type_name -> google.protobuf.Timestamp
-	28, // 15: jaco.v1.Cert.lock_until:type_name -> google.protobuf.Timestamp
-	28, // 16: jaco.v1.ChallengeToken.expires_at:type_name -> google.protobuf.Timestamp
-	28, // 17: jaco.v1.CertBlob.updated_at:type_name -> google.protobuf.Timestamp
-	28, // 18: jaco.v1.Token.issued_at:type_name -> google.protobuf.Timestamp
-	28, // 19: jaco.v1.Token.revoked_at:type_name -> google.protobuf.Timestamp
-	28, // 20: jaco.v1.JoinToken.issued_at:type_name -> google.protobuf.Timestamp
-	28, // 21: jaco.v1.JoinToken.expires_at:type_name -> google.protobuf.Timestamp
-	28, // 22: jaco.v1.JoinToken.consumed_at:type_name -> google.protobuf.Timestamp
+	27, // 10: jaco.v1.ReplicaObserved.details:type_name -> jaco.v1.ReplicaObserved.DetailsEntry
+	29, // 11: jaco.v1.ReplicaObserved.started_at:type_name -> google.protobuf.Timestamp
+	29, // 12: jaco.v1.ReplicaObserved.last_health_at:type_name -> google.protobuf.Timestamp
+	29, // 13: jaco.v1.Cert.not_before:type_name -> google.protobuf.Timestamp
+	29, // 14: jaco.v1.Cert.not_after:type_name -> google.protobuf.Timestamp
+	29, // 15: jaco.v1.Cert.lock_until:type_name -> google.protobuf.Timestamp
+	29, // 16: jaco.v1.ChallengeToken.expires_at:type_name -> google.protobuf.Timestamp
+	29, // 17: jaco.v1.CertBlob.updated_at:type_name -> google.protobuf.Timestamp
+	29, // 18: jaco.v1.Token.issued_at:type_name -> google.protobuf.Timestamp
+	29, // 19: jaco.v1.Token.revoked_at:type_name -> google.protobuf.Timestamp
+	29, // 20: jaco.v1.JoinToken.issued_at:type_name -> google.protobuf.Timestamp
+	29, // 21: jaco.v1.JoinToken.expires_at:type_name -> google.protobuf.Timestamp
+	29, // 22: jaco.v1.JoinToken.consumed_at:type_name -> google.protobuf.Timestamp
 	4,  // 23: jaco.v1.AuditEvent.type:type_name -> jaco.v1.AuditEventType
-	28, // 24: jaco.v1.AuditEvent.ts:type_name -> google.protobuf.Timestamp
-	27, // 25: jaco.v1.AuditEvent.payload:type_name -> jaco.v1.AuditEvent.PayloadEntry
-	28, // 26: jaco.v1.Subnet.allocated_at:type_name -> google.protobuf.Timestamp
+	29, // 24: jaco.v1.AuditEvent.ts:type_name -> google.protobuf.Timestamp
+	28, // 25: jaco.v1.AuditEvent.payload:type_name -> jaco.v1.AuditEvent.PayloadEntry
+	29, // 26: jaco.v1.Subnet.allocated_at:type_name -> google.protobuf.Timestamp
 	1,  // 27: jaco.v1.RolloutPlan.state:type_name -> jaco.v1.RolloutState
-	28, // 28: jaco.v1.RolloutPlan.started_at:type_name -> google.protobuf.Timestamp
-	28, // 29: jaco.v1.RolloutPlan.last_step_at:type_name -> google.protobuf.Timestamp
-	28, // 30: jaco.v1.RestartCounter.last_attempt_at:type_name -> google.protobuf.Timestamp
-	31, // [31:31] is the sub-list for method output_type
-	31, // [31:31] is the sub-list for method input_type
-	31, // [31:31] is the sub-list for extension type_name
-	31, // [31:31] is the sub-list for extension extendee
-	0,  // [0:31] is the sub-list for field type_name
+	29, // 28: jaco.v1.RolloutPlan.started_at:type_name -> google.protobuf.Timestamp
+	29, // 29: jaco.v1.RolloutPlan.last_step_at:type_name -> google.protobuf.Timestamp
+	29, // 30: jaco.v1.RestartCounter.last_attempt_at:type_name -> google.protobuf.Timestamp
+	29, // 31: jaco.v1.RegistryCredential.updated_at:type_name -> google.protobuf.Timestamp
+	32, // [32:32] is the sub-list for method output_type
+	32, // [32:32] is the sub-list for method input_type
+	32, // [32:32] is the sub-list for extension type_name
+	32, // [32:32] is the sub-list for extension extendee
+	0,  // [0:32] is the sub-list for field type_name
 }
 
 func init() { file_jaco_v1_entities_proto_init() }
@@ -2176,7 +2270,7 @@ func file_jaco_v1_entities_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_jaco_v1_entities_proto_rawDesc), len(file_jaco_v1_entities_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   22,
+			NumMessages:   23,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

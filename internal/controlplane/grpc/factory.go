@@ -37,3 +37,10 @@ func NewAuditServer(st *state.State, br *watch.Registry) pb.AuditServer {
 func NewWatchServer(st *state.State, br *watch.Registry) pb.WatchServer {
 	return &watchServer{state: st, brokers: br}
 }
+
+// NewRegistryCredentialsServer returns a pb.RegistryCredentialsServer backed
+// by the given state + raft. Symmetric with NewTokensServer — Add/Remove gate
+// on the leader; List reads local state.
+func NewRegistryCredentialsServer(st *state.State, r *raftnode.Node) pb.RegistryCredentialsServer {
+	return &registryCredentialsServer{state: st, raft: r}
+}

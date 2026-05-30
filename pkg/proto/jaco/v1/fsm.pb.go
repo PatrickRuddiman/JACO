@@ -45,10 +45,15 @@ type FSMSnapshot struct {
 	// node that installs a raft snapshot picks up already-issued certs without
 	// re-issuance against the ACME CA (issue #41). Without this the snapshot
 	// path silently dropped every cert blob.
-	CertBlobs     []*CertBlob `protobuf:"bytes,16,rep,name=cert_blobs,json=certBlobs,proto3" json:"cert_blobs,omitempty"`
-	TcpRoutes     []*TCPRoute `protobuf:"bytes,17,rep,name=tcp_routes,json=tcpRoutes,proto3" json:"tcp_routes,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	CertBlobs []*CertBlob `protobuf:"bytes,16,rep,name=cert_blobs,json=certBlobs,proto3" json:"cert_blobs,omitempty"`
+	TcpRoutes []*TCPRoute `protobuf:"bytes,17,rep,name=tcp_routes,json=tcpRoutes,proto3" json:"tcp_routes,omitempty"`
+	// registry_credentials carries replicated container-registry auth so a
+	// fresh node can authenticate image pulls without operator re-entry
+	// (issue #101). See entities.proto RegistryCredential for the at-rest
+	// posture and docs/concepts/auth-and-tokens.md for the threat model.
+	RegistryCredentials []*RegistryCredential `protobuf:"bytes,18,rep,name=registry_credentials,json=registryCredentials,proto3" json:"registry_credentials,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *FSMSnapshot) Reset() {
@@ -200,11 +205,18 @@ func (x *FSMSnapshot) GetTcpRoutes() []*TCPRoute {
 	return nil
 }
 
+func (x *FSMSnapshot) GetRegistryCredentials() []*RegistryCredential {
+	if x != nil {
+		return x.RegistryCredentials
+	}
+	return nil
+}
+
 var File_jaco_v1_fsm_proto protoreflect.FileDescriptor
 
 const file_jaco_v1_fsm_proto_rawDesc = "" +
 	"\n" +
-	"\x11jaco/v1/fsm.proto\x12\ajaco.v1\x1a\x16jaco/v1/entities.proto\"\x9c\a\n" +
+	"\x11jaco/v1/fsm.proto\x12\ajaco.v1\x1a\x16jaco/v1/entities.proto\"\xec\a\n" +
 	"\vFSMSnapshot\x12.\n" +
 	"\acluster\x18\x01 \x01(\v2\x14.jaco.v1.ClusterMetaR\acluster\x12#\n" +
 	"\x05nodes\x18\x02 \x03(\v2\r.jaco.v1.NodeR\x05nodes\x125\n" +
@@ -226,7 +238,8 @@ const file_jaco_v1_fsm_proto_rawDesc = "" +
 	"\n" +
 	"cert_blobs\x18\x10 \x03(\v2\x11.jaco.v1.CertBlobR\tcertBlobs\x120\n" +
 	"\n" +
-	"tcp_routes\x18\x11 \x03(\v2\x11.jaco.v1.TCPRouteR\ttcpRoutesB:Z8github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1;jacov1b\x06proto3"
+	"tcp_routes\x18\x11 \x03(\v2\x11.jaco.v1.TCPRouteR\ttcpRoutes\x12N\n" +
+	"\x14registry_credentials\x18\x12 \x03(\v2\x1b.jaco.v1.RegistryCredentialR\x13registryCredentialsB:Z8github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1;jacov1b\x06proto3"
 
 var (
 	file_jaco_v1_fsm_proto_rawDescOnce sync.Once
@@ -242,24 +255,25 @@ func file_jaco_v1_fsm_proto_rawDescGZIP() []byte {
 
 var file_jaco_v1_fsm_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
 var file_jaco_v1_fsm_proto_goTypes = []any{
-	(*FSMSnapshot)(nil),     // 0: jaco.v1.FSMSnapshot
-	(*ClusterMeta)(nil),     // 1: jaco.v1.ClusterMeta
-	(*Node)(nil),            // 2: jaco.v1.Node
-	(*Deployment)(nil),      // 3: jaco.v1.Deployment
-	(*ReplicaDesired)(nil),  // 4: jaco.v1.ReplicaDesired
-	(*ReplicaObserved)(nil), // 5: jaco.v1.ReplicaObserved
-	(*Route)(nil),           // 6: jaco.v1.Route
-	(*Cert)(nil),            // 7: jaco.v1.Cert
-	(*ChallengeToken)(nil),  // 8: jaco.v1.ChallengeToken
-	(*Token)(nil),           // 9: jaco.v1.Token
-	(*JoinToken)(nil),       // 10: jaco.v1.JoinToken
-	(*Subnet)(nil),          // 11: jaco.v1.Subnet
-	(*RolloutPlan)(nil),     // 12: jaco.v1.RolloutPlan
-	(*ReplicaCounter)(nil),  // 13: jaco.v1.ReplicaCounter
-	(*RestartCounter)(nil),  // 14: jaco.v1.RestartCounter
-	(*AuditEvent)(nil),      // 15: jaco.v1.AuditEvent
-	(*CertBlob)(nil),        // 16: jaco.v1.CertBlob
-	(*TCPRoute)(nil),        // 17: jaco.v1.TCPRoute
+	(*FSMSnapshot)(nil),        // 0: jaco.v1.FSMSnapshot
+	(*ClusterMeta)(nil),        // 1: jaco.v1.ClusterMeta
+	(*Node)(nil),               // 2: jaco.v1.Node
+	(*Deployment)(nil),         // 3: jaco.v1.Deployment
+	(*ReplicaDesired)(nil),     // 4: jaco.v1.ReplicaDesired
+	(*ReplicaObserved)(nil),    // 5: jaco.v1.ReplicaObserved
+	(*Route)(nil),              // 6: jaco.v1.Route
+	(*Cert)(nil),               // 7: jaco.v1.Cert
+	(*ChallengeToken)(nil),     // 8: jaco.v1.ChallengeToken
+	(*Token)(nil),              // 9: jaco.v1.Token
+	(*JoinToken)(nil),          // 10: jaco.v1.JoinToken
+	(*Subnet)(nil),             // 11: jaco.v1.Subnet
+	(*RolloutPlan)(nil),        // 12: jaco.v1.RolloutPlan
+	(*ReplicaCounter)(nil),     // 13: jaco.v1.ReplicaCounter
+	(*RestartCounter)(nil),     // 14: jaco.v1.RestartCounter
+	(*AuditEvent)(nil),         // 15: jaco.v1.AuditEvent
+	(*CertBlob)(nil),           // 16: jaco.v1.CertBlob
+	(*TCPRoute)(nil),           // 17: jaco.v1.TCPRoute
+	(*RegistryCredential)(nil), // 18: jaco.v1.RegistryCredential
 }
 var file_jaco_v1_fsm_proto_depIdxs = []int32{
 	1,  // 0: jaco.v1.FSMSnapshot.cluster:type_name -> jaco.v1.ClusterMeta
@@ -279,11 +293,12 @@ var file_jaco_v1_fsm_proto_depIdxs = []int32{
 	15, // 14: jaco.v1.FSMSnapshot.audit_events:type_name -> jaco.v1.AuditEvent
 	16, // 15: jaco.v1.FSMSnapshot.cert_blobs:type_name -> jaco.v1.CertBlob
 	17, // 16: jaco.v1.FSMSnapshot.tcp_routes:type_name -> jaco.v1.TCPRoute
-	17, // [17:17] is the sub-list for method output_type
-	17, // [17:17] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	18, // 17: jaco.v1.FSMSnapshot.registry_credentials:type_name -> jaco.v1.RegistryCredential
+	18, // [18:18] is the sub-list for method output_type
+	18, // [18:18] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_jaco_v1_fsm_proto_init() }
