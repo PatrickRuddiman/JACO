@@ -1,6 +1,7 @@
 package compose_test
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -403,6 +404,177 @@ func TestContainerName_UsesReplicaID(t *testing.T) {
 	if got != "jaco_sample-web-3" {
 		t.Errorf("ContainerName = %q, want jaco_sample-web-3", got)
 	}
+}
+
+// envFileFixtureDir is the per-fixture root for env_file resolution tests.
+// Co-locating the compose file and its .env companions in a subdirectory
+// keeps testdata/ scannable.
+const envFileFixtureDir = "testdata/env_file"
+
+// TestResolveEnvFiles_MergesAndStripsEnvFile is the happy-path golden:
+// fixture has two env_files plus an explicit environment block; the resolved
+// YAML must (a) drop env_file:, (b) carry every merged key, (c) respect both
+// later-file-wins and environment-wins precedence rules.
+func TestResolveEnvFiles_MergesAndStripsEnvFile(t *testing.T) {
+	body := loadFixture(t, "env_file/compose.yml")
+	out, err := compose.ResolveEnvFiles(body, envFileFixtureDir)
+	if err != nil {
+		t.Fatalf("ResolveEnvFiles: %v", err)
+	}
+	if strings.Contains(string(out), "env_file") {
+		t.Fatalf("resolved YAML still mentions env_file:\n%s", out)
+	}
+
+	project, err := compose.LoadBytes(out, "resolved.yml")
+	if err != nil {
+		t.Fatalf("LoadBytes resolved: %v", err)
+	}
+	web, ok := lookupService(project, "web")
+	if !ok {
+		t.Fatalf("web service missing after resolve")
+	}
+	want := map[string]string{
+		"FROM_FILE_ONE": "alpha",       // only in .env.web
+		"FROM_FILE_TWO": "beta",        // only in .env.web2
+		"SHARED_KEY":    "from_second", // later env_file wins over earlier
+		"WIN_OVER_FILE": "from_env",    // explicit environment wins over env_file
+		"EXISTING":      "stays",       // explicit environment passes through
+	}
+	got := envToMap(t, web.Environment)
+	if len(got) != len(want) {
+		t.Errorf("environment cardinality = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("env[%s] = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+// TestResolveEnvFiles_RoundTripsToContainerSpec is the wire-shape check:
+// after ResolveEnvFiles → LoadBytes → ToContainerSpec, the merged variables
+// land in ContainerSpec.Env as deterministic, sorted KEY=value strings.
+func TestResolveEnvFiles_RoundTripsToContainerSpec(t *testing.T) {
+	body := loadFixture(t, "env_file/compose.yml")
+	out, err := compose.ResolveEnvFiles(body, envFileFixtureDir)
+	if err != nil {
+		t.Fatalf("ResolveEnvFiles: %v", err)
+	}
+	project, err := compose.LoadBytes(out, "resolved.yml")
+	if err != nil {
+		t.Fatalf("LoadBytes resolved: %v", err)
+	}
+	web, ok := lookupService(project, "web")
+	if !ok {
+		t.Fatalf("web service missing after resolve")
+	}
+	spec := compose.ToContainerSpec(web, compose.SpecOptions{
+		Deployment: "sample", Service: "web", ReplicaID: "sample-web-0",
+	})
+	wantEnv := []string{
+		"EXISTING=stays",
+		"FROM_FILE_ONE=alpha",
+		"FROM_FILE_TWO=beta",
+		"SHARED_KEY=from_second",
+		"WIN_OVER_FILE=from_env",
+	}
+	if !equalStrings(spec.Env, wantEnv) {
+		t.Errorf("ContainerSpec.Env = %v, want %v", spec.Env, wantEnv)
+	}
+}
+
+// TestResolveEnvFiles_NoEnvFileIsByteIdentical asserts the fast path: when
+// no service declares env_file, ResolveEnvFiles returns the input bytes
+// unchanged so the daemon receives exactly what the operator wrote (relevant
+// for any future content-hash audit of the YAML envelope).
+func TestResolveEnvFiles_NoEnvFileIsByteIdentical(t *testing.T) {
+	body := []byte("services:\n  web:\n    image: nginx:1.27\n")
+	out, err := compose.ResolveEnvFiles(body, t.TempDir())
+	if err != nil {
+		t.Fatalf("ResolveEnvFiles: %v", err)
+	}
+	if !bytes.Equal(out, body) {
+		t.Errorf("expected byte-identical passthrough; got\n%s", out)
+	}
+}
+
+// TestResolveEnvFiles_MissingFileSurfacesError — a required env_file that
+// doesn't exist must turn into an error at resolve time (CLI). The exact
+// message is compose-go's; we only assert the wrapper prefix that pins this
+// failure to the resolution step rather than to a general compose load.
+func TestResolveEnvFiles_MissingFileSurfacesError(t *testing.T) {
+	body := []byte(`services:
+  web:
+    image: nginx:1.27
+    env_file:
+      - .nonexistent.env
+`)
+	_, err := compose.ResolveEnvFiles(body, t.TempDir())
+	if err == nil {
+		t.Fatalf("expected error for missing env_file; got nil")
+	}
+	if !strings.Contains(err.Error(), "resolve env_file") {
+		t.Errorf("err = %v, want wrap prefix 'resolve env_file'", err)
+	}
+}
+
+// TestLoadBytes_RejectsUnresolvedEnvFile is the daemon-side guard: bytes
+// that still carry env_file: must fail with a stable, typed error code
+// (env_file_unresolved). Old client → new daemon must be loud, not silent.
+func TestLoadBytes_RejectsUnresolvedEnvFile(t *testing.T) {
+	body := []byte(`services:
+  web:
+    image: nginx:1.27
+    env_file:
+      - .env.web
+`)
+	_, err := compose.LoadBytes(body, "deploy-compose.yml")
+	if err == nil {
+		t.Fatalf("LoadBytes accepted unresolved env_file")
+	}
+	var ve *compose.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("err = %v (%T), want *compose.ValidationError", err, err)
+	}
+	if ve.Code != "env_file_unresolved" {
+		t.Errorf("Code = %q, want env_file_unresolved", ve.Code)
+	}
+	if ve.Details["service"] != "web" {
+		t.Errorf("Details[service] = %q, want web", ve.Details["service"])
+	}
+	if !strings.Contains(ve.Message, "client-side before apply") {
+		t.Errorf("Message = %q, want hint about client-side resolution", ve.Message)
+	}
+}
+
+// TestLoadBytes_AcceptsResolvedYAML proves the daemon-side check is gated on
+// env_file:, not on the env contents themselves — a YAML that carried env_file
+// originally is accepted as soon as ResolveEnvFiles has stripped it.
+func TestLoadBytes_AcceptsResolvedYAML(t *testing.T) {
+	body := loadFixture(t, "env_file/compose.yml")
+	out, err := compose.ResolveEnvFiles(body, envFileFixtureDir)
+	if err != nil {
+		t.Fatalf("ResolveEnvFiles: %v", err)
+	}
+	if _, err := compose.LoadBytes(out, "resolved.yml"); err != nil {
+		t.Errorf("LoadBytes(resolved) = %v, want nil", err)
+	}
+}
+
+// envToMap flattens a compose-go env mapping (values may be *string) into a
+// plain map for assertion. nil values render as "" — matching what the
+// runtime would set when an env entry has no value.
+func envToMap(t *testing.T, env types.MappingWithEquals) map[string]string {
+	t.Helper()
+	out := make(map[string]string, len(env))
+	for k, v := range env {
+		if v == nil {
+			out[k] = ""
+		} else {
+			out[k] = *v
+		}
+	}
+	return out
 }
 
 // --- helpers -----------------------------------------------------------------
