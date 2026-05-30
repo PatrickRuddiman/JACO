@@ -114,12 +114,22 @@ func StartWithPullState(ctx context.Context, d dockerx.Docker, spec compose.Cont
 	// haven't cached the image error with "No such image" on Create
 	// otherwise. pull.Pull retries with exponential backoff so transient
 	// registry failures don't abort the reconcile.
-	var resolver pull.AuthResolver
-	if len(gate) > 0 {
-		resolver = gate[0].AuthResolver
-	}
-	if err := pull.Pull(ctx, d, spec.Image, resolver, nil, onPull); err != nil {
-		return "", fmt.Errorf("ImagePull %s: %w", spec.Image, err)
+	//
+	// Issue #120: `pull_policy: never` short-circuits the pull path so
+	// air-gapped deployments can rely on side-loaded images. Any other
+	// policy (always / missing / build / unset) flows through the
+	// existing pull. When the image is absent under `never`, the
+	// subsequent ContainerCreate surfaces docker's typed
+	// "No such image" error untouched — exactly the signal the operator
+	// needs to know which replica's image was forgotten.
+	if pull.ShouldPull(pull.Policy(spec.PullPolicy)) {
+		var resolver pull.AuthResolver
+		if len(gate) > 0 {
+			resolver = gate[0].AuthResolver
+		}
+		if err := pull.Pull(ctx, d, spec.Image, resolver, nil, onPull); err != nil {
+			return "", fmt.Errorf("ImagePull %s: %w", spec.Image, err)
+		}
 	}
 
 	cfg, hostCfg, netCfg := buildConfig(spec)

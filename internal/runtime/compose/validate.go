@@ -102,6 +102,26 @@ var allowedServiceFields = map[string]bool{
 	"userns_mode":   true,
 	"cgroup":        true,
 	"cgroup_parent": true,
+
+	// Host device bind-mounts (issue #115). Maps to HostConfig.Devices.
+	// Grants host-kernel surface; operator policy is a separate decision
+	// (docs/concepts/isolation.md mentions the future restriction path).
+	"devices": true,
+
+	// Modern GPU request syntax (issue #116). Maps to HostConfig.DeviceRequests.
+	// Both `gpus: all` and the long-form list are honored. Requires the
+	// operator-managed nvidia-container-runtime (or AMD equivalent) on each
+	// node; JACO does not install it.
+	"gpus": true,
+
+	// Per-deployment pull strategy override (issue #120). Validator
+	// restricts to a closed enum; the runtime treats `always` and
+	// `missing` identically (both call ImagePull, which manifest-checks
+	// against the registry — cheap when the image is already present),
+	// and `never` skips the pull entirely. `build` is accepted but
+	// treated as `missing` (JACO never builds). `daily`/`weekly` are
+	// rejected.
+	"pull_policy": true,
 }
 
 // Validate walks the raw compose YAML and rejects any service-level field
@@ -162,6 +182,11 @@ func Validate(rawYAML []byte) error {
 				return verr
 			}
 		}
+		if pp, ok := svc["pull_policy"]; ok {
+			if verr := checkPullPolicy(svcName, pp); verr != nil {
+				return verr
+			}
+		}
 	}
 	return nil
 }
@@ -196,6 +221,43 @@ func checkReservedPorts(svcName string, portsField any) *ValidationError {
 					},
 				}
 			}
+		}
+	}
+	return nil
+}
+
+// allowedPullPolicies is the closed enum JACO accepts for `pull_policy:`.
+// `always` and `missing` both map to the existing "call ImagePull" path
+// (the daemon manifest-checks; cheap when up-to-date). `never` is the only
+// value that materially changes runtime behavior. `build` is accepted but
+// the runtime treats it as `missing` because JACO never builds — see
+// internal/runtime/pull/policy.go. `daily` and `weekly` from the compose
+// spec are out of scope (issue #120).
+var allowedPullPolicies = map[string]bool{
+	"always":  true,
+	"missing": true,
+	"never":   true,
+	"build":   true,
+}
+
+// checkPullPolicy enforces the closed enum. Anything else (including the
+// spec's `daily`/`weekly` cadences) is rejected with a typed error so the
+// operator sees a clear refusal instead of silent fallback to the default.
+func checkPullPolicy(svcName string, v any) *ValidationError {
+	s, ok := v.(string)
+	if !ok {
+		return &ValidationError{
+			Code:    "validation_failed",
+			Message: fmt.Sprintf("service %q: pull_policy must be a string", svcName),
+			Details: map[string]string{"service": svcName, "field": "pull_policy"},
+		}
+	}
+	if !allowedPullPolicies[s] {
+		return &ValidationError{
+			Code: "validation_failed",
+			Message: fmt.Sprintf("service %q: pull_policy %q unsupported (allowed: always, missing, never, build)",
+				svcName, s),
+			Details: map[string]string{"service": svcName, "field": "pull_policy", "value": s},
 		}
 	}
 	return nil
