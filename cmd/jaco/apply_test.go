@@ -153,7 +153,7 @@ func TestReadManifestPair_AutoDiscoversComposeNextToJacoYaml(t *testing.T) {
 	if err := writeFile(composePath, "services:\n  web: { image: nginx }\n"); err != nil {
 		t.Fatal(err)
 	}
-	jacoBytes, composeBytes, err := readManifestPair(jacoPath, "")
+	jacoBytes, composeBytes, gotPath, err := readManifestPair(jacoPath, "")
 	if err != nil {
 		t.Fatalf("readManifestPair: %v", err)
 	}
@@ -162,6 +162,9 @@ func TestReadManifestPair_AutoDiscoversComposeNextToJacoYaml(t *testing.T) {
 	}
 	if !strings.Contains(string(composeBytes), "image: nginx") {
 		t.Errorf("compose bytes wrong: %s", composeBytes)
+	}
+	if gotPath != composePath {
+		t.Errorf("readManifestPair path = %q, want %q", gotPath, composePath)
 	}
 }
 
@@ -175,7 +178,7 @@ func TestReadManifestPair_ExplicitOverrideTakesPrecedence(t *testing.T) {
 	if err := writeFile(composePath, "alt-marker\n"); err != nil {
 		t.Fatal(err)
 	}
-	_, composeBytes, err := readManifestPair(jacoPath, composePath)
+	_, composeBytes, _, err := readManifestPair(jacoPath, composePath)
 	if err != nil {
 		t.Fatalf("readManifestPair: %v", err)
 	}
@@ -190,7 +193,7 @@ func TestReadManifestPair_ErrorsWhenNoComposeFound(t *testing.T) {
 	if err := writeFile(jacoPath, "deployment: x\n"); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := readManifestPair(jacoPath, "")
+	_, _, _, err := readManifestPair(jacoPath, "")
 	if err == nil {
 		t.Fatalf("expected error when compose missing")
 	}
@@ -201,12 +204,70 @@ func TestReadManifestPair_ErrorsWhenNoComposeFound(t *testing.T) {
 
 func TestApply_SampleFixturesAreValidPair(t *testing.T) {
 	// Confirms the fixture files parse + are reachable via the auto-discovery.
-	jacoBytes, composeBytes, err := readManifestPair(filepath.Join("testdata", "sample.jaco.yaml"), "")
+	jacoBytes, composeBytes, _, err := readManifestPair(filepath.Join("testdata", "sample.jaco.yaml"), "")
 	if err != nil {
 		t.Fatalf("readManifestPair: %v", err)
 	}
 	if len(jacoBytes) == 0 || len(composeBytes) == 0 {
 		t.Fatalf("empty fixture content")
+	}
+}
+
+// TestResolveComposeEnvFiles_StripsEnvFile is the CLI-side glue test: a
+// compose file with env_file: must come out the other side carrying the
+// merged values under environment: and zero env_file: keys, ready to ship
+// to the daemon.
+func TestResolveComposeEnvFiles_StripsEnvFile(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	if err := writeFile(envPath, "FROM_FILE=present\n"); err != nil {
+		t.Fatal(err)
+	}
+	composePath := filepath.Join(dir, "compose.yml")
+	body := "services:\n  web:\n    image: nginx:1.27\n    env_file:\n      - .env\n"
+	if err := writeFile(composePath, body); err != nil {
+		t.Fatal(err)
+	}
+	out, err := resolveComposeEnvFiles([]byte(body), composePath)
+	if err != nil {
+		t.Fatalf("resolveComposeEnvFiles: %v", err)
+	}
+	s := string(out)
+	if strings.Contains(s, "env_file") {
+		t.Errorf("resolved YAML still references env_file:\n%s", s)
+	}
+	if !strings.Contains(s, "FROM_FILE") {
+		t.Errorf("resolved YAML missing merged variable:\n%s", s)
+	}
+}
+
+// TestResolveComposeEnvFiles_StdinRejectsEnvFile — when the CLI has no file
+// path for the compose document (the future stdin path), env_file is
+// rejected outright with a message that points the operator at --compose.
+func TestResolveComposeEnvFiles_StdinRejectsEnvFile(t *testing.T) {
+	body := []byte("services:\n  web:\n    image: nginx:1.27\n    env_file:\n      - .env\n")
+	_, err := resolveComposeEnvFiles(body, "")
+	if err == nil {
+		t.Fatalf("expected error when env_file is used without a compose path")
+	}
+	if !strings.Contains(err.Error(), "--compose") {
+		t.Errorf("err = %v, want hint about --compose", err)
+	}
+	if !strings.Contains(err.Error(), `"web"`) {
+		t.Errorf("err = %v, want offending service name", err)
+	}
+}
+
+// TestResolveComposeEnvFiles_StdinNoEnvFilePassesThrough — bytes without
+// env_file: are accepted regardless of source (path or stdin).
+func TestResolveComposeEnvFiles_StdinNoEnvFilePassesThrough(t *testing.T) {
+	body := []byte("services:\n  web:\n    image: nginx:1.27\n")
+	out, err := resolveComposeEnvFiles(body, "")
+	if err != nil {
+		t.Fatalf("resolveComposeEnvFiles: %v", err)
+	}
+	if string(out) != string(body) {
+		t.Errorf("expected byte-identical passthrough; got %q", out)
 	}
 }
 
