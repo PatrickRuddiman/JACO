@@ -16,9 +16,15 @@ import (
 // file that defines the actual container shapes. Schema is intentionally
 // minimal — the moving parts (replicas, placement, ingress routes) live
 // here; the heavy compose semantics stay in the compose file.
+//
+// `services:` is optional and may be partial — issue #99. Compose is the
+// source of truth for the container set; entries under `services:` are
+// per-service *overrides* (replicas, placement, networks, host pinning).
+// Compose services with no JACO entry get a single-replica spread default
+// at apply time via MergeServiceDefaults.
 type JacoYAML struct {
 	Deployment string            `yaml:"deployment"`
-	Services   []JacoServiceDecl `yaml:"services"`
+	Services   []JacoServiceDecl `yaml:"services,omitempty"`
 	Routes     []JacoRouteDecl   `yaml:"routes"`
 	// ACME is the deployment-level ACME switch. "off" disables automatic TLS
 	// for every route in this deployment unless a route sets its own
@@ -29,16 +35,21 @@ type JacoYAML struct {
 	ACME string `yaml:"acme"`
 }
 
-// JacoServiceDecl is one service entry. Name must equal the corresponding
-// service key in the adjacent compose file. Replicas is the desired count;
-// Placement picks the scheduler mode (spread / pack / hosts) and Hosts pins
-// targets when Placement=hosts.
+// JacoServiceDecl is one service-override entry. Name must equal a service
+// key in the adjacent compose file. Every field except Name is optional;
+// any field that is left unset falls back to the compose default (Replicas
+// from `deploy.replicas` if present else 1; Networks from the compose
+// service's `networks:` map).
+//
+// Replicas is a pointer so the wire form distinguishes "unset" (use compose
+// default) from an explicit zero ("run zero replicas; keep routes/certs
+// provisioned" — see docs/manifests/jaco-yaml.md).
 type JacoServiceDecl struct {
 	Name      string   `yaml:"name"`
-	Replicas  int      `yaml:"replicas"`
-	Placement string   `yaml:"placement"`
-	Hosts     []string `yaml:"hosts"`
-	Networks  []string `yaml:"networks"`
+	Replicas  *int     `yaml:"replicas,omitempty"`
+	Placement string   `yaml:"placement,omitempty"`
+	Hosts     []string `yaml:"hosts,omitempty"`
+	Networks  []string `yaml:"networks,omitempty"`
 }
 
 // JacoRouteDecl is one Caddy-served HTTP(S) route.
@@ -51,9 +62,10 @@ type JacoRouteDecl struct {
 	StripPath bool   `yaml:"strip_path,omitempty"` // strip the matched path prefix before proxying
 }
 
-// ParseJacoYAML unmarshals the manifest and applies defaults (Placement spread,
-// TLS auto). Returns a typed JacoYAML; validation against the compose file
-// happens in validateJacoYAML.
+// ParseJacoYAML unmarshals the manifest and applies defaults (Placement spread
+// on entries that *do* set Replicas/Hosts/Networks but omit Placement, TLS
+// auto unless deployment-level acme:off). Returns a typed JacoYAML;
+// validation against the compose file happens in validateJacoYAML.
 //
 // It rejects input that contains compose_service keys: the field was removed
 // pre-1.0 and name is now the single source of truth. Yaml unmarshal failures
@@ -116,9 +128,17 @@ func ValidateJacoYAMLBytes(data []byte) error {
 	return nil
 }
 
-// validateJacoYAML checks intrinsic invariants (non-empty deployment, services
-// have valid placement, routes reference declared services). Returns the same
-// shape as compose's ValidationError so callers can wrap uniformly.
+// validateJacoYAML checks intrinsic invariants that do not require the
+// compose project: a deployment name, valid enum values on every present
+// service entry, no duplicate service names, and intrinsic route shape
+// (non-empty domain, valid port/tls, no (domain,path) duplicates, no mixed
+// TLS modes on one domain).
+//
+// `services:` may be empty or absent — compose is the source of truth for
+// the container set, so a slim jaco.yaml that declares only routes is valid
+// (issue #99). Per-route service references can't be validated here because
+// they may legitimately point to compose-only services; that check runs at
+// Apply time in deploy.go against the merged service set.
 func validateJacoYAML(j *JacoYAML) (code string, message string, ok bool) {
 	if j.Deployment == "" {
 		return "validation_failed", "deployment name is required", false
@@ -128,15 +148,12 @@ func validateJacoYAML(j *JacoYAML) (code string, message string, ok bool) {
 	default:
 		return "validation_failed", fmt.Sprintf("acme %q is unknown (want on|off)", j.ACME), false
 	}
-	if len(j.Services) == 0 {
-		return "validation_failed", "at least one service is required", false
-	}
 	serviceNames := map[string]bool{}
 	for _, s := range j.Services {
 		if s.Name == "" {
 			return "validation_failed", "service name is required", false
 		}
-		if s.Replicas < 0 {
+		if s.Replicas != nil && *s.Replicas < 0 {
 			return "validation_failed", fmt.Sprintf("service %q replicas must be >= 0", s.Name), false
 		}
 		switch s.Placement {
@@ -145,8 +162,14 @@ func validateJacoYAML(j *JacoYAML) (code string, message string, ok bool) {
 			return "validation_failed", fmt.Sprintf("service %q has unknown placement %q (want spread|pack|hosts|global)", s.Name, s.Placement), false
 		}
 		// `placement: global` (daemonset) runs one replica per ready node;
-		// `replicas:` is ignored (not rejected). The scheduler logs the
-		// override at reconcile time; validation has no warning channel.
+		// an explicit `replicas:` is meaningless under global and a likely
+		// authoring mistake — reject it up front so users notice instead of
+		// silently watching the scheduler ignore their count (issue #99).
+		// `replicas:` omitted under global is fine: the scheduler derives
+		// the count from the ready-node set.
+		if s.Placement == "global" && s.Replicas != nil {
+			return "validation_failed", fmt.Sprintf("service %q uses placement=global; remove replicas (global runs one replica per ready node)", s.Name), false
+		}
 		if s.Placement == "hosts" && len(s.Hosts) == 0 {
 			return "validation_failed", fmt.Sprintf("service %q uses placement=hosts but hosts is empty", s.Name), false
 		}
@@ -169,8 +192,8 @@ func validateJacoYAML(j *JacoYAML) (code string, message string, ok bool) {
 		if r.Domain == "" {
 			return "validation_failed", "route domain is required", false
 		}
-		if !serviceNames[r.Service] {
-			return "validation_failed", fmt.Sprintf("route %q references unknown service %q", r.Domain, r.Service), false
+		if r.Service == "" {
+			return "validation_failed", fmt.Sprintf("route %q service is required", r.Domain), false
 		}
 		if r.Port <= 0 {
 			return "validation_failed", fmt.Sprintf("route %q port must be > 0", r.Domain), false
@@ -193,20 +216,105 @@ func validateJacoYAML(j *JacoYAML) (code string, message string, ok bool) {
 	return "", "", true
 }
 
-// toServiceSpecs converts JacoServiceDecls into pb.ServiceSpecs. Caller has
-// already validated.
-func toServiceSpecs(decls []JacoServiceDecl) []*pb.ServiceSpec {
-	out := make([]*pb.ServiceSpec, 0, len(decls))
-	for _, d := range decls {
-		out = append(out, &pb.ServiceSpec{
-			Name:      d.Name,
-			Replicas:  int32(d.Replicas),
-			Placement: placementToProto(d.Placement),
-			Hosts:     append([]string(nil), d.Hosts...),
-			Networks:  append([]string(nil), d.Networks...),
-		})
+// MergeServiceDefaults produces the final ServiceSpec set by walking the
+// compose project (which is the authoritative container set) and folding
+// in the per-service overrides declared under jaco.yaml's `services:`
+// (issue #99). Output is sorted by service name for deterministic raft
+// commands.
+//
+// Merge rules per service:
+//
+//   - Replicas: JACO `Replicas` wins when set (including 0). Otherwise
+//     compose `deploy.replicas` when set. Otherwise 1.
+//   - Placement: JACO `Placement` wins when set. Otherwise "spread".
+//   - Hosts: copied from JACO when set; not derivable from compose.
+//   - Networks: JACO `Networks` wins when set (non-empty list). Otherwise
+//     the alphabetically-sorted keys of compose's per-service `networks:`
+//     map. An empty result means "the implicit per-deployment _default"
+//     and is interpreted that way by the runtime (see
+//     runtime_attach.BridgesForService).
+//
+// Caller must already have validated both files: every JACO entry's Name
+// must resolve to a compose service. Returns an error if a JACO entry
+// references a service that isn't in the compose project (defense in depth;
+// the deploy.go cross-check fires first).
+func MergeServiceDefaults(jaco *JacoYAML, project *composetypes.Project) ([]*pb.ServiceSpec, error) {
+	if project == nil {
+		return nil, fmt.Errorf("MergeServiceDefaults: compose project is nil")
 	}
-	return out
+	overrides := make(map[string]*JacoServiceDecl, len(jaco.Services))
+	for i := range jaco.Services {
+		s := &jaco.Services[i]
+		overrides[s.Name] = s
+	}
+	for name := range overrides {
+		if _, ok := project.Services[name]; !ok {
+			return nil, fmt.Errorf("MergeServiceDefaults: jaco service %q has no matching compose service", name)
+		}
+	}
+
+	names := make([]string, 0, len(project.Services))
+	for name := range project.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	out := make([]*pb.ServiceSpec, 0, len(names))
+	for _, name := range names {
+		svc := project.Services[name]
+		override := overrides[name]
+		spec := mergeOne(svc, override)
+		out = append(out, spec)
+	}
+	return out, nil
+}
+
+// mergeOne resolves the final ServiceSpec for a single compose service by
+// applying override (which may be nil, meaning compose-only) on top of the
+// compose defaults.
+func mergeOne(svc composetypes.ServiceConfig, override *JacoServiceDecl) *pb.ServiceSpec {
+	spec := &pb.ServiceSpec{Name: svc.Name}
+
+	// Replicas: JACO override wins when set; else compose deploy.replicas;
+	// else 1. Validation has already guaranteed non-negative.
+	switch {
+	case override != nil && override.Replicas != nil:
+		spec.Replicas = int32(*override.Replicas)
+	case svc.Deploy != nil && svc.Deploy.Replicas != nil:
+		spec.Replicas = int32(*svc.Deploy.Replicas)
+	default:
+		spec.Replicas = 1
+	}
+
+	// Placement: only JACO supplies this. Default spread for compose-only
+	// services.
+	placement := "spread"
+	if override != nil && override.Placement != "" {
+		placement = override.Placement
+	}
+	spec.Placement = placementToProto(placement)
+
+	// Hosts: only meaningful under placement=hosts; nil otherwise.
+	if override != nil && len(override.Hosts) > 0 {
+		spec.Hosts = append([]string(nil), override.Hosts...)
+	}
+
+	// Networks: JACO override wins when set; else the alphabetically-sorted
+	// keys of compose's per-service networks map. Empty result means
+	// "implicit _default" and is handled downstream.
+	switch {
+	case override != nil && len(override.Networks) > 0:
+		spec.Networks = append([]string(nil), override.Networks...)
+	case len(svc.Networks) > 0:
+		nets := make([]string, 0, len(svc.Networks))
+		for n := range svc.Networks {
+			nets = append(nets, n)
+		}
+		sort.Strings(nets)
+		spec.Networks = nets
+	}
+
+	return spec
 }
 
 // toTCPRoutes derives the cluster-wide TCP ingress listeners from a compose
