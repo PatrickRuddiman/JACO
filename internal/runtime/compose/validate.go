@@ -32,6 +32,13 @@ var allowedServiceFields = map[string]bool{
 	"read_only":   true,
 	"networks":    true,
 
+	// `logging` is honored: JACO projects the driver + options onto the
+	// container's log configuration (issue #94). Only the modern `logging:`
+	// block is supported — compose-go's loader rejects the legacy top-level
+	// `log_driver`/`log_opt` keys outright, so allowing them here would let
+	// Validate pass a manifest that Load then refuses.
+	"logging": true,
+
 	// `restart` is parsed but explicitly ignored by JACO (the scheduler owns
 	// restart decisions). Allowing it here means compose authors can keep
 	// `restart: unless-stopped` for documentation without tripping
