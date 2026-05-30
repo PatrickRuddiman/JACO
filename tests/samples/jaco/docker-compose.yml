@@ -102,6 +102,15 @@ services:
       LISTEN_PORT: "8080"
       NODE_ENV: production
     depends_on: [redis-primary, redis-replica, pg-primary, pg-replica]
+    # logging: (issue #94) — JACO projects the driver + options (incl. the `tag`
+    # template) onto the container's docker log config. Verify on a node with
+    # `docker inspect <api-ctr> -f '{{json .HostConfig.LogConfig}}'`.
+    logging:
+      driver: json-file
+      options:
+        tag: "jaco/{{.Name}}"
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 5s
@@ -113,6 +122,23 @@ services:
         limits:
           cpus: "0.50"
           memory: 256M
+    networks: [stack]
+
+  # Per-node agent — demonstrates placement: global (one replica per node, see
+  # jaco.yaml). Bind-mounts the host docker log dir read-only (the per-node
+  # observability-agent pattern) and stays up tailing it. A plain busybox keeps
+  # the demo about JACO's global placement, not about tuning a real collector's
+  # image/rollout behavior.
+  node-agent:
+    image: busybox:1.36
+    command: ["sh", "-c", "echo node-agent up on $$(hostname); exec tail -f /dev/null"]
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
     networks: [stack]
 
   web:
