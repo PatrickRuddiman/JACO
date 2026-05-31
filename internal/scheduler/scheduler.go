@@ -283,25 +283,55 @@ func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, no
 	}
 
 	// 2. Adds + updates.
+	//
+	// Stickiness rule: once a replica exists, its Host is owned by the
+	// replica record (which the rebalancer is allowed to mutate). The
+	// scheduler MUST NOT recompute a fresh host every pass and overwrite
+	// it — that would race the rebalancer (writes Host=jaco-3) against
+	// the next reconcile (recomputes Host=jaco-2 from placement.Hash) and
+	// reduce both to oscillation, leaving the runtime reconciler
+	// chasing a Host that flips back before it can act.
+	//
+	// We re-place an existing replica only when its current host is no
+	// longer admissible: not in the eligible set (drained, unready,
+	// removed), or — under HOSTS placement — no longer in the pinned
+	// host list. In those cases the freshly-computed d.host wins.
+	eligibleSet := make(map[string]struct{}, len(eligible))
+	for _, h := range eligible {
+		eligibleSet[h] = struct{}{}
+	}
+	var hostsSet map[string]struct{}
+	if svc.GetPlacement() == pb.ServiceSpec_PLACEMENT_MODE_HOSTS {
+		hostsSet = make(map[string]struct{}, len(svc.GetHosts()))
+		for _, h := range svc.GetHosts() {
+			hostsSet[h] = struct{}{}
+		}
+	}
 	desiredIDs := map[string]bool{}
 	for _, d := range desired {
 		desiredIDs[d.id] = true
+		host := d.host
+		if cur, ok := currentByID[d.id]; ok {
+			if stickyHost := stickyExistingHost(cur, svc, eligibleSet, hostsSet); stickyHost != "" {
+				host = stickyHost
+			}
+		}
 		rep := &pb.ReplicaDesired{
 			Id:         d.id,
 			Deployment: dep.GetName(),
 			Service:    svc.GetName(),
 			Index:      d.index,
-			Host:       d.host,
+			Host:       host,
 			Image:      image,
 		}
 		if cur, ok := currentByID[d.id]; ok {
-			if cur.GetHost() == d.host && cur.GetImage() == image {
+			if cur.GetHost() == host && cur.GetImage() == image {
 				continue // already matches desired
 			}
 			// Image-only change while rolling — gate by either the
 			// rollout-driven CurrentStep (when rollouts != nil) or the
 			// iter-29 one-at-a-time fallback (when nil).
-			if rolling && cur.GetHost() == d.host && cur.GetImage() != image {
+			if rolling && cur.GetHost() == host && cur.GetImage() != image {
 				if rolloutStep >= 0 {
 					if d.index != rolloutStep {
 						continue
@@ -415,6 +445,40 @@ func isRollingImageChange(currentByID map[string]*pb.ReplicaDesired, desiredImag
 		}
 	}
 	return true
+}
+
+// stickyExistingHost returns the host an already-placed replica should
+// continue to live on, or "" when the current host is no longer
+// admissible and the reconcile loop must re-place from scratch.
+//
+// Admissibility:
+//   - The host MUST still be in the eligible set (READY, matches any
+//     constraints/selectors).
+//   - Under HOSTS placement, the host MUST also be in spec.Hosts —
+//     otherwise the spec was edited to drop a previously-pinned host
+//     and the replica must move into the new pinned set.
+//   - SPREAD / PACK / UNSPECIFIED: any eligible host counts (these
+//     modes never owned the choice of an *individual* replica's host
+//     beyond initial placement; once placed, the rebalancer arbitrates).
+//   - GLOBAL never reaches this helper (its replica ids are
+//     host-keyed, so the diff lives in the id set, not in Host fields).
+func stickyExistingHost(cur *pb.ReplicaDesired, svc *pb.ServiceSpec, eligibleSet, hostsSet map[string]struct{}) string {
+	if cur == nil {
+		return ""
+	}
+	h := cur.GetHost()
+	if h == "" {
+		return ""
+	}
+	if _, ok := eligibleSet[h]; !ok {
+		return ""
+	}
+	if svc.GetPlacement() == pb.ServiceSpec_PLACEMENT_MODE_HOSTS {
+		if _, ok := hostsSet[h]; !ok {
+			return ""
+		}
+	}
+	return h
 }
 
 // deploymentStatusPending builds a Command that flips a Deployment into
