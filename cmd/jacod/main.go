@@ -24,7 +24,6 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/daemon/netdetect"
 	"github.com/PatrickRuddiman/jaco/internal/logging"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
-	"github.com/PatrickRuddiman/jaco/internal/scheduler/rebalance"
 )
 
 var version = "dev"
@@ -112,7 +111,6 @@ func run(ctx context.Context, configPath string, root *slog.Logger) error {
 		ACMECA:               cfg.ACMECAOrDefault(),
 		ACMEEnabled:          cfg.ACMEEnabledOrDefault(),
 		ACMESkipStaging:      cfg.ACMESkipStaging,
-		Rebalance:            rebalanceOptionFromConfig(cfg),
 	})
 	if err != nil {
 		return fmt.Errorf("gRPC server: %w", err)
@@ -276,47 +274,3 @@ func defaultConfigPath() string {
 	return "/etc/jaco/jacod.yaml"
 }
 
-// rebalanceOptionFromConfig converts the jacod.yaml
-// scheduler.rebalance block into the rebalance.Config that
-// dgrpc.Options.Rebalance expects, layering operator-supplied values
-// over the rebalance package's DefaultConfig. Returns nil when the
-// operator omitted the block entirely — that leaves the rebalancer
-// subsystem unstarted (no dry-run, no audit events). Setting the
-// block to `{}` is the explicit dry-run opt-in: all defaults, enabled
-// = false.
-func rebalanceOptionFromConfig(cfg config.Config) *rebalance.Config {
-	if cfg.Scheduler == nil || cfg.Scheduler.Rebalance == nil {
-		return nil
-	}
-	src := cfg.Scheduler.Rebalance
-	out := rebalance.DefaultConfig()
-	out.Enabled = src.Enabled
-	if src.TriggerThreshold != 0 {
-		out.TriggerThreshold = src.TriggerThreshold
-	}
-	if src.ImbalanceGap != 0 {
-		out.ImbalanceGap = src.ImbalanceGap
-	}
-	if src.ReliefFloor != 0 {
-		out.ReliefFloor = src.ReliefFloor
-	}
-	if src.DstCap != 0 {
-		out.DstCap = src.DstCap
-	}
-	if src.CooldownReplica != 0 {
-		out.CooldownReplica = src.CooldownReplica
-	}
-	if src.CooldownNode != 0 {
-		out.CooldownNode = src.CooldownNode
-	}
-	if src.CycleInterval != 0 {
-		out.CycleInterval = src.CycleInterval
-	}
-	if src.ConsecutiveCycles != 0 {
-		out.ConsecutiveCycles = src.ConsecutiveCycles
-	}
-	if src.ReplicaSoftCap != 0 {
-		out.ReplicaSoftCap = src.ReplicaSoftCap
-	}
-	return &out
-}

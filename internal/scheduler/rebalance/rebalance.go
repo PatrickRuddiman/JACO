@@ -26,11 +26,11 @@ type Applier func(cmd []byte) error
 // scheduler.Scheduler.Run), so it's safe to spawn unconditionally —
 // followers tick the loop but commit nothing.
 type Rebalancer struct {
-	state    *state.State
-	leader   scheduler.LeaderStatus
-	apply    Applier
-	source   PressureSource
-	cfg      Config
+	state  *state.State
+	leader scheduler.LeaderStatus
+	apply  Applier
+	source PressureSource
+	cfg    Config
 
 	// Logger is the rebalance subsystem logger. nil → discard. Set by
 	// the daemon after construction; tests leave it nil.
@@ -41,10 +41,9 @@ type Rebalancer struct {
 	clock func() time.Time
 
 	mu sync.Mutex
-	// pressureEWMA maps host → smoothed composite (5-minute window
-	// per ADR §"Signals"). Built incrementally; leader-local, so a
-	// failover loses it and the new leader rebuilds it from the next
-	// few cycles.
+	// pressureEWMA maps host → smoothed composite (5-minute window).
+	// Built incrementally; leader-local, so a failover loses it and
+	// the new leader rebuilds it from the next few cycles.
 	pressureEWMA map[string]*EWMA
 	// consecutiveOverThreshold counts how many cycles in a row a host
 	// has stayed at or above cfg.TriggerThreshold. Reset to 0 when
@@ -64,7 +63,7 @@ type Rebalancer struct {
 // New constructs a Rebalancer. apply MUST be the same raft.Apply
 // closure the scheduler uses (moves are committed as
 // ReplicaDesiredUpsert + AuditAppend just like any other placement
-// change). source is the pressure-data dependency; pass StubSource
+// change). source is the pressure-data dependency; pass NoopSource
 // from the daemon while real cgroup collection is a follow-up.
 func New(s *state.State, leader scheduler.LeaderStatus, apply Applier, source PressureSource, cfg Config) *Rebalancer {
 	return &Rebalancer{
@@ -99,16 +98,14 @@ func (r *Rebalancer) log() *slog.Logger {
 
 // Run drives the rebalance loop. Blocks until ctx is cancelled.
 // Cadence is cfg.CycleInterval (default 30s); on every tick Cycle is
-// invoked. The loop runs whether cfg.Enabled is true or false — when
-// disabled, candidate moves are emitted as DRY_RUN audit events but
-// never committed.
+// invoked. The loop runs on every node — Cycle is a no-op on
+// followers, so spawning unconditionally is safe.
 func (r *Rebalancer) Run(ctx context.Context) error {
 	interval := r.cfg.CycleInterval
 	if interval <= 0 {
 		interval = DefaultConfig().CycleInterval
 	}
 	r.log().Info("rebalance loop started",
-		"enabled", r.cfg.Enabled,
 		"cycle_interval", interval,
 		"trigger_threshold", r.cfg.TriggerThreshold,
 		"imbalance_gap", r.cfg.ImbalanceGap)
@@ -144,8 +141,7 @@ func (r *Rebalancer) Run(ctx context.Context) error {
 //     SKIPPED audit event per filtered candidate.
 //  5. Score the surviving candidates; pick the highest.
 //  6. Commit at most ONE move this cycle: ReplicaDesiredUpsert with
-//     the new Host, plus an audit event (MOVED when cfg.Enabled,
-//     DRY_RUN otherwise).
+//     the new Host, plus an AUDIT_EVENT_TYPE_REBALANCE_MOVED event.
 func (r *Rebalancer) Cycle(_ context.Context) {
 	if !r.leader.IsLeader() {
 		return
@@ -163,12 +159,6 @@ func (r *Rebalancer) Cycle(_ context.Context) {
 		snap, ok := r.source.NodePressure(n.GetHostname())
 		if !ok {
 			continue
-		}
-		// Fill in the cluster-wide cap if the source left it unset
-		// — this lets the source omit the constant and have the
-		// rebalancer's config supply the default.
-		if snap.ReplicaSoftCap == 0 {
-			snap.ReplicaSoftCap = r.cfg.ReplicaSoftCap
 		}
 		snapshotByHost[n.GetHostname()] = snap
 		e, ok := r.pressureEWMA[n.GetHostname()]
@@ -211,9 +201,7 @@ func (r *Rebalancer) Cycle(_ context.Context) {
 		return // cluster busy but uniform; no relief target
 	}
 
-	// 3. Build the quorum view + per-host replica counts (used for
-	//    the SPREAD anti-affinity check).
-	q := r.buildQuorum()
+	// 3. Build per-host replica counts (used for SPREAD anti-affinity).
 	perHostCount := r.buildPerHostCount()
 
 	// 4. Enumerate candidates: every ReplicaDesired on hotHost.
@@ -260,7 +248,6 @@ func (r *Rebalancer) Cycle(_ context.Context) {
 				DstPressure:     snapshotByHost[dst],
 				PerHostCount:    perHostCount[hostServiceKey{dst, rep.GetDeployment(), rep.GetService()}],
 				DstResourceFits: dstResourceFits(snapshotByHost[dst], fp),
-				Priority:        1, // ServiceSpec has no priority field today; default to 1.
 			}
 			dom := Dominant(c.SrcPressure)
 
@@ -272,7 +259,7 @@ func (r *Rebalancer) Cycle(_ context.Context) {
 				}
 			}
 
-			if reason := HardFilter(c, q); reason != SkipNone {
+			if reason := HardFilter(c); reason != SkipNone {
 				r.skip(c, reason, 0, 0, dom)
 				continue
 			}
@@ -289,8 +276,7 @@ func (r *Rebalancer) Cycle(_ context.Context) {
 				continue
 			}
 
-			score := Score(c, r.cfg)
-			survived = append(survived, scored{c, score})
+			survived = append(survived, scored{c, Score(c)})
 		}
 	}
 
@@ -311,40 +297,26 @@ func (r *Rebalancer) Cycle(_ context.Context) {
 	dom := Dominant(winner.c.SrcPressure)
 	relief := Composite(winner.c.SrcPressure) - Composite(mustPostSrc(winner.c))
 
-	// 6. Commit (or dry-run-audit) the chosen move.
-	if r.cfg.Enabled {
-		if err := r.commitMove(winner.c); err != nil {
-			r.log().Warn("rebalance commit failed",
-				"replica_id", winner.c.Replica.GetId(),
-				"src", winner.c.Src, "dst", winner.c.Dst, "error", err)
-			return
-		}
-		r.lastReplicaMoveAt[winner.c.Replica.GetId()] = now
-		r.lastNodeMoveAt[winner.c.Dst] = now
-		if auditErr := r.emitAudit(
-			pb.AuditEventType_AUDIT_EVENT_TYPE_REBALANCE_MOVED,
-			auditPayload(winner.c, winner.score, relief, dom, false, SkipNone),
-		); auditErr != nil {
-			r.log().Warn("rebalance audit emit failed",
-				"event", "rebalance_moved", "replica_id", winner.c.Replica.GetId(), "error", auditErr)
-		}
-		r.log().Info("rebalance move committed",
+	// 6. Commit the chosen move.
+	if err := r.commitMove(winner.c); err != nil {
+		r.log().Warn("rebalance commit failed",
 			"replica_id", winner.c.Replica.GetId(),
-			"src", winner.c.Src, "dst", winner.c.Dst,
-			"score", winner.score, "relief", relief, "dominant", dom.String())
-	} else {
-		if auditErr := r.emitAudit(
-			pb.AuditEventType_AUDIT_EVENT_TYPE_REBALANCE_DRY_RUN,
-			auditPayload(winner.c, winner.score, relief, dom, true, SkipNone),
-		); auditErr != nil {
-			r.log().Warn("rebalance audit emit failed",
-				"event", "rebalance_dry_run", "replica_id", winner.c.Replica.GetId(), "error", auditErr)
-		}
-		r.log().Info("rebalance dry-run decision",
-			"replica_id", winner.c.Replica.GetId(),
-			"src", winner.c.Src, "dst", winner.c.Dst,
-			"score", winner.score, "relief", relief, "dominant", dom.String())
+			"src", winner.c.Src, "dst", winner.c.Dst, "error", err)
+		return
 	}
+	r.lastReplicaMoveAt[winner.c.Replica.GetId()] = now
+	r.lastNodeMoveAt[winner.c.Dst] = now
+	if auditErr := r.emitAudit(
+		pb.AuditEventType_AUDIT_EVENT_TYPE_REBALANCE_MOVED,
+		auditPayload(winner.c, winner.score, relief, dom, SkipNone),
+	); auditErr != nil {
+		r.log().Warn("rebalance audit emit failed",
+			"event", "rebalance_moved", "replica_id", winner.c.Replica.GetId(), "error", auditErr)
+	}
+	r.log().Info("rebalance move committed",
+		"replica_id", winner.c.Replica.GetId(),
+		"src", winner.c.Src, "dst", winner.c.Dst,
+		"score", winner.score, "relief", relief, "dominant", dom.String())
 }
 
 // commitMove raft-Applies a ReplicaDesiredUpsert with the candidate's
@@ -374,39 +346,12 @@ func (r *Rebalancer) commitMove(c *MoveCandidate) error {
 func (r *Rebalancer) skip(c *MoveCandidate, reason SkipReason, score, relief float64, dom Dimension) {
 	if auditErr := r.emitAudit(
 		pb.AuditEventType_AUDIT_EVENT_TYPE_REBALANCE_SKIPPED,
-		auditPayload(c, score, relief, dom, !r.cfg.Enabled, reason),
+		auditPayload(c, score, relief, dom, reason),
 	); auditErr != nil {
 		r.log().Warn("rebalance audit emit failed",
 			"event", "rebalance_skipped", "replica_id", c.Replica.GetId(),
 			"reason", string(reason), "error", auditErr)
 	}
-}
-
-// buildQuorum walks ReplicasObserved + Deployments once to fill a
-// Quorum view. Same-service replicas in REPLICA_STATE_RUNNING become
-// members; service specs supply the declared replica count.
-func (r *Rebalancer) buildQuorum() *Quorum {
-	q := NewQuorum()
-	for _, d := range r.state.Deployments.List() {
-		for _, svc := range d.GetServices() {
-			q.AddSpec(d.GetName(), svc.GetName(), int(svc.GetReplicas()))
-		}
-	}
-	for _, obs := range r.state.ReplicasObserved.List() {
-		if obs.GetState() != pb.ReplicaState_REPLICA_STATE_RUNNING {
-			continue
-		}
-		// Recover (deployment, service) from the corresponding desired entry.
-		// The id schema for non-GLOBAL replicas is "<dep>-<svc>-<idx>"; for
-		// GLOBAL it's "<dep>-<svc>-<host>". Resolving via ReplicasDesired is
-		// the safe, parser-free path.
-		desired, ok := r.state.ReplicasDesired.Get(obs.GetId())
-		if !ok {
-			continue
-		}
-		q.AddRunning(desired.GetId(), desired.GetDeployment(), desired.GetService())
-	}
-	return q
 }
 
 // hostServiceKey indexes "how many replicas of (dep, svc) live on
@@ -445,13 +390,12 @@ func (r *Rebalancer) serviceSpec(rep *pb.ReplicaDesired) *pb.ServiceSpec {
 	return nil
 }
 
-// dstResourceFits is the v0 placeholder for "Dst can host the
-// replica without violating resource limits". CPU + Memory must
-// stay ≤ 1.0 after the move. Real per-replica limit modelling
-// (memory_limit, cpus) lives in the runtime; this conservative
-// utilisation check is enough to keep the rebalancer from piling
-// onto a node that's already 95% memory just because its CPU is
-// idle.
+// dstResourceFits is the "Dst can host the replica without violating
+// resource limits" check. CPU + Memory must stay ≤ 1.0 after the
+// move. Real per-replica limit modelling (memory_limit, cpus) lives
+// in the runtime; this conservative utilisation check is enough to
+// keep the rebalancer from piling onto a node that's already 95%
+// memory just because its CPU is idle.
 func dstResourceFits(dst Snapshot, fp Footprint) bool {
 	if dst.CPU+fp.CPU > 1.0 {
 		return false

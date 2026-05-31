@@ -116,11 +116,6 @@ type Server struct {
 	// acmeSkipStaging mirrors jacod.yaml.acme_skip_staging.
 	acmeSkipStaging bool
 
-	// rebalanceCfg is the operator-supplied pressure-rebalancer
-	// config plumbed from jacod.yaml.scheduler.rebalance (issue #92).
-	// nil → no rebalancer goroutine spawned in startSubsystems.
-	rebalanceCfg *rebalance.Config
-
 	// tlsDyn holds the live server cert for the cross-host TCP listener.
 	// Nil when no TCP listener was opened. RebindTLS swaps the cert in
 	// after OpenRaft persists the cluster-CA-signed node cert.
@@ -205,14 +200,6 @@ type Options struct {
 	// already non-prod.
 	ACMESkipStaging bool
 
-	// Rebalance is the operator-supplied pressure-rebalancer config
-	// (issue #92, ADR 0002). nil → the rebalancer subsystem is not
-	// started. A non-nil value — even one with Enabled=false — is the
-	// operator opting in (dry-run mode emits would-have-moved audit
-	// events but commits nothing). The PressureSource wired in v0 is
-	// the stub (no real signals); real cgroup collection is a follow-
-	// up.
-	Rebalance *rebalance.Config
 }
 
 // New builds a Server. Doesn't start anything yet — call Serve.
@@ -359,7 +346,6 @@ func New(opts Options) (*Server, error) {
 			Enabled: opts.ACMEEnabled,
 		},
 		acmeSkipStaging: opts.ACMESkipStaging,
-		rebalanceCfg:    opts.Rebalance,
 	}
 	cluster := &clusterServer{
 		gate:          gate,
@@ -538,24 +524,23 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 		}
 	}()
 
-	// Optional pressure-based rebalancer (issue #92, ADR 0002). Wired
-	// only when the operator set scheduler.rebalance: in jacod.yaml —
-	// either enabled (commits moves) or disabled (dry-run, audit only).
-	// The PressureSource is a stub that reports "no data" for every
-	// node; real cgroup/dockerx collection is a follow-up. The loop
-	// self-gates on leader status and silently no-ops on followers, so
-	// it is safe to start unconditionally on every node.
-	if s.rebalanceCfg != nil {
-		reb := rebalance.New(st, node, apply, rebalance.StubSource{}, *s.rebalanceCfg)
-		reb.Logger = logging.Subsystem(s.logger, "scheduler/rebalance").With(logging.KeyNode, hostname)
-		s.subsystemsWG.Add(1)
-		go func() {
-			defer s.subsystemsWG.Done()
-			if err := reb.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				s.srvLog.Error("scheduler/rebalance.Run exited", "error", err)
-			}
-		}()
-	}
+	// Pressure-based rebalancer (issue #92, ADR 0002). Always-on:
+	// the loop self-gates on raft leader status, defaults bias hard
+	// toward inaction (sustained-pressure + cross-node-imbalance
+	// gates must both hold), and the PressureSource is currently a
+	// NoopSource that reports "no data" for every node — so the loop
+	// is effectively dormant until a real cgroup v2 collector is
+	// wired. Spawning unconditionally keeps the wiring honest and
+	// the future collector swap is a one-line change.
+	reb := rebalance.New(st, node, apply, rebalance.NoopSource{}, rebalance.DefaultConfig())
+	reb.Logger = logging.Subsystem(s.logger, "scheduler/rebalance").With(logging.KeyNode, hostname)
+	s.subsystemsWG.Add(1)
+	go func() {
+		defer s.subsystemsWG.Done()
+		if err := reb.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			s.srvLog.Error("scheduler/rebalance.Run exited", "error", err)
+		}
+	}()
 
 	// Discovery: WireGuard mesh sync. Skipped when the kernel WG module
 	// isn't reachable via wgctrl (typical on unprivileged dev hosts and

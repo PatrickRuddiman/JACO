@@ -1,158 +1,205 @@
-# ADR 0002: Pressure-based scheduling and migration
+# ADR 0002: Pressure-based scheduling
 
-- **Status:** proposed
+- **Status:** accepted (simplified 2026-05-31)
 - **Date:** 2026-05-30
 - **Issue:** #92
+- **Supersedes:** the initial draft of this ADR, which proposed a quorum-aware,
+  4-dimensional, operator-gated rebalancer with stateful-volume migration
+  hooks. That scope was abandoned; this revision is what actually ships.
 
 ---
 
+A **leader-driven, hysteretic, always-on rebalancer** that observes per-node
+CPU + memory pressure, picks the cheapest stateless replica to move off the
+hottest node when the cluster is meaningfully imbalanced, and uses the
+existing scheduler move path to relocate it.
 
-A **leader-driven, hysteretic, opt-in rebalancer** that observes per-node pressure signals already collected by the health subsystem, picks the cheapest replica to move off the hottest node when the cluster is meaningfully imbalanced, and uses the existing scheduler move path to relocate it. Stateful workloads are filtered out for now (see #135 for the future remote-mounted-volume backend that would let them move).
+Design priority: **conservative inaction**. JACO targets clusters of a
+handful of nodes; on a 3–5 node cluster, the operator manually draining a hot
+node is almost always the right answer, and an aggressive rebalancer is more
+likely to flap workloads than to relieve real pressure. So the rebalancer
+runs by default, but the gates are tight enough that on an idle or uniformly
+busy cluster it never moves anything.
 
-Default: **off**. Operators enable it cluster-wide. When off, this entire subsystem is a passive observer that emits "would-have-moved" decisions to the audit log so operators can dry-run the policy before turning it on.
+Stateful workloads are out of scope entirely. The rebalancer never moves a
+replica that owns data — JACO has no way to re-attach that data on a
+different host, and the orchestrator-side byte-copy alternative (issue #91)
+was rejected on its own merits. Stateful here means "has a bind mount or
+docker named volume that holds state the workload needs across restarts" —
+the rebalancer simply never enumerates those replicas as candidates because
+their service spec carries the volume reference. There is no "stateful
+filter" in code; the scorer is stateless-only by construction.
 
 ## Signals
 
-Composite **node pressure score** computed once per cycle (default 30 s) per node:
+Composite **node pressure** computed once per cycle (30 s) per node:
 
 ```
 pressure(node) = max(
-    ewma(cpu_util,        window=5m),
-    ewma(memory_util,     window=5m),
-    ewma(disk_io_util,    window=5m),
-    replica_count / replica_soft_cap,
+    ewma(cpu_util,    window=5m),
+    ewma(memory_util, window=5m),
 )
 ```
 
-EWMA, not instantaneous — instantaneous CPU spikes are noise and would cause thrashing. Window of 5 minutes matches the existing health subsystem's reporting cadence.
+EWMA, not instantaneous — instantaneous CPU spikes are noise and would cause
+thrashing. Window of 5 minutes is loose enough to ignore short-lived peaks
+and tight enough to react within a few minutes to a sustained imbalance.
 
-Data sources:
-- **CPU / memory / disk-io** — cgroup v2 stats already gathered by `internal/runtime/health` for per-replica health reporting. Aggregated to node level (sum across the deployment cgroups, plus a single sample of root cgroup CPU for the kernel/orchestrator overhead).
-- **replica_count** — from the FSM; the leader already knows it.
-- **replica_soft_cap** — node-local config (default 50), surfaced via `jaco status`.
+Two dimensions, not four. Disk-io and replica-count were in the original
+ADR; both were cut. Disk-io has no collector wired and a small-cluster
+operator hitting disk-io saturation is almost always also hitting CPU or
+memory pressure. Replica-count-vs-soft-cap is a knob nobody on a handful of
+nodes will ever tune. If a third dimension genuinely earns its keep later
+(e.g. per-replica network bytes), grow the struct then.
 
-No new collector. The health subsystem already publishes per-replica stats to the leader at the cadence the rebalancer needs.
+Data source: a `PressureSource` interface. The daemon currently wires a
+`NoopSource` that returns "no data" for every node, so the rebalancer is
+effectively dormant until a real cgroup v2 collector lands as a follow-up
+(see #137). The follow-up is the only thing keeping the rebalancer from
+acting today; all the decision logic, gating, and audit plumbing are live.
 
 ## Thresholds and hysteresis
 
-The rebalancer triggers when both of these are true:
+The rebalancer commits a move only when **all** of these hold:
 
-1. `max(pressure) >= 0.85` for at least `2` consecutive cycles (≈1 minute of sustained pressure, not a spike)
-2. `max(pressure) - min(pressure) >= 0.25` across nodes (cluster is imbalanced, not uniformly busy)
+1. `max(pressure) >= 0.85` for at least `2` consecutive cycles (~1 minute).
+2. `max(pressure) - min(pressure) >= 0.25` across nodes (cluster is
+   imbalanced, not uniformly busy).
+3. `post_move_pressure(src) <= max_pressure - 0.10` — meaningful relief.
+4. `post_move_pressure(dst) < 0.75` — does not create a new hotspot.
+5. The candidate replica has been on src for at least `cooldown_replica = 10m`.
+6. The destination has not received a move in the last `cooldown_node = 2m`.
 
-For each candidate move it estimates the post-move pressure on both src and dst using the moved replica's recent CPU/memory footprint, and **only commits the move if**:
-
-- `post_move_pressure(src) <= max_pressure - 0.10` (meaningful relief), and
-- `post_move_pressure(dst) < 0.75` (doesn't create a new hotspot), and
-- the moved replica has been on src for at least `cooldown_replica = 10m` (don't move something we just moved), and
-- the destination node hasn't received a migration in the last `cooldown_node = 2m` (don't pile new work on a node that's still settling).
-
-These constants are config knobs (`scheduler.rebalance.{trigger_threshold, imbalance_gap, relief_floor, dst_cap, cooldown_replica, cooldown_node}`) with the defaults above. Defaults bias toward inaction.
+These are the defaults in `internal/scheduler/rebalance/config.Config` and
+they bake in. There is **no operator-facing config block** — the rebalancer
+is on-by-default with no knobs. Tests inject a `Config` to drive
+deterministic cycles; production constructs `DefaultConfig()` once at boot.
 
 ## Selection policy
 
-Among replicas on the most-pressured node, candidates are scored:
+Among replicas on the most-pressured node, the cheapest move wins:
 
 ```
-score(replica) = relief_estimate(replica) * stateless_bonus * priority_inverse
-                 - move_cost(replica)
+score(replica) = relief_estimate(replica) - move_cost
 ```
 
 where:
-- `relief_estimate` = the replica's contribution to src's dominant pressure dimension (CPU-driven hotspot → use replica CPU; memory-driven → use replica RSS)
-- `stateless_bonus` = 2.0 for stateless, 1.0 for stateful (prefer cheap moves)
-- `priority_inverse` = 1 / priority (don't move high-priority workloads when a low-priority candidate would relieve the same pressure)
-- `move_cost` = for stateless, a small constant (restart cost). For stateful, an estimate of bytes-to-ship at ~50 MB/s over wg (volume size from `volumes` package) — this is what makes the scheduler prefer to move the small redis cache before it considers moving a 20 GB postgres data dir.
+- `relief_estimate` = the replica's contribution to src's dominant pressure
+  dimension (CPU-dominant hotspot → replica CPU footprint;
+  memory-dominant → replica RSS).
+- `move_cost` = `0.01`, a small fixed restart penalty so ties broken by
+  relief alone resolve deterministically.
+
+No stateless/stateful bonus, no priority weighting. The scorer assumes
+stateless candidates exclusively; non-stateless replicas are excluded
+upstream by virtue of how the rebalancer enumerates candidates from
+`ReplicasDesired`.
 
 Constraints the scorer hard-filters before scoring:
-- never violates resource limits at dst
-- never violates anti-affinity (`placement: spread` / `placement: hosts:`)
-- never moves a member of a quorum group when doing so would leave fewer than `ceil(N/2) + 1` healthy members in place (raft / pg streaming / redis primary-replica pairs each model as a quorum group)
+- never violates resource limits at dst (`post_cpu`, `post_mem` both ≤ 1.0)
+- never violates anti-affinity (`placement: spread` / `placement: hosts:`;
+  `placement: global` is never moved by definition).
 
-A replica that fails any hard filter on every candidate dst is **not movable**, full stop — the rebalancer logs "no eligible destination" and moves on. Not an error.
+A replica that fails any hard filter on every candidate dst is **not
+movable**, full stop — the rebalancer logs a `SkipNoEligibleDst` and moves
+on. Not an error.
+
+Quorum modeling was in the original ADR; it was cut. The SPREAD
+anti-affinity gate already prevents the rebalancer from co-locating two
+replicas of the same service, which is the actual failure mode quorum
+modeling was trying to prevent for stateless raft-shaped workloads. A
+genuine quorum-bearing workload is stateful and therefore not a candidate.
 
 ## Move execution
 
-- Stateless: emit a standard reschedule command through the existing `internal/scheduler/placement` path. The reconciler does stop-on-src / start-on-dst; the rebalancer just *chose* the move.
-- Stateful: **permanently filtered for now**. The rebalancer **MUST** treat all stateful services as non-movable (hard filter) until JACO grows a volume backend that lets a replica re-attach its data on a different node (#135). The selection scorer keeps the `stateless_bonus` knob in place so once a remote-volume backend lands, flipping the filter off starts considering stateful candidates without further changes.
+Standard reschedule command through the existing `internal/scheduler` path.
+The reconciler does stop-on-src / start-on-dst; the rebalancer just *chose*
+the move.
 
-Concurrency cap: the rebalancer commits at most **one move per cycle, cluster-wide**. Defends against avalanche: one move lands, next cycle re-evaluates, another move maybe lands, etc. Slower convergence, no thrash.
+Concurrency cap: at most **one move per cycle, cluster-wide**. Defends
+against avalanche — one move lands, next cycle re-evaluates. Slower
+convergence, no thrash.
 
 ## Decision authority
 
-The rebalancer runs **only on the raft leader**. State it needs (node pressure history, per-replica EWMAs, cooldown timestamps) is leader-local — not in raft, because losing it on a failover is fine; the new leader rebuilds it from the next two cycles of health reports.
+The rebalancer runs on every node but `Cycle` self-gates on
+`LeaderStatus.IsLeader()`. State it needs (pressure EWMAs, cooldown
+timestamps, consecutive-over counters) is leader-local — not in raft,
+because losing it on a failover is fine: the new leader rebuilds it from
+the next two cycles of pressure samples.
 
-The decision itself (the move command) goes through raft like any other placement change — so when an operator reads `jaco status` they see the move was committed, not a leader-local fantasy.
+The decision itself (the move command) goes through raft like any other
+placement change, so `jaco status` reflects committed moves.
 
-## Control surface
+## Observability
 
-### Config
-
-`/etc/jaco/daemon.yaml` (or whichever file owns cluster config today):
-
-```yaml
-scheduler:
-  rebalance:
-    enabled: false               # default; dry-run when false (audit-only)
-    trigger_threshold: 0.85
-    imbalance_gap: 0.25
-    relief_floor: 0.10
-    dst_cap: 0.75
-    cooldown_replica: 10m
-    cooldown_node: 2m
-    cycle_interval: 30s
-```
-
-### Observability
-
-`jaco status` grows a `rebalance` section:
+Audit log records every committed move (`AUDIT_EVENT_TYPE_REBALANCE_MOVED`)
+and every per-candidate skip
+(`AUDIT_EVENT_TYPE_REBALANCE_SKIPPED`), with the same payload shape:
 
 ```
-Rebalance: enabled, last cycle 12s ago
-  Node pressure: jaco-1=0.42  jaco-2=0.91  jaco-3=0.38
-  Recent decisions:
-    14:02:11  move pg-replica/2  jaco-2 -> jaco-3  reason=cpu_pressure relief=0.18
-    13:51:04  considered redis/1 jaco-2 -> jaco-3  skipped=cooldown_replica
+replica_id, deployment, service, src, dst,
+dominant (cpu|memory),
+relief, score, move_cost,
+src_pressure_before, dst_pressure_before,
+src_pressure_after, dst_pressure_after,
+reason (only on SKIPPED: cooldown_replica | cooldown_node |
+        dst_cap | relief_floor | resource_limits | anti_affinity |
+        no_eligible_dst | no_candidate)
 ```
 
-Audit log records every committed move and (when in dry-run mode) every would-have-moved decision, with the same payload. This is how operators evaluate the policy before turning it on.
+The `AUDIT_EVENT_TYPE_REBALANCE_DRY_RUN` tag (proto field 22) is reserved
+but no longer emitted — the dry-run mode was removed when the rebalancer
+became always-on.
 
 ## Component changes
 
-- `internal/scheduler/rebalance/` — new package. Owns the cycle loop, pressure aggregation, scorer, hard-filter, and emits move commands through the existing scheduler.
-- `internal/scheduler/quorum.go` — new file. Models quorum groups (declared in `jaco.yaml` per stateful service or inferred from `placement: spread` patterns) and answers `WouldBreakQuorum(replica, src, dst)`.
-- `internal/scheduler/placement/` — small extension to accept a "rebalance" provenance on a move so the audit log records *why* it was chosen.
-- `internal/controlplane/fsm/` — no schema changes; rebalance commits the same placement-change entry the scheduler already uses.
-- `internal/runtime/health/` — no changes; the data is already there.
+- `internal/scheduler/rebalance/` — the rebalancer package. Cycle loop,
+  pressure aggregation, scorer, hard-filter, audit emission.
+- `internal/scheduler/placement/` — no changes (rebalancer reuses the
+  existing reschedule path via raft-Apply).
+- `internal/controlplane/fsm/` — no schema changes; rebalance commits the
+  same `ReplicaDesiredUpsert` entry the scheduler already uses.
+- `internal/daemon/grpc/server.go` — always starts the rebalancer goroutine
+  with `DefaultConfig()` and `NoopSource{}`. There is no operator config
+  block to wire.
+- A real cgroup v2 `PressureSource` (#137) is the only follow-up work
+  needed to make the rebalancer actually fire in production. Without it
+  the loop spins but every gate short-circuits on "no data for this node".
 
 ## Tests
 
-- `internal/scheduler/rebalance/pressure_test.go` — pressure math, EWMA decay, dimension dominance
-- `internal/scheduler/rebalance/scorer_test.go` — relief estimate, stateless preference, cost estimate
-- `internal/scheduler/rebalance/hysteresis_test.go` — won't trigger on single-cycle spike; won't move when post-move dst would exceed cap; respects both cooldowns
-- `internal/scheduler/quorum_test.go` — never reduces quorum group below floor
-- `internal/scheduler/rebalance/dryrun_test.go` — disabled mode emits audit events but no FSM entries
-- Bed E2E: drive a node hot with `stress-ng`, observe a move of a stateless replica, observe steady state, verify no thrash for 10 minutes
+- `internal/scheduler/rebalance/pressure_test.go` — Composite math, EWMA
+  decay, EWMA spike-damping, backwards-clock invariance.
+- `internal/scheduler/rebalance/scorer_test.go` — relief estimate, hard
+  filter ordering, anti-affinity per PlacementMode, post-move clamping.
+- `internal/scheduler/rebalance/hysteresis_test.go` — single-spike does NOT
+  trigger; sustained pressure DOES trigger; dst_cap / relief_floor / both
+  cooldowns / imbalance_gap each block when expected; SKIPPED audit
+  carries the right reason.
 
 ## Acceptance
 
-- A node driven to sustained `cpu_util > 0.85` for >1 minute triggers a move of an eligible replica to a cooler node, observable in `jaco status` and the audit log.
-- Stateless rebalancing works on the 3-node bed end-to-end. Stateful is correctly skipped today; gets considered once #135 lands a volume backend.
-- Under uniform load, no moves happen — hysteresis verified by a 10-minute soak with all three nodes at 0.6 pressure.
-- A pressure move never lands a replica on a dst that would violate its resource limits, anti-affinity, or quorum constraints. (Property test over a fuzzed cluster state.)
-- Disabling the rebalancer in config stops all moves within one cycle; re-enabling resumes within one cycle.
+- A node driven to sustained `cpu_util > 0.85` for >1 minute on a 2+ node
+  cluster with at least 0.25 cross-node imbalance triggers a move of an
+  eligible stateless replica to a cooler node, observable in the audit
+  log.
+- Under uniform load, no moves happen.
+- A move never lands a replica on a dst that would violate its resource
+  limits or anti-affinity (verified by `TestHardFilter_OrderingAndReasons`).
+- The rebalancer subsystem starts on every daemon with no operator config
+  and produces zero audit events on a noop source (verified by the daemon
+  grpc test suite, which boots a daemon without configuring rebalance).
 
 ## Out of scope
 
-- Predictive / ML scaling.
-- Cluster autoscaling (adding/removing nodes).
-- Network-pressure dimension. The current health subsystem doesn't measure per-replica network bytes; adding it is a separate signal-collection issue. The scorer's pressure formula has room for an extra dimension when that lands.
-- Per-deployment opt-out beyond the existing `priority` mechanism. Operators who want a service immovable set `priority: critical` or pin it; we don't add a third knob.
-
-## Sequencing
-
-The stateless path lands now with stateful explicitly filtered out and the test suite asserting that. The stateful path turns on once #135 makes a stateful replica's data reachable on its new host.
-
-## Estimated size
-
-One medium PR for the stateless path (`rebalance` package + quorum modeling + status surface + tests + dry-run bed validation). A follow-up small PR flips the stateful filter once a volume backend (#135) is available.
+- Stateful workloads. The rebalancer does not move replicas with attached
+  volumes; #91 was rejected and #135 (remote-mounted volumes) is labeled
+  wontfix-candidate.
+- Disk-io and replica-count pressure dimensions. CPU + memory only.
+- Operator-tunable config knobs. The defaults bake in.
+- Cluster autoscaling and predictive scaling.
+- Network-pressure dimension. The current health subsystem doesn't measure
+  per-replica network bytes; if it ever does, add a dimension then.
+- Per-deployment opt-out. Operators who want a service immovable use a
+  pinned `placement: hosts:` or attach a volume.

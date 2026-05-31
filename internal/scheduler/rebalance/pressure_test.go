@@ -8,9 +8,10 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/scheduler/rebalance"
 )
 
-// TestComposite_Math — Composite returns the max of the four
-// dimensions. Each case isolates one dimension as dominant so the
-// table doubles as a regression net for Dominant.
+// TestComposite_Math — Composite returns max(CPU, Memory) and
+// Dominant picks the larger dimension. Edge cases that used to exist
+// (disk-io, count/cap) were removed when the rebalancer was scoped
+// down to a simple orchestrator.
 func TestComposite_Math(t *testing.T) {
 	cases := []struct {
 		name string
@@ -26,32 +27,20 @@ func TestComposite_Math(t *testing.T) {
 		},
 		{
 			name: "cpu dominates",
-			snap: rebalance.Snapshot{CPU: 0.9, Memory: 0.4, DiskIO: 0.2, ReplicaCount: 5, ReplicaSoftCap: 50},
+			snap: rebalance.Snapshot{CPU: 0.9, Memory: 0.4},
 			want: 0.9,
 			dom:  rebalance.DimCPU,
 		},
 		{
 			name: "memory dominates",
-			snap: rebalance.Snapshot{CPU: 0.3, Memory: 0.95, DiskIO: 0.2, ReplicaCount: 5, ReplicaSoftCap: 50},
+			snap: rebalance.Snapshot{CPU: 0.3, Memory: 0.95},
 			want: 0.95,
 			dom:  rebalance.DimMemory,
 		},
 		{
-			name: "disk io dominates",
-			snap: rebalance.Snapshot{CPU: 0.3, Memory: 0.4, DiskIO: 0.8, ReplicaCount: 5, ReplicaSoftCap: 50},
-			want: 0.8,
-			dom:  rebalance.DimDiskIO,
-		},
-		{
-			name: "count dominates",
-			snap: rebalance.Snapshot{CPU: 0.3, Memory: 0.4, DiskIO: 0.5, ReplicaCount: 45, ReplicaSoftCap: 50}, // 45/50 = 0.9
-			want: 0.9,
-			dom:  rebalance.DimCount,
-		},
-		{
-			name: "count ignored when soft cap zero",
-			snap: rebalance.Snapshot{CPU: 0.2, Memory: 0.1, ReplicaCount: 1000, ReplicaSoftCap: 0},
-			want: 0.2,
+			name: "tie breaks toward CPU",
+			snap: rebalance.Snapshot{CPU: 0.5, Memory: 0.5},
+			want: 0.5,
 			dom:  rebalance.DimCPU,
 		},
 	}
