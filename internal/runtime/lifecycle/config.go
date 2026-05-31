@@ -12,7 +12,42 @@ import (
 	"github.com/docker/go-units"
 
 	"github.com/PatrickRuddiman/jaco/internal/runtime/compose"
+	"github.com/PatrickRuddiman/jaco/internal/runtime/volumes"
 )
+
+// managedVolumeOpts bundles the on-host managed-volume knobs the
+// lifecycle layer reads to decide whether a per-service named volume
+// in compose should bind-mount onto JACO's owned tree (issue #91 PR1)
+// or fall through to docker's named-volume driver. enabled=false
+// makes every helper here a no-op; root is consulted only on the
+// enabled path, so leaving it nil during tests where the flag is off
+// is safe.
+type managedVolumeOpts struct {
+	enabled bool
+	root    *volumes.Root
+}
+
+// isManagedVolume reports whether mount m is a JACO-managed named
+// volume — `Type: "volume"` with a Source that names a key in the
+// deployment's top-level `volumes:` block. Anonymous mounts
+// (Source==""), inline binds, and external/absent names fall through
+// the unmanaged path and reach docker untouched. The check is the
+// single point of truth used by both buildConfig (to rewrite the
+// docker mount) and StartWithPullState (to EnsureLive the source).
+func isManagedVolume(m compose.Mount, named map[string]struct{}) bool {
+	if m.Type != "volume" {
+		return false
+	}
+	if m.Source == "" {
+		// Anonymous volume — docker assigns a random name and owns
+		// the backing store; nothing for JACO to manage.
+		return false
+	}
+	if _, ok := named[m.Source]; !ok {
+		return false
+	}
+	return true
+}
 
 // NetworkModeResolver looks up the currently-running primary replica
 // container id for (deployment, service) within the local cluster (issue
@@ -45,7 +80,7 @@ var ErrNetworkModeTargetNotReady = errors.New("network_mode target service has n
 // target has no RUNNING replica yet returns ErrNetworkModeTargetNotReady
 // so the reconciler retries on the next tick. resolver may be nil when
 // spec.NetworkMode is empty or `none`; only `service:<name>` consults it.
-func buildConfig(spec compose.ContainerSpec, resolver NetworkModeResolver) (*container.Config, *container.HostConfig, *network.NetworkingConfig, error) {
+func buildConfig(spec compose.ContainerSpec, resolver NetworkModeResolver, vols managedVolumeOpts) (*container.Config, *container.HostConfig, *network.NetworkingConfig, error) {
 	cfg := &container.Config{
 		Image:       spec.Image,
 		Cmd:         strslice.StrSlice(spec.Command),
@@ -82,7 +117,7 @@ func buildConfig(spec compose.ContainerSpec, resolver NetworkModeResolver) (*con
 		CapAdd:         spec.CapAdd,
 		CapDrop:        spec.CapDrop,
 		Sysctls:        spec.Sysctls,
-		Mounts:         toDockerMounts(spec.Mounts),
+		Mounts:         toDockerMounts(spec, vols),
 		Tmpfs:          toTmpfsMap(spec.Tmpfs),
 		DNS:            dnsServers,
 		DNSSearch:      spec.DNSSearch,
@@ -193,12 +228,36 @@ func serviceAliases(spec compose.ContainerSpec) []string {
 	return []string{spec.Service, fqdn, fqdn + ".jaco.internal"}
 }
 
-func toDockerMounts(in []compose.Mount) []mount.Mount {
+// toDockerMounts projects the spec's per-service mounts into the
+// docker engine's mount.Mount shape. When the managed-volume opt is
+// enabled (issue #91 PR1), a `Type: volume` entry whose source names
+// a top-level `volumes:` key is rewritten to a Bind onto
+// vols.root.PathFor(deployment, service, source). Anonymous /
+// external / unmanaged volumes, plus inline bind mounts, flow
+// through unchanged so a deployment that mixes managed and external
+// storage keeps both paths working.
+func toDockerMounts(spec compose.ContainerSpec, vols managedVolumeOpts) []mount.Mount {
+	in := spec.Mounts
 	if len(in) == 0 {
 		return nil
 	}
 	out := make([]mount.Mount, 0, len(in))
 	for _, m := range in {
+		if vols.enabled && vols.root != nil && isManagedVolume(m, spec.NamedVolumes) {
+			// Managed named volume → bind onto the host path JACO
+			// owns. ReadOnly carries through verbatim. PathFor
+			// panics on a triple that would escape the root; the
+			// compose validator's name character class makes
+			// reaching that path a programming bug, not a runtime
+			// condition.
+			out = append(out, mount.Mount{
+				Type:     mount.TypeBind,
+				Source:   vols.root.PathFor(spec.Deployment, spec.Service, m.Source),
+				Target:   m.Target,
+				ReadOnly: m.ReadOnly,
+			})
+			continue
+		}
 		dm := mount.Mount{
 			Source:   m.Source,
 			Target:   m.Target,

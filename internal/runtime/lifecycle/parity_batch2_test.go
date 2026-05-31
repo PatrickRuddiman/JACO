@@ -38,7 +38,7 @@ func TestBuildConfig_ForwardsDevicesAndGPUs(t *testing.T) {
 			},
 		},
 	}
-	_, hc, _, _ := buildConfig(spec, nil)
+	_, hc, _, _ := buildConfig(spec, nil, managedVolumeOpts{})
 
 	// Devices forwarded with permissions preserved.
 	if got, want := len(hc.Devices), 2; got != want {
@@ -83,7 +83,7 @@ func TestBuildConfig_ForwardsDevicesAndGPUs(t *testing.T) {
 // TestBuildConfig_Batch2ZeroValues — empty Devices/GPURequests carry nil
 // into HostConfig (no override → docker default applies).
 func TestBuildConfig_Batch2ZeroValues(t *testing.T) {
-	_, hc, _, _ := buildConfig(compose.ContainerSpec{Image: "nginx:1.27"}, nil)
+	_, hc, _, _ := buildConfig(compose.ContainerSpec{Image: "nginx:1.27"}, nil, managedVolumeOpts{})
 	if hc.Devices != nil {
 		t.Errorf("Devices = %v, want nil", hc.Devices)
 	}
