@@ -42,6 +42,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/runtime/volumes"
 	"github.com/PatrickRuddiman/jaco/internal/scheduler"
 	schedhealth "github.com/PatrickRuddiman/jaco/internal/scheduler/health"
+	"github.com/PatrickRuddiman/jaco/internal/scheduler/rebalance"
 	"github.com/PatrickRuddiman/jaco/internal/scheduler/rollout"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 	hraft "github.com/hashicorp/raft"
@@ -123,6 +124,10 @@ type Server struct {
 	// instead of docker named volumes. Default false preserves the
 	// pre-#91 reconciler behaviour byte-for-byte.
 	managedVolumes bool
+	// rebalanceCfg is the operator-supplied pressure-rebalancer
+	// config plumbed from jacod.yaml.scheduler.rebalance (issue #92).
+	// nil → no rebalancer goroutine spawned in startSubsystems.
+	rebalanceCfg *rebalance.Config
 
 	// tlsDyn holds the live server cert for the cross-host TCP listener.
 	// Nil when no TCP listener was opened. RebindTLS swaps the cert in
@@ -214,6 +219,14 @@ type Options struct {
 	// *volumes.Root rooted at DataDir/volumes) into every
 	// lifecycle.Start gate.
 	ManagedVolumes bool
+	// Rebalance is the operator-supplied pressure-rebalancer config
+	// (issue #92, ADR 0002). nil → the rebalancer subsystem is not
+	// started. A non-nil value — even one with Enabled=false — is the
+	// operator opting in (dry-run mode emits would-have-moved audit
+	// events but commits nothing). The PressureSource wired in v0 is
+	// the stub (no real signals); real cgroup collection is a follow-
+	// up.
+	Rebalance *rebalance.Config
 }
 
 // New builds a Server. Doesn't start anything yet — call Serve.
@@ -361,6 +374,7 @@ func New(opts Options) (*Server, error) {
 		},
 		acmeSkipStaging: opts.ACMESkipStaging,
 		managedVolumes:  opts.ManagedVolumes,
+		rebalanceCfg:    opts.Rebalance,
 	}
 	cluster := &clusterServer{
 		gate:          gate,
@@ -538,6 +552,25 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 			s.srvLog.Error("scheduler/health.Restarter.Run exited", "error", err)
 		}
 	}()
+
+	// Optional pressure-based rebalancer (issue #92, ADR 0002). Wired
+	// only when the operator set scheduler.rebalance: in jacod.yaml —
+	// either enabled (commits moves) or disabled (dry-run, audit only).
+	// The PressureSource is a stub that reports "no data" for every
+	// node; real cgroup/dockerx collection is a follow-up. The loop
+	// self-gates on leader status and silently no-ops on followers, so
+	// it is safe to start unconditionally on every node.
+	if s.rebalanceCfg != nil {
+		reb := rebalance.New(st, node, apply, rebalance.StubSource{}, *s.rebalanceCfg)
+		reb.Logger = logging.Subsystem(s.logger, "scheduler/rebalance").With(logging.KeyNode, hostname)
+		s.subsystemsWG.Add(1)
+		go func() {
+			defer s.subsystemsWG.Done()
+			if err := reb.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				s.srvLog.Error("scheduler/rebalance.Run exited", "error", err)
+			}
+		}()
+	}
 
 	// Discovery: WireGuard mesh sync. Skipped when the kernel WG module
 	// isn't reachable via wgctrl (typical on unprivileged dev hosts and

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -85,6 +86,14 @@ type Config struct {
 	// boot. Defaults are conservative — every flag here is off until
 	// the operator opts in.
 	Runtime RuntimeConfig `yaml:"runtime"`
+	// Scheduler holds the scheduler subsystem's optional knobs. The only
+	// member today is the pressure-based rebalancer (issue #92, ADR
+	// 0002). The block is OPTIONAL: omitting it leaves the rebalancer
+	// unconfigured (no loop spawned). Setting `scheduler.rebalance:`
+	// at all — even `enabled: false` — counts as "configured" and
+	// starts the loop in dry-run mode so operators can evaluate the
+	// policy from the audit log before turning it on.
+	Scheduler *SchedulerConfig `yaml:"scheduler"`
 }
 
 // RuntimeConfig groups runtime-layer feature flags that flow from
@@ -109,6 +118,32 @@ type RuntimeConfig struct {
 type ManagedVolumesConfig struct {
 	// Enabled is the feature flag (default false).
 	Enabled bool `yaml:"enabled"`
+}
+
+// SchedulerConfig groups scheduler subsystem knobs that are off by
+// default and surface only when the operator opts in. Today: just the
+// rebalancer. Future scheduler tunables (e.g. reconcile cadence,
+// rollout pacing) live here too.
+type SchedulerConfig struct {
+	Rebalance *RebalanceConfig `yaml:"rebalance"`
+}
+
+// RebalanceConfig is the yaml view of the pressure-rebalancer's knobs.
+// Field documentation lives in internal/scheduler/rebalance/config.go;
+// the daemon just transports values. Pointer-typed numeric fields are
+// avoided — the rebalancer fills missing values from its own
+// DefaultConfig() at construction time, so "zero" means "use default".
+type RebalanceConfig struct {
+	Enabled           bool          `yaml:"enabled"`
+	TriggerThreshold  float64       `yaml:"trigger_threshold"`
+	ImbalanceGap      float64       `yaml:"imbalance_gap"`
+	ReliefFloor       float64       `yaml:"relief_floor"`
+	DstCap            float64       `yaml:"dst_cap"`
+	CooldownReplica   time.Duration `yaml:"cooldown_replica"`
+	CooldownNode      time.Duration `yaml:"cooldown_node"`
+	CycleInterval     time.Duration `yaml:"cycle_interval"`
+	ConsecutiveCycles int           `yaml:"consecutive_cycles"`
+	ReplicaSoftCap    int           `yaml:"replica_soft_cap"`
 }
 
 // ACMEEnabledOrDefault returns the effective cluster-wide ACME switch. The
