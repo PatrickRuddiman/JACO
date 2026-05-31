@@ -98,6 +98,19 @@ func ToContainerSpec(svc types.ServiceConfig, opts SpecOptions) ContainerSpec {
 	// running container id is reflected on every reconcile.
 	spec.NetworkMode = svc.NetworkMode
 
+	// Top-level volumes:` set is supplied by the caller (reconciler
+	// reads project.Volumes). Carried verbatim so the lifecycle layer
+	// can decide whether a per-service `Type: volume` mount is a
+	// JACO-managed volume to bind-mount or a plain docker volume to
+	// forward (issue #91 PR1).
+	if len(opts.NamedVolumes) > 0 {
+		copyVols := make(map[string]struct{}, len(opts.NamedVolumes))
+		for name := range opts.NamedVolumes {
+			copyVols[name] = struct{}{}
+		}
+		spec.NamedVolumes = copyVols
+	}
+
 	return spec
 }
 

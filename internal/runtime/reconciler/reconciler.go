@@ -26,6 +26,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/runtime/health"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/lifecycle"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/pull"
+	"github.com/PatrickRuddiman/jaco/internal/runtime/volumes"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -59,6 +60,14 @@ type Reconciler struct {
 	submit       health.SubmitFn
 	ensureSubnet EnsureSubnetFn
 	logger       *slog.Logger
+
+	// managedVolumes mirrors jacod.yaml.runtime.managed_volumes.enabled
+	// (issue #91 PR1). When true, runStart hands the lifecycle a
+	// gate carrying ManagedVolumes + VolumesRoot so per-service
+	// named-volume mounts bind onto JACO's owned host tree instead of
+	// docker named volumes. Default false preserves pre-#91 behaviour.
+	managedVolumes    bool
+	managedVolumesRoot *volumes.Root
 
 	// starting tracks in-flight async starts by replica id. A replica start
 	// does slow, blocking work — an image pull that retries forever on an
@@ -96,6 +105,20 @@ func New(docker dockerx.Docker, st *state.State, brokers *watch.Registry, hostna
 		logger:       logger,
 		starting:     map[string]*startHandle{},
 	}
+}
+
+// EnableManagedVolumes opts the reconciler into JACO's on-host
+// managed-volume tree (issue #91 PR1). When called with enabled=true
+// the reconciler forwards both the flag and root into the lifecycle
+// gate on every replica start, so per-service named-volume mounts
+// bind onto root.PathFor(...) instead of using docker named volumes.
+// Default (never called or enabled=false) preserves the pre-#91
+// reconciler behaviour. Setter form keeps the existing New signature
+// stable for the many test call sites that construct a bare
+// Reconciler.
+func (r *Reconciler) EnableManagedVolumes(enabled bool, root *volumes.Root) {
+	r.managedVolumes = enabled
+	r.managedVolumesRoot = root
 }
 
 // Run blocks until ctx is cancelled. Performs an initial orphan sweep +
@@ -260,6 +283,20 @@ func (r *Reconciler) runStart(workCtx, watchCtx context.Context, rep *pb.Replica
 	if rep.GetImage() != "" {
 		svcCfg.Image = rep.GetImage()
 	}
+	// Collect the deployment's top-level `volumes:` keys (issue #91
+	// PR1). When the runtime.managed_volumes.enabled flag is on, the
+	// lifecycle layer rewrites any per-service `Type: volume` mount
+	// whose source names a key in this set into a bind-mount onto
+	// JACO's managed on-host tree. When the flag is off the set is
+	// still passed through but the lifecycle ignores it — keeping the
+	// projection deterministic across flag flips.
+	var namedVolumes map[string]struct{}
+	if len(project.Volumes) > 0 {
+		namedVolumes = make(map[string]struct{}, len(project.Volumes))
+		for name := range project.Volumes {
+			namedVolumes[name] = struct{}{}
+		}
+	}
 	spec := compose.ToContainerSpec(svcCfg, compose.SpecOptions{
 		ClusterID:    clusterID,
 		Deployment:   rep.GetDeployment(),
@@ -267,6 +304,7 @@ func (r *Reconciler) runStart(workCtx, watchCtx context.Context, rep *pb.Replica
 		ReplicaID:    rep.GetId(),
 		ReplicaIndex: int(rep.GetIndex()),
 		RaftIndex:    rep.GetRaftIndex(),
+		NamedVolumes: namedVolumes,
 	})
 	// Bug 007: ensure each declared docker network exists on the local
 	// engine before lifecycle.Start tries to NetworkConnect.
@@ -349,6 +387,8 @@ func (r *Reconciler) runStart(workCtx, watchCtx context.Context, rep *pb.Replica
 		SelfHostname:        r.hostname,
 		AuthResolver:        r.authResolver(),
 		NetworkModeResolver: r.resolveNetworkModeTarget,
+		ManagedVolumes:      r.managedVolumes,
+		VolumesRoot:         r.managedVolumesRoot,
 	})
 	if err != nil {
 		return fmt.Errorf("lifecycle.Start: %w", err)

@@ -15,12 +15,14 @@ import (
 // type string to mount.Type. Volume, bind, empty (=bind), and any
 // other string passed through verbatim.
 func TestToDockerMounts_TranslatesEveryMountType(t *testing.T) {
-	got := toDockerMounts([]compose.Mount{
-		{Type: "volume", Source: "vol", Target: "/data", ReadOnly: true},
-		{Type: "bind", Source: "/src", Target: "/dst"},
-		{Type: "", Source: "/src2", Target: "/dst2"},
-		{Type: "tmpfs", Source: "", Target: "/tmp"},
-	})
+	got := toDockerMounts(compose.ContainerSpec{
+		Mounts: []compose.Mount{
+			{Type: "volume", Source: "vol", Target: "/data", ReadOnly: true},
+			{Type: "bind", Source: "/src", Target: "/dst"},
+			{Type: "", Source: "/src2", Target: "/dst2"},
+			{Type: "tmpfs", Source: "", Target: "/tmp"},
+		},
+	}, managedVolumeOpts{})
 	if len(got) != 4 {
 		t.Fatalf("len = %d, want 4", len(got))
 	}
@@ -37,11 +39,11 @@ func TestToDockerMounts_TranslatesEveryMountType(t *testing.T) {
 
 // TestToDockerMounts_EmptyReturnsNil — defensive default.
 func TestToDockerMounts_EmptyReturnsNil(t *testing.T) {
-	if got := toDockerMounts(nil); got != nil {
-		t.Errorf("toDockerMounts(nil) = %v, want nil", got)
+	if got := toDockerMounts(compose.ContainerSpec{}, managedVolumeOpts{}); got != nil {
+		t.Errorf("toDockerMounts(nil mounts) = %v, want nil", got)
 	}
-	if got := toDockerMounts([]compose.Mount{}); got != nil {
-		t.Errorf("toDockerMounts([]) = %v, want nil", got)
+	if got := toDockerMounts(compose.ContainerSpec{Mounts: []compose.Mount{}}, managedVolumeOpts{}); got != nil {
+		t.Errorf("toDockerMounts(empty mounts) = %v, want nil", got)
 	}
 }
 
@@ -128,7 +130,7 @@ func TestBuildConfig_RespectsEveryFieldOnSpec(t *testing.T) {
 		DNSServers: []string{"1.1.1.1"},
 		Ulimits:    map[string]compose.Ulimit{"nofile": {Soft: 1024, Hard: 4096}},
 	}
-	cfg, hc, net, _ := buildConfig(spec, nil)
+	cfg, hc, net, _ := buildConfig(spec, nil, managedVolumeOpts{})
 	if cfg.Image != "nginx:1.27" {
 		t.Errorf("cfg.Image = %q", cfg.Image)
 	}
@@ -171,7 +173,7 @@ func TestBuildConfig_RespectsEveryFieldOnSpec(t *testing.T) {
 // carries the service aliases for Docker's embedded DNS (issue #28).
 func TestBuildConfig_WithSingleNetwork(t *testing.T) {
 	spec := compose.ContainerSpec{Image: "x", Service: "web", Deployment: "app", Networks: []string{"jaco_app_frontend"}}
-	_, hc, net, _ := buildConfig(spec, nil)
+	_, hc, net, _ := buildConfig(spec, nil, managedVolumeOpts{})
 	if string(hc.NetworkMode) != "jaco_app_frontend" {
 		t.Errorf("NetworkMode = %q, want jaco_app_frontend", hc.NetworkMode)
 	}
@@ -200,7 +202,7 @@ func TestBuildConfig_PopulatesResourceLimits(t *testing.T) {
 		PidsLimit:              &pids,
 		Ulimits:                map[string]compose.Ulimit{"nofile": {Soft: 1024, Hard: 4096}},
 	}
-	_, hc, _, _ := buildConfig(spec, nil)
+	_, hc, _, _ := buildConfig(spec, nil, managedVolumeOpts{})
 	r := hc.Resources
 	if r.NanoCPUs != 1_500_000_000 {
 		t.Errorf("NanoCPUs = %d, want 1500000000", r.NanoCPUs)
@@ -228,7 +230,7 @@ func TestBuildConfig_PopulatesResourceLimits(t *testing.T) {
 // TestBuildConfig_NoResourceLimitsStayZero — a spec with no resource fields
 // leaves docker's Resources at zero/nil so the engine applies its defaults.
 func TestBuildConfig_NoResourceLimitsStayZero(t *testing.T) {
-	_, hc, _, _ := buildConfig(compose.ContainerSpec{Image: "nginx"}, nil)
+	_, hc, _, _ := buildConfig(compose.ContainerSpec{Image: "nginx"}, nil, managedVolumeOpts{})
 	r := hc.Resources
 	if r.NanoCPUs != 0 || r.Memory != 0 || r.MemoryReservation != 0 || r.CPUShares != 0 || r.CpusetCpus != "" {
 		t.Errorf("expected zero resources, got %+v", r)
