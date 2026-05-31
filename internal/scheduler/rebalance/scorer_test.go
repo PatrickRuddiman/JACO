@@ -27,7 +27,6 @@ func candidate(mut ...func(c *rebalance.MoveCandidate)) *rebalance.MoveCandidate
 		Footprint:       rebalance.Footprint{CPU: 0.2, Memory: 0.1},
 		SrcPressure:     rebalance.Snapshot{CPU: 0.9, Memory: 0.3},
 		DstPressure:     rebalance.Snapshot{CPU: 0.2, Memory: 0.2},
-		Priority:        1,
 		PerHostCount:    0,
 		DstResourceFits: true,
 	}
@@ -49,68 +48,32 @@ func TestScore_ReliefEstimate_PicksDominantDimension(t *testing.T) {
 		c.SrcPressure = rebalance.Snapshot{CPU: 0.2, Memory: 0.9}
 		c.Footprint = rebalance.Footprint{CPU: 0.05, Memory: 0.4}
 	})
-	scpu := rebalance.Score(cpuHot, rebalance.DefaultConfig())
-	smem := rebalance.Score(memHot, rebalance.DefaultConfig())
-	// Both should score nearly identically (relief 0.4, stateless 2.0,
-	// prio 1, cost ~0.01): ≈ 0.79.
-	if math.Abs(scpu-smem) > 1e-6 {
+	scpu := rebalance.Score(cpuHot)
+	smem := rebalance.Score(memHot)
+	// Both should score nearly identically (relief 0.4 - 0.01 = 0.39).
+	if math.Abs(scpu-smem) > 1e-9 {
 		t.Errorf("CPU-hot score (%v) and Memory-hot score (%v) should match symmetrically", scpu, smem)
 	}
-	if scpu < 0.7 {
-		t.Errorf("Score = %v, want roughly 0.79", scpu)
+	want := 0.4 - 0.01
+	if math.Abs(scpu-want) > 1e-9 {
+		t.Errorf("Score = %v, want %v", scpu, want)
 	}
 }
 
-// TestScore_StatelessRanksAboveStateful — same relief / priority /
-// move-cost; stateless bonus 2.0 vs stateful 1.0 doubles the
-// numerator. Verifies the bias ADR §"Selection policy" requires.
-// (We construct the stateful candidate by bypassing HardFilter —
-// Score itself isn't supposed to reject stateful, only HardFilter
-// does.)
-func TestScore_StatelessRanksAboveStateful(t *testing.T) {
-	stateless := candidate(func(c *rebalance.MoveCandidate) {
-		c.Footprint = rebalance.Footprint{CPU: 0.3, Memory: 0.1, Stateful: false}
-	})
-	stateful := candidate(func(c *rebalance.MoveCandidate) {
-		c.Footprint = rebalance.Footprint{CPU: 0.3, Memory: 0.1, Bytes: 1024 * 1024, Stateful: true}
-	})
-	sl := rebalance.Score(stateless, rebalance.DefaultConfig())
-	st := rebalance.Score(stateful, rebalance.DefaultConfig())
-	if sl <= st {
-		t.Errorf("stateless score (%v) should be > stateful score (%v)", sl, st)
-	}
-}
-
-// TestScore_PriorityInverse_LowerPriorityRanksHigher — between two
-// otherwise identical candidates, the higher-priority replica
-// (larger priority number) scores LESS, so the rebalancer prefers
-// moving the lower-priority one.
-func TestScore_PriorityInverse_LowerPriorityRanksHigher(t *testing.T) {
-	low := candidate(func(c *rebalance.MoveCandidate) { c.Priority = 1 })
-	high := candidate(func(c *rebalance.MoveCandidate) { c.Priority = 10 })
-	sLow := rebalance.Score(low, rebalance.DefaultConfig())
-	sHigh := rebalance.Score(high, rebalance.DefaultConfig())
-	if sLow <= sHigh {
-		t.Errorf("priority=1 score (%v) should be > priority=10 score (%v)", sLow, sHigh)
-	}
-}
-
-// TestScore_MoveCost_StatefulBytesPenalty — between two stateful
-// candidates differing only in volume size, the larger volume scores
-// strictly lower (its move-cost is bytes / 50 MB/s). The check is
-// directional, not exact, so an operator tweaking the rate constant
-// in a follow-up doesn't have to update this test.
-func TestScore_MoveCost_StatefulBytesPenalty(t *testing.T) {
+// TestScore_BiggerFootprintScoresHigher — between two stateless
+// candidates differing only in CPU footprint, the larger one wins
+// the rank (delivers more relief on the dominant dimension).
+func TestScore_BiggerFootprintScoresHigher(t *testing.T) {
 	small := candidate(func(c *rebalance.MoveCandidate) {
-		c.Footprint = rebalance.Footprint{CPU: 0.1, Memory: 0.1, Bytes: 1 * 1024 * 1024, Stateful: true}
+		c.Footprint = rebalance.Footprint{CPU: 0.10, Memory: 0.05}
 	})
 	large := candidate(func(c *rebalance.MoveCandidate) {
-		c.Footprint = rebalance.Footprint{CPU: 0.1, Memory: 0.1, Bytes: 20 * 1024 * 1024 * 1024, Stateful: true}
+		c.Footprint = rebalance.Footprint{CPU: 0.40, Memory: 0.05}
 	})
-	sSmall := rebalance.Score(small, rebalance.DefaultConfig())
-	sLarge := rebalance.Score(large, rebalance.DefaultConfig())
-	if sSmall <= sLarge {
-		t.Errorf("small-volume score (%v) should be > large-volume score (%v)", sSmall, sLarge)
+	sSmall := rebalance.Score(small)
+	sLarge := rebalance.Score(large)
+	if sLarge <= sSmall {
+		t.Errorf("large-footprint score (%v) should be > small-footprint score (%v)", sLarge, sSmall)
 	}
 }
 
@@ -119,8 +82,8 @@ func TestScore_MoveCost_StatefulBytesPenalty(t *testing.T) {
 // the footprint.
 func TestPostMovePressure_SubtractsFromSrcAddsToDst(t *testing.T) {
 	c := candidate(func(c *rebalance.MoveCandidate) {
-		c.SrcPressure = rebalance.Snapshot{CPU: 0.9, Memory: 0.5, ReplicaCount: 4, ReplicaSoftCap: 50}
-		c.DstPressure = rebalance.Snapshot{CPU: 0.2, Memory: 0.1, ReplicaCount: 1, ReplicaSoftCap: 50}
+		c.SrcPressure = rebalance.Snapshot{CPU: 0.9, Memory: 0.5}
+		c.DstPressure = rebalance.Snapshot{CPU: 0.2, Memory: 0.1}
 		c.Footprint = rebalance.Footprint{CPU: 0.3, Memory: 0.2}
 	})
 	postSrc, postDst := rebalance.PostMovePressure(c)
@@ -130,24 +93,31 @@ func TestPostMovePressure_SubtractsFromSrcAddsToDst(t *testing.T) {
 	if math.Abs(postSrc.Memory-0.3) > 1e-9 {
 		t.Errorf("postSrc.Memory = %v, want 0.3", postSrc.Memory)
 	}
-	if postSrc.ReplicaCount != 3 {
-		t.Errorf("postSrc.ReplicaCount = %d, want 3", postSrc.ReplicaCount)
-	}
 	if math.Abs(postDst.CPU-0.5) > 1e-9 {
 		t.Errorf("postDst.CPU = %v, want 0.5", postDst.CPU)
 	}
 	if math.Abs(postDst.Memory-0.3) > 1e-9 {
 		t.Errorf("postDst.Memory = %v, want 0.3", postDst.Memory)
 	}
-	if postDst.ReplicaCount != 2 {
-		t.Errorf("postDst.ReplicaCount = %d, want 2", postDst.ReplicaCount)
+}
+
+// TestPostMovePressure_ClampsAtZero — when a footprint exceeds the
+// pre-move snapshot, post stays at 0 rather than going negative.
+// Guards the gates from spurious "relief = 1.something" math.
+func TestPostMovePressure_ClampsAtZero(t *testing.T) {
+	c := candidate(func(c *rebalance.MoveCandidate) {
+		c.SrcPressure = rebalance.Snapshot{CPU: 0.1, Memory: 0.05}
+		c.Footprint = rebalance.Footprint{CPU: 0.5, Memory: 0.5}
+	})
+	postSrc, _ := rebalance.PostMovePressure(c)
+	if postSrc.CPU != 0 || postSrc.Memory != 0 {
+		t.Errorf("post src not clamped to zero: %+v", postSrc)
 	}
 }
 
 // TestHardFilter_OrderingAndReasons — explicit table over each gate.
-// Order matters: stateful_filtered must come before resource_limits
-// must come before anti_affinity must come before would_break_quorum,
-// per ADR §"Selection policy" ordering. (The order is observable
+// Order matters: resource_limits must come before anti_affinity per
+// the package's HardFilter ordering. (The order is observable
 // through the reason string the cycle records in the audit log.)
 func TestHardFilter_OrderingAndReasons(t *testing.T) {
 	cases := []struct {
@@ -159,14 +129,6 @@ func TestHardFilter_OrderingAndReasons(t *testing.T) {
 			name: "happy path passes",
 			mut:  func(c *rebalance.MoveCandidate) {},
 			want: rebalance.SkipNone,
-		},
-		{
-			name: "stateful rejected first",
-			mut: func(c *rebalance.MoveCandidate) {
-				c.Footprint.Stateful = true
-				c.DstResourceFits = false // would also fail, stateful comes first
-			},
-			want: rebalance.SkipStatefulFiltered,
 		},
 		{
 			name: "resource limits rejected before anti-affinity",
@@ -210,7 +172,7 @@ func TestHardFilter_OrderingAndReasons(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			c := candidate(tc.mut)
-			if got := rebalance.HardFilter(c, nil); got != tc.want {
+			if got := rebalance.HardFilter(c); got != tc.want {
 				t.Errorf("HardFilter = %q, want %q", got, tc.want)
 			}
 		})

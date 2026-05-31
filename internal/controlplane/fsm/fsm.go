@@ -147,8 +147,25 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 	case *pb.Command_NodeStatusUpdate:
 		u := p.NodeStatusUpdate
 		if node, ok := f.State.Nodes.Get(u.GetHostname()); ok {
-			node.Status = u.GetStatus()
-			node.StatusDetails = u.GetDetails()
+			// A pressure-only heartbeat sets Status=UNSPECIFIED; in
+			// that case keep the existing status + details rather
+			// than clobbering them with zero values. Explicit status
+			// transitions (firewall reconciler, membership) always
+			// set a concrete enum and reach the patch path.
+			if u.GetStatus() != pb.NodeStatus_NODE_STATUS_UNSPECIFIED {
+				node.Status = u.GetStatus()
+				node.StatusDetails = u.GetDetails()
+			}
+			// Pressure fields only patch when the heartbeater
+			// flagged include_pressure=true — otherwise a status-only
+			// command (firewall reconciler, membership) would clobber
+			// the latest pressure sample with zeros. Absence here
+			// becomes !ok at read time via LastPressureAt freshness.
+			if u.GetIncludePressure() {
+				node.CpuPressure = u.GetCpuPressure()
+				node.MemoryPressure = u.GetMemoryPressure()
+				node.LastPressureAt = cmd.GetTs()
+			}
 			f.State.Nodes.Apply(node, idx)
 		}
 		if u.GetStatus() == pb.NodeStatus_NODE_STATUS_ISOLATION_UNAVAILABLE {

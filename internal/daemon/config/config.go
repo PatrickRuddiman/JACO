@@ -38,6 +38,21 @@ const (
 	DefaultLogLevel    = "info"
 	DefaultIPAMPool    = "10.244.0.0/16"
 
+	// DefaultNodeStatusInterval is how often each daemon samples its
+	// local cgroup v2 pressure and gossips a NodeStatusUpdate
+	// heartbeat through raft. 30s matches the rebalancer's cycle
+	// interval — one fresh sample per rebalance cycle is the
+	// minimum that lets the EWMA converge inside a few cycles. Too
+	// short floods raft with low-signal commits; too long delays
+	// pressure detection.
+	DefaultNodeStatusInterval = 30 * time.Second
+	// MinNodeStatusInterval / MaxNodeStatusInterval bound the
+	// operator-tunable knob. Below the minimum the raft write rate
+	// becomes audible; above the maximum the rebalancer is
+	// effectively dormant.
+	MinNodeStatusInterval = 5 * time.Second
+	MaxNodeStatusInterval = 5 * time.Minute
+
 	// DefaultACMECA is the Let's Encrypt production ACME directory — the CA
 	// JACO issues against unless the operator pins acme_ca to staging (or any
 	// other ACME provider). Stage-first issuance (issue #41) runs against
@@ -82,41 +97,13 @@ type Config struct {
 	LogLevel string `yaml:"log_level"`
 	// IPAMPool is the per-deployment subnet allocator CIDR (must be /16).
 	IPAMPool string `yaml:"ipam_pool"`
-	// Scheduler holds the scheduler subsystem's optional knobs. The only
-	// member today is the pressure-based rebalancer (issue #92, ADR
-	// 0002). The block is OPTIONAL: omitting it leaves the rebalancer
-	// unconfigured (no loop spawned). Setting `scheduler.rebalance:`
-	// at all — even `enabled: false` — counts as "configured" and
-	// starts the loop in dry-run mode so operators can evaluate the
-	// policy from the audit log before turning it on.
-	Scheduler *SchedulerConfig `yaml:"scheduler"`
-}
-
-
-// SchedulerConfig groups scheduler subsystem knobs that are off by
-// default and surface only when the operator opts in. Today: just the
-// rebalancer. Future scheduler tunables (e.g. reconcile cadence,
-// rollout pacing) live here too.
-type SchedulerConfig struct {
-	Rebalance *RebalanceConfig `yaml:"rebalance"`
-}
-
-// RebalanceConfig is the yaml view of the pressure-rebalancer's knobs.
-// Field documentation lives in internal/scheduler/rebalance/config.go;
-// the daemon just transports values. Pointer-typed numeric fields are
-// avoided — the rebalancer fills missing values from its own
-// DefaultConfig() at construction time, so "zero" means "use default".
-type RebalanceConfig struct {
-	Enabled           bool          `yaml:"enabled"`
-	TriggerThreshold  float64       `yaml:"trigger_threshold"`
-	ImbalanceGap      float64       `yaml:"imbalance_gap"`
-	ReliefFloor       float64       `yaml:"relief_floor"`
-	DstCap            float64       `yaml:"dst_cap"`
-	CooldownReplica   time.Duration `yaml:"cooldown_replica"`
-	CooldownNode      time.Duration `yaml:"cooldown_node"`
-	CycleInterval     time.Duration `yaml:"cycle_interval"`
-	ConsecutiveCycles int           `yaml:"consecutive_cycles"`
-	ReplicaSoftCap    int           `yaml:"replica_soft_cap"`
+	// NodeStatusInterval is how often each daemon samples its local
+	// cgroup v2 pressure and gossips a NodeStatusUpdate heartbeat
+	// through raft for the rebalancer (issue #137). 30s default;
+	// validated to fall within [MinNodeStatusInterval,
+	// MaxNodeStatusInterval]. Parsed as a Go duration string
+	// (e.g. "30s", "1m"). Zero (key absent) → DefaultNodeStatusInterval.
+	NodeStatusInterval time.Duration `yaml:"node_status_interval"`
 }
 
 // ACMEEnabledOrDefault returns the effective cluster-wide ACME switch. The
@@ -138,6 +125,17 @@ func (c Config) ACMECAOrDefault() string {
 	return c.ACMECA
 }
 
+// NodeStatusIntervalOrDefault returns the effective heartbeat cadence
+// for the rebalancer's pressure gossip. A zero value (key absent, or
+// explicitly node_status_interval: 0) maps to the default — callers
+// should never use the raw field.
+func (c Config) NodeStatusIntervalOrDefault() time.Duration {
+	if c.NodeStatusInterval <= 0 {
+		return DefaultNodeStatusInterval
+	}
+	return c.NodeStatusInterval
+}
+
 // Defaults returns a Config populated with the documented defaults.
 func Defaults() Config {
 	return Config{
@@ -147,7 +145,8 @@ func Defaults() Config {
 		UnixSocket:  DefaultUnixSocket,
 		WGPort:      DefaultWGPort,
 		LogLevel:    DefaultLogLevel,
-		IPAMPool:    DefaultIPAMPool,
+		IPAMPool:           DefaultIPAMPool,
+		NodeStatusInterval: DefaultNodeStatusInterval,
 	}
 }
 
@@ -227,6 +226,16 @@ func (c Config) Validate() error {
 		return fmt.Errorf("ipam_pool %q is not a CIDR: %w", c.IPAMPool, err)
 	} else if ones, _ := ipNet.Mask.Size(); ones != 16 {
 		return fmt.Errorf("ipam_pool %q must be a /16 (got /%d)", c.IPAMPool, ones)
+	}
+	// node_status_interval: tolerate zero (key absent) by treating it
+	// as the default, then bounds-check. Reject anything outside the
+	// documented [Min, Max] window with an explicit error rather than
+	// silently clamping — operators see a typo immediately.
+	if c.NodeStatusInterval != 0 {
+		if c.NodeStatusInterval < MinNodeStatusInterval || c.NodeStatusInterval > MaxNodeStatusInterval {
+			return fmt.Errorf("node_status_interval %s must be between %s and %s",
+				c.NodeStatusInterval, MinNodeStatusInterval, MaxNodeStatusInterval)
+		}
 	}
 	return nil
 }

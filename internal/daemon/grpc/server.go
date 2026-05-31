@@ -36,6 +36,8 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/ingress/stagefirst"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/storage"
 	"github.com/PatrickRuddiman/jaco/internal/logging"
+	"github.com/PatrickRuddiman/jaco/internal/daemon/config"
+	"github.com/PatrickRuddiman/jaco/internal/runtime/cgroupv2"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/health"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/reconciler"
@@ -116,10 +118,10 @@ type Server struct {
 	// acmeSkipStaging mirrors jacod.yaml.acme_skip_staging.
 	acmeSkipStaging bool
 
-	// rebalanceCfg is the operator-supplied pressure-rebalancer
-	// config plumbed from jacod.yaml.scheduler.rebalance (issue #92).
-	// nil → no rebalancer goroutine spawned in startSubsystems.
-	rebalanceCfg *rebalance.Config
+	// nodeStatusInterval is the cadence of the local cgroup pressure
+	// heartbeat goroutine (issue #137). Zero → use the default at the
+	// goroutine's use site. Set from Options.NodeStatusInterval.
+	nodeStatusInterval time.Duration
 
 	// tlsDyn holds the live server cert for the cross-host TCP listener.
 	// Nil when no TCP listener was opened. RebindTLS swaps the cert in
@@ -205,14 +207,11 @@ type Options struct {
 	// already non-prod.
 	ACMESkipStaging bool
 
-	// Rebalance is the operator-supplied pressure-rebalancer config
-	// (issue #92, ADR 0002). nil → the rebalancer subsystem is not
-	// started. A non-nil value — even one with Enabled=false — is the
-	// operator opting in (dry-run mode emits would-have-moved audit
-	// events but commits nothing). The PressureSource wired in v0 is
-	// the stub (no real signals); real cgroup collection is a follow-
-	// up.
-	Rebalance *rebalance.Config
+	// NodeStatusInterval is the cadence of the local cgroup pressure
+	// gossip heartbeat that feeds the rebalancer (issue #137). Plumbed
+	// from jacod.yaml.node_status_interval; zero falls back to
+	// config.DefaultNodeStatusInterval at use site.
+	NodeStatusInterval time.Duration
 }
 
 // New builds a Server. Doesn't start anything yet — call Serve.
@@ -358,8 +357,8 @@ func New(opts Options) (*Server, error) {
 			CA:      acmeCA,
 			Enabled: opts.ACMEEnabled,
 		},
-		acmeSkipStaging: opts.ACMESkipStaging,
-		rebalanceCfg:    opts.Rebalance,
+		acmeSkipStaging:    opts.ACMESkipStaging,
+		nodeStatusInterval: opts.NodeStatusInterval,
 	}
 	cluster := &clusterServer{
 		gate:          gate,
@@ -538,24 +537,57 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 		}
 	}()
 
-	// Optional pressure-based rebalancer (issue #92, ADR 0002). Wired
-	// only when the operator set scheduler.rebalance: in jacod.yaml —
-	// either enabled (commits moves) or disabled (dry-run, audit only).
-	// The PressureSource is a stub that reports "no data" for every
-	// node; real cgroup/dockerx collection is a follow-up. The loop
-	// self-gates on leader status and silently no-ops on followers, so
-	// it is safe to start unconditionally on every node.
-	if s.rebalanceCfg != nil {
-		reb := rebalance.New(st, node, apply, rebalance.StubSource{}, *s.rebalanceCfg)
-		reb.Logger = logging.Subsystem(s.logger, "scheduler/rebalance").With(logging.KeyNode, hostname)
-		s.subsystemsWG.Add(1)
-		go func() {
-			defer s.subsystemsWG.Done()
-			if err := reb.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				s.srvLog.Error("scheduler/rebalance.Run exited", "error", err)
-			}
-		}()
+	// Pressure-based rebalancer (issues #92, #137; ADR 0002). Always-on:
+	// the loop self-gates on raft leader status, defaults bias toward
+	// inaction (sustained-pressure + cross-node-imbalance gates must
+	// both hold), and the PressureSource reads gossiped per-node
+	// samples out of raft state. Heartbeat below ships this node's own
+	// sample on every interval; the rebalancer on the leader sees
+	// every node's sample within one heartbeat round-trip.
+	hbInterval := s.nodeStatusInterval
+	if hbInterval <= 0 {
+		hbInterval = config.DefaultNodeStatusInterval
 	}
+	pressureSrc := &rebalance.StateBackedSource{
+		State: st,
+		// 3× the heartbeat tolerates one missed cycle; a crashed
+		// node falls out of scoring within ~2 intervals.
+		MaxAge: 3 * hbInterval,
+	}
+	reb := rebalance.New(st, node, apply, pressureSrc, rebalance.DefaultConfig())
+	reb.Logger = logging.Subsystem(s.logger, "scheduler/rebalance").With(logging.KeyNode, hostname)
+	s.subsystemsWG.Add(1)
+	go func() {
+		defer s.subsystemsWG.Done()
+		if err := reb.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			s.srvLog.Error("scheduler/rebalance.Run exited", "error", err)
+		}
+	}()
+
+	// Cgroup v2 pressure heartbeat (issue #137). Samples local CPU +
+	// memory once per hbInterval and gossips a NodeStatusUpdate
+	// {IncludePressure:true} via the leader-or-forward helper. On
+	// non-Linux builds or unprivileged containers the collector
+	// returns Ok=false and the heartbeat skips the tick — the
+	// rebalancer's freshness gate then drops this node from scoring.
+	collector := &cgroupv2.Collector{}
+	hbApply := func(ctx context.Context, data []byte) error {
+		return applyOrForwardCommand(
+			ctx, data,
+			func(b []byte) (uint64, error) { return node.Apply(b, 0) },
+			func(ctx context.Context, b []byte) error {
+				return dialAndSubmit(ctx, leaderGRPCAddr(st, node), b)
+			},
+		)
+	}
+	hbLog := logging.Subsystem(s.logger, "scheduler/pressure").With(logging.KeyNode, hostname)
+	s.subsystemsWG.Add(1)
+	go func() {
+		defer s.subsystemsWG.Done()
+		if err := pressureHeartbeat(ctx, hbLog, hostname, hbInterval, collector, hbApply); err != nil && !errors.Is(err, context.Canceled) {
+			s.srvLog.Error("scheduler/pressure.heartbeat exited", "error", err)
+		}
+	}()
 
 	// Discovery: WireGuard mesh sync. Skipped when the kernel WG module
 	// isn't reachable via wgctrl (typical on unprivileged dev hosts and

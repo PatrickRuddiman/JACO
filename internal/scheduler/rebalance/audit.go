@@ -30,9 +30,9 @@ func (r *Rebalancer) emitAudit(t pb.AuditEventType, payload map[string]string) e
 }
 
 // auditPayload returns the shared payload shape ADR 0002 documents
-// for every rebalance event (MOVED, DRY_RUN, SKIPPED). Reason is
-// optional — SkipNone elides the key entirely.
-func auditPayload(c *MoveCandidate, score, relief float64, dominant Dimension, dryRun bool, reason SkipReason) map[string]string {
+// for every rebalance event (MOVED, SKIPPED). Reason is optional —
+// SkipNone elides the key entirely.
+func auditPayload(c *MoveCandidate, score, relief float64, dominant Dimension, reason SkipReason) map[string]string {
 	postSrc, postDst := PostMovePressure(c)
 	p := map[string]string{
 		"replica_id":          c.Replica.GetId(),
@@ -43,12 +43,11 @@ func auditPayload(c *MoveCandidate, score, relief float64, dominant Dimension, d
 		"dominant":            dominant.String(),
 		"relief":              formatFloat(relief),
 		"score":               formatFloat(score),
-		"move_cost":           formatFloat(moveCost(c)),
+		"move_cost":           formatFloat(moveCost),
 		"src_pressure_before": formatFloat(Composite(c.SrcPressure)),
 		"dst_pressure_before": formatFloat(Composite(c.DstPressure)),
 		"src_pressure_after":  formatFloat(Composite(postSrc)),
 		"dst_pressure_after":  formatFloat(Composite(postDst)),
-		"dry_run":             strconv.FormatBool(dryRun),
 	}
 	if reason != SkipNone {
 		p["reason"] = string(reason)

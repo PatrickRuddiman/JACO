@@ -67,19 +67,21 @@ enum AuditEventType {
   // fields (csv of which fields were set on the service).
   AUDIT_EVENT_TYPE_PRIVILEGED_WORKLOAD_ADMITTED = 20;
   // Rebalance decisions emitted by internal/scheduler/rebalance (issue
-  // #92, ADR 0002). All three carry the same payload shape so dry-run
-  // and live runs are directly comparable:
+  // #92, ADR 0002). Payload shape:
   //   replica_id, deployment, service, src, dst,
-  //   relief, dominant (cpu|memory|disk_io|count),
+  //   relief, dominant (cpu|memory),
   //   src_pressure_before, dst_pressure_before,
   //   src_pressure_after, dst_pressure_after,
-  //   move_cost, score, dry_run ("true"|"false"),
+  //   move_cost, score,
   //   reason (only on SKIPPED: cooldown_replica | cooldown_node |
-  //           no_eligible_dst | would_break_quorum | dst_cap |
-  //           relief_floor | stateful_filtered | resource_limits |
-  //           anti_affinity | no_candidate).
+  //           no_eligible_dst | dst_cap | relief_floor |
+  //           resource_limits | anti_affinity | no_candidate).
   AUDIT_EVENT_TYPE_REBALANCE_MOVED = 21;
-  AUDIT_EVENT_TYPE_REBALANCE_DRY_RUN = 22;
+  // Reserved: AUDIT_EVENT_TYPE_REBALANCE_DRY_RUN = 22; (rebalancer was
+  // simplified to always-on; the dry-run audit type was removed but the
+  // tag is reserved so historical audit blobs still decode.)
+  reserved 22;
+  reserved "AUDIT_EVENT_TYPE_REBALANCE_DRY_RUN";
   AUDIT_EVENT_TYPE_REBALANCE_SKIPPED = 23;
 }
 
@@ -105,6 +107,17 @@ message Node {
   // raft transport addr). Followers dial this via Internal.Submit to
   // forward ReplicaObserved updates to the leader.
   string grpc_address = 8;
+  // cpu_pressure / memory_pressure are the latest gossiped
+  // utilisation samples for this node, in [0, 1]. Updated by the
+  // periodic NodeStatusUpdate heartbeat from the node itself.
+  // Consumed by the rebalancer (#92) on the leader. Use
+  // last_pressure_at as the freshness gate — zero values are
+  // indistinguishable from "node idle", so the rebalancer's
+  // state-backed source rejects samples older than 3× the
+  // configured heartbeat interval.
+  double cpu_pressure = 9;
+  double memory_pressure = 10;
+  google.protobuf.Timestamp last_pressure_at = 11;
 }
 
 // ----- Deployment entities -----

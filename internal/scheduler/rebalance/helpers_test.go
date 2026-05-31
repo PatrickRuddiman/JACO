@@ -69,16 +69,16 @@ func (s *fakeSource) setReplica(id string, fp rebalance.Footprint) {
 // and fake source. Tests drive Cycle() directly; the captured applier
 // records every Apply for assertions on commits + audits.
 type rig struct {
-	t          *testing.T
-	state      *state.State
-	fsm        *fsm.FSM
-	leader     *fakeLeader
-	source     *fakeSource
-	rebal      *rebalance.Rebalancer
-	now        time.Time
-	applies    [][]byte
-	raftIdx    uint64
-	applyMu    sync.Mutex
+	t       *testing.T
+	state   *state.State
+	fsm     *fsm.FSM
+	leader  *fakeLeader
+	source  *fakeSource
+	rebal   *rebalance.Rebalancer
+	now     time.Time
+	applies [][]byte
+	raftIdx uint64
+	applyMu sync.Mutex
 }
 
 // newRig builds the standard test rig. cfg is the rebalancer config
@@ -181,8 +181,10 @@ func (r *rig) seedReplica(id, deployment, service, host string, index int32) {
 	r.fsm.Apply(&hraft.Log{Index: r.raftIdx, Data: data})
 }
 
-// seedObserved marks a replica as RUNNING from the observed side
-// (used by Quorum's "currently RUNNING members" count).
+// seedObserved marks a replica as RUNNING from the observed side.
+// Kept on the rig because some tests still want to populate the
+// observed table for completeness even though the rebalancer no
+// longer cross-references it (the v0 quorum check is gone).
 func (r *rig) seedObserved(id, host string) {
 	r.t.Helper()
 	r.raftIdx++
@@ -231,8 +233,6 @@ func (r *rig) replicaHost(id string) string {
 	return rep.GetHost()
 }
 
-// pbAuditMoved / pbAuditDryRun / pbAuditSkipped are short aliases for
-// the audit event enum values so test rows stay readable.
-func pbAuditMoved() pb.AuditEventType   { return pb.AuditEventType_AUDIT_EVENT_TYPE_REBALANCE_MOVED }
-func pbAuditDryRun() pb.AuditEventType  { return pb.AuditEventType_AUDIT_EVENT_TYPE_REBALANCE_DRY_RUN }
+// pbAuditSkipped is a short alias for the audit event enum value so test rows
+// stay readable.
 func pbAuditSkipped() pb.AuditEventType { return pb.AuditEventType_AUDIT_EVENT_TYPE_REBALANCE_SKIPPED }

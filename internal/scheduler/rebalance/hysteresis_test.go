@@ -10,10 +10,9 @@ import (
 )
 
 // hotRig builds a 2-node setup with one movable replica on node-a.
-// Pressure on node-a is configurable; node-b sits at 0.2 (well
-// below the trigger threshold). cfg overrides should be applied
-// AFTER newRig sees DefaultConfig — call hotRig with the cfg you
-// want.
+// node-b sits at 0.2 (well below the trigger threshold). cfg
+// overrides should be applied AFTER newRig sees DefaultConfig — call
+// hotRig with the cfg you want.
 func hotRig(t *testing.T, cfg rebalance.Config) *rig {
 	t.Helper()
 	r := newRig(t, cfg)
@@ -33,7 +32,6 @@ func hotRig(t *testing.T, cfg rebalance.Config) *rig {
 // which a single 30s sample from 0.2 cannot achieve.
 func TestHysteresis_SingleSpikeDoesNotTrigger(t *testing.T) {
 	cfg := rebalance.DefaultConfig()
-	cfg.Enabled = true
 	cfg.CycleInterval = 30 * time.Second
 	cfg.ConsecutiveCycles = 2
 	cfg.CooldownReplica = 0
@@ -64,7 +62,6 @@ func TestHysteresis_SingleSpikeDoesNotTrigger(t *testing.T) {
 // commits.
 func TestHysteresis_SustainedPressureEventuallyTriggers(t *testing.T) {
 	cfg := rebalance.DefaultConfig()
-	cfg.Enabled = true
 	cfg.CycleInterval = 30 * time.Second
 	cfg.ConsecutiveCycles = 2
 	cfg.CooldownReplica = 0
@@ -91,7 +88,6 @@ func TestHysteresis_SustainedPressureEventuallyTriggers(t *testing.T) {
 // DstCap 0.75. Cycle must skip with reason=dst_cap.
 func TestHysteresis_DstCapBlocksMove(t *testing.T) {
 	cfg := rebalance.DefaultConfig()
-	cfg.Enabled = true
 	cfg.ConsecutiveCycles = 1 // bypass hysteresis, isolate the dst-cap path
 	cfg.CooldownReplica = 0
 	cfg.CooldownNode = 0
@@ -113,7 +109,6 @@ func TestHysteresis_DstCapBlocksMove(t *testing.T) {
 // Cycle must skip with reason=relief_floor.
 func TestHysteresis_ReliefFloorBlocksMove(t *testing.T) {
 	cfg := rebalance.DefaultConfig()
-	cfg.Enabled = true
 	cfg.ConsecutiveCycles = 1
 	cfg.CooldownReplica = 0
 	cfg.CooldownNode = 0
@@ -135,7 +130,6 @@ func TestHysteresis_ReliefFloorBlocksMove(t *testing.T) {
 // cooldown and emits a SKIPPED audit.
 func TestHysteresis_CooldownReplicaBlocksRepeatMove(t *testing.T) {
 	cfg := rebalance.DefaultConfig()
-	cfg.Enabled = true
 	cfg.ConsecutiveCycles = 1
 	cfg.CooldownReplica = 10 * time.Minute
 	cfg.CooldownNode = 0
@@ -147,16 +141,13 @@ func TestHysteresis_CooldownReplicaBlocksRepeatMove(t *testing.T) {
 	if r.replicaHost("dep-web-0") == "node-a" {
 		t.Fatalf("first cycle did not commit a move")
 	}
-	// Re-hot node-a (the replica is gone, but we're simulating a
-	// second replica's worth of pressure landing back). Add a new
-	// replica on node-a to give the cycle a candidate to consider.
+	// Stamp the previously-moved replica back onto node-a so the
+	// cooldown check applies. Add a second replica too so the
+	// cycle still has at least one candidate to consider after
+	// rejecting the cooled-down one.
 	r.seedReplica("dep-web-1", "dep", "web", "node-a", 1)
 	r.seedObserved("dep-web-1", "node-a")
 	r.source.setReplica("dep-web-1", rebalance.Footprint{CPU: 0.3, Memory: 0.1})
-
-	// Stamp the previously-moved replica back onto node-a too, so
-	// the cooldown check applies — but the new replica should still
-	// be eligible. (We only assert the moved one stays put.)
 	r.seedReplica("dep-web-0", "dep", "web", "node-a", 0)
 	r.source.setReplica("dep-web-0", rebalance.Footprint{CPU: 0.3, Memory: 0.1})
 
@@ -177,7 +168,6 @@ func TestHysteresis_CooldownReplicaBlocksRepeatMove(t *testing.T) {
 // skipped with reason=cooldown_node.
 func TestHysteresis_CooldownNodeBlocksSecondMoveOntoDst(t *testing.T) {
 	cfg := rebalance.DefaultConfig()
-	cfg.Enabled = true
 	cfg.ConsecutiveCycles = 1
 	cfg.CooldownReplica = 0
 	cfg.CooldownNode = 2 * time.Minute
@@ -187,10 +177,7 @@ func TestHysteresis_CooldownNodeBlocksSecondMoveOntoDst(t *testing.T) {
 	r.seedNode("node-c")
 	// PACK so anti-affinity does not block the second move onto
 	// node-b on its own — we want cooldown_node to be the operative
-	// gate. Use a 3-replica service (floor=2, members=3 → post=2 ≥
-	// floor) so the quorum gate doesn't fire first; with 2 replicas
-	// the v0 "all-replicas-of-one-service" quorum model would
-	// conservatively block any move.
+	// gate.
 	r.seedDeploymentMode("dep", 3, pb.ServiceSpec_PLACEMENT_MODE_PACK)
 	r.seedReplica("dep-web-0", "dep", "web", "node-a", 0)
 	r.seedReplica("dep-web-1", "dep", "web", "node-a", 1)
@@ -203,9 +190,6 @@ func TestHysteresis_CooldownNodeBlocksSecondMoveOntoDst(t *testing.T) {
 	r.source.setReplica("dep-web-2", rebalance.Footprint{CPU: 0.1, Memory: 0.1})
 	r.source.setNode("node-a", rebalance.Snapshot{CPU: 0.95})
 	r.source.setNode("node-b", rebalance.Snapshot{CPU: 0.2})
-	// node-c is also a viable destination — first cycle will pick
-	// one based on score+tiebreak; second cycle exercises the
-	// cooldown_node skip on whichever node-b or node-c was chosen.
 	r.source.setNode("node-c", rebalance.Snapshot{CPU: 0.2})
 
 	// Cycle 1: moves one of the node-a replicas to node-b or node-c.
@@ -216,9 +200,7 @@ func TestHysteresis_CooldownNodeBlocksSecondMoveOntoDst(t *testing.T) {
 			r.replicaHost("dep-web-0"), r.replicaHost("dep-web-1"))
 	}
 
-	// Advance 30s — well inside the 2m node cooldown.
-	r.advance(30 * time.Second)
-	// Sustain pressure on node-a (still has one replica left).
+	r.advance(30 * time.Second) // well inside the 2m node cooldown
 	r.source.setNode("node-a", rebalance.Snapshot{CPU: 0.95})
 
 	// Cycle 2: should refuse a second move onto whichever node was
@@ -234,7 +216,6 @@ func TestHysteresis_CooldownNodeBlocksSecondMoveOntoDst(t *testing.T) {
 // commits even though both EWMAs exceed the trigger threshold.
 func TestHysteresis_ImbalanceGapBlocksMove(t *testing.T) {
 	cfg := rebalance.DefaultConfig()
-	cfg.Enabled = true
 	cfg.ConsecutiveCycles = 1
 	cfg.CooldownReplica = 0
 	cfg.CooldownNode = 0
