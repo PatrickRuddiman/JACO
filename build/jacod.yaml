@@ -40,3 +40,11 @@ log_level: info
 # IPAM pool. Must be a /16 — supplies up to 256 /24 subnets, one per
 # (deployment, network) pair.
 ipam_pool: 10.244.0.0/16
+
+# Cgroup-v2 pressure heartbeat cadence. Each daemon samples its local
+# CPU + memory utilisation on this interval and gossips a node-status
+# update through raft for the rebalancer (issues #92, #137). 30s
+# default; valid range 5s..5m. Lower bound caps raft write rate, upper
+# bound caps detection latency. Format: Go duration string ("30s",
+# "1m", "90s"). Comment out / omit to use the default.
+#node_status_interval: 30s

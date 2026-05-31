@@ -107,6 +107,17 @@ message Node {
   // raft transport addr). Followers dial this via Internal.Submit to
   // forward ReplicaObserved updates to the leader.
   string grpc_address = 8;
+  // cpu_pressure / memory_pressure are the latest gossiped
+  // utilisation samples for this node, in [0, 1]. Updated by the
+  // periodic NodeStatusUpdate heartbeat from the node itself.
+  // Consumed by the rebalancer (#92) on the leader. Use
+  // last_pressure_at as the freshness gate — zero values are
+  // indistinguishable from "node idle", so the rebalancer's
+  // state-backed source rejects samples older than 3× the
+  // configured heartbeat interval.
+  double cpu_pressure = 9;
+  double memory_pressure = 10;
+  google.protobuf.Timestamp last_pressure_at = 11;
 }
 
 // ----- Deployment entities -----

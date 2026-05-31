@@ -97,6 +97,22 @@ message NodeStatusUpdate {
   string hostname = 1;
   NodeStatus status = 2;
   map<string, string> details = 3;
+  // cpu_pressure / memory_pressure are the source node's most recent
+  // self-reported utilisation, normalised to [0, 1] (1.0 = saturated).
+  // Used by the rebalancer (#92) to rank nodes for relief moves. The
+  // FSM patches Node.{CpuPressure,MemoryPressure,LastPressureAt} on
+  // apply without emitting an audit event — pressure churn would
+  // flood the log.
+  //
+  // Only patched when include_pressure=true, so the firewall reconciler
+  // (which sends status-only updates) doesn't clobber the latest
+  // pressure sample with zeros. A node that can't read its cgroup
+  // (unprivileged container, missing v2 mount) leaves include_pressure
+  // false; the rebalancer's state-backed source treats absence as
+  // !ok via LastPressureAt freshness.
+  double cpu_pressure = 4;
+  double memory_pressure = 5;
+  bool include_pressure = 6;
 }
 
 // NodeUpdateSelf lets a node re-publish its own discovery metadata

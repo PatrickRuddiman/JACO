@@ -952,12 +952,28 @@ func (x *NodeRemove) GetHostname() string {
 }
 
 type NodeStatusUpdate struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Hostname      string                 `protobuf:"bytes,1,opt,name=hostname,proto3" json:"hostname,omitempty"`
-	Status        NodeStatus             `protobuf:"varint,2,opt,name=status,proto3,enum=jaco.v1.NodeStatus" json:"status,omitempty"`
-	Details       map[string]string      `protobuf:"bytes,3,rep,name=details,proto3" json:"details,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Hostname string                 `protobuf:"bytes,1,opt,name=hostname,proto3" json:"hostname,omitempty"`
+	Status   NodeStatus             `protobuf:"varint,2,opt,name=status,proto3,enum=jaco.v1.NodeStatus" json:"status,omitempty"`
+	Details  map[string]string      `protobuf:"bytes,3,rep,name=details,proto3" json:"details,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// cpu_pressure / memory_pressure are the source node's most recent
+	// self-reported utilisation, normalised to [0, 1] (1.0 = saturated).
+	// Used by the rebalancer (#92) to rank nodes for relief moves. The
+	// FSM patches Node.{CpuPressure,MemoryPressure,LastPressureAt} on
+	// apply without emitting an audit event — pressure churn would
+	// flood the log.
+	//
+	// Only patched when include_pressure=true, so the firewall reconciler
+	// (which sends status-only updates) doesn't clobber the latest
+	// pressure sample with zeros. A node that can't read its cgroup
+	// (unprivileged container, missing v2 mount) leaves include_pressure
+	// false; the rebalancer's state-backed source treats absence as
+	// !ok via LastPressureAt freshness.
+	CpuPressure     float64 `protobuf:"fixed64,4,opt,name=cpu_pressure,json=cpuPressure,proto3" json:"cpu_pressure,omitempty"`
+	MemoryPressure  float64 `protobuf:"fixed64,5,opt,name=memory_pressure,json=memoryPressure,proto3" json:"memory_pressure,omitempty"`
+	IncludePressure bool    `protobuf:"varint,6,opt,name=include_pressure,json=includePressure,proto3" json:"include_pressure,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *NodeStatusUpdate) Reset() {
@@ -1009,6 +1025,27 @@ func (x *NodeStatusUpdate) GetDetails() map[string]string {
 		return x.Details
 	}
 	return nil
+}
+
+func (x *NodeStatusUpdate) GetCpuPressure() float64 {
+	if x != nil {
+		return x.CpuPressure
+	}
+	return 0
+}
+
+func (x *NodeStatusUpdate) GetMemoryPressure() float64 {
+	if x != nil {
+		return x.MemoryPressure
+	}
+	return 0
+}
+
+func (x *NodeStatusUpdate) GetIncludePressure() bool {
+	if x != nil {
+		return x.IncludePressure
+	}
+	return false
 }
 
 // NodeUpdateSelf lets a node re-publish its own discovery metadata
@@ -2589,11 +2626,14 @@ const file_jaco_v1_commands_proto_rawDesc = "" +
 	"\fgrpc_address\x18\x05 \x01(\tR\vgrpcAddress\"(\n" +
 	"\n" +
 	"NodeRemove\x12\x1a\n" +
-	"\bhostname\x18\x01 \x01(\tR\bhostname\"\xd9\x01\n" +
+	"\bhostname\x18\x01 \x01(\tR\bhostname\"\xd0\x02\n" +
 	"\x10NodeStatusUpdate\x12\x1a\n" +
 	"\bhostname\x18\x01 \x01(\tR\bhostname\x12+\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x13.jaco.v1.NodeStatusR\x06status\x12@\n" +
-	"\adetails\x18\x03 \x03(\v2&.jaco.v1.NodeStatusUpdate.DetailsEntryR\adetails\x1a:\n" +
+	"\adetails\x18\x03 \x03(\v2&.jaco.v1.NodeStatusUpdate.DetailsEntryR\adetails\x12!\n" +
+	"\fcpu_pressure\x18\x04 \x01(\x01R\vcpuPressure\x12'\n" +
+	"\x0fmemory_pressure\x18\x05 \x01(\x01R\x0ememoryPressure\x12)\n" +
+	"\x10include_pressure\x18\x06 \x01(\bR\x0fincludePressure\x1a:\n" +
 	"\fDetailsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"z\n" +

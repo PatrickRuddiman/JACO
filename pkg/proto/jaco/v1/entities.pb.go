@@ -502,9 +502,20 @@ type Node struct {
 	// listener (cfg.ListenAddr). Distinct from `address` (which is the
 	// raft transport addr). Followers dial this via Internal.Submit to
 	// forward ReplicaObserved updates to the leader.
-	GrpcAddress   string `protobuf:"bytes,8,opt,name=grpc_address,json=grpcAddress,proto3" json:"grpc_address,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	GrpcAddress string `protobuf:"bytes,8,opt,name=grpc_address,json=grpcAddress,proto3" json:"grpc_address,omitempty"`
+	// cpu_pressure / memory_pressure are the latest gossiped
+	// utilisation samples for this node, in [0, 1]. Updated by the
+	// periodic NodeStatusUpdate heartbeat from the node itself.
+	// Consumed by the rebalancer (#92) on the leader. Use
+	// last_pressure_at as the freshness gate — zero values are
+	// indistinguishable from "node idle", so the rebalancer's
+	// state-backed source rejects samples older than 3× the
+	// configured heartbeat interval.
+	CpuPressure    float64                `protobuf:"fixed64,9,opt,name=cpu_pressure,json=cpuPressure,proto3" json:"cpu_pressure,omitempty"`
+	MemoryPressure float64                `protobuf:"fixed64,10,opt,name=memory_pressure,json=memoryPressure,proto3" json:"memory_pressure,omitempty"`
+	LastPressureAt *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=last_pressure_at,json=lastPressureAt,proto3" json:"last_pressure_at,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *Node) Reset() {
@@ -591,6 +602,27 @@ func (x *Node) GetGrpcAddress() string {
 		return x.GrpcAddress
 	}
 	return ""
+}
+
+func (x *Node) GetCpuPressure() float64 {
+	if x != nil {
+		return x.CpuPressure
+	}
+	return 0
+}
+
+func (x *Node) GetMemoryPressure() float64 {
+	if x != nil {
+		return x.MemoryPressure
+	}
+	return 0
+}
+
+func (x *Node) GetLastPressureAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastPressureAt
+	}
+	return nil
 }
 
 type ServiceSpec struct {
@@ -2002,7 +2034,7 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\aca_cert\x18\x02 \x01(\fR\x06caCert\x12\x15\n" +
 	"\x06ca_key\x18\x03 \x01(\fR\x05caKey\x129\n" +
 	"\n" +
-	"created_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\xb3\x03\n" +
+	"created_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\xc5\x04\n" +
 	"\x04Node\x12\x1a\n" +
 	"\bhostname\x18\x01 \x01(\tR\bhostname\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x126\n" +
@@ -2011,7 +2043,11 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\x06status\x18\x05 \x01(\x0e2\x13.jaco.v1.NodeStatusR\x06status\x12G\n" +
 	"\x0estatus_details\x18\x06 \x03(\v2 .jaco.v1.Node.StatusDetailsEntryR\rstatusDetails\x127\n" +
 	"\tjoined_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\bjoinedAt\x12!\n" +
-	"\fgrpc_address\x18\b \x01(\tR\vgrpcAddress\x1a@\n" +
+	"\fgrpc_address\x18\b \x01(\tR\vgrpcAddress\x12!\n" +
+	"\fcpu_pressure\x18\t \x01(\x01R\vcpuPressure\x12'\n" +
+	"\x0fmemory_pressure\x18\n" +
+	" \x01(\x01R\x0ememoryPressure\x12D\n" +
+	"\x10last_pressure_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\x0elastPressureAt\x1a@\n" +
 	"\x12StatusDetailsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xe3\x02\n" +
@@ -2279,39 +2315,40 @@ var file_jaco_v1_entities_proto_depIdxs = []int32{
 	2,  // 1: jaco.v1.Node.status:type_name -> jaco.v1.NodeStatus
 	25, // 2: jaco.v1.Node.status_details:type_name -> jaco.v1.Node.StatusDetailsEntry
 	29, // 3: jaco.v1.Node.joined_at:type_name -> google.protobuf.Timestamp
-	5,  // 4: jaco.v1.ServiceSpec.placement:type_name -> jaco.v1.ServiceSpec.PlacementMode
-	3,  // 5: jaco.v1.Deployment.status:type_name -> jaco.v1.DeploymentStatus
-	26, // 6: jaco.v1.Deployment.status_details:type_name -> jaco.v1.Deployment.StatusDetailsEntry
-	8,  // 7: jaco.v1.Deployment.services:type_name -> jaco.v1.ServiceSpec
-	29, // 8: jaco.v1.Deployment.updated_at:type_name -> google.protobuf.Timestamp
-	0,  // 9: jaco.v1.ReplicaObserved.state:type_name -> jaco.v1.ReplicaState
-	27, // 10: jaco.v1.ReplicaObserved.details:type_name -> jaco.v1.ReplicaObserved.DetailsEntry
-	29, // 11: jaco.v1.ReplicaObserved.started_at:type_name -> google.protobuf.Timestamp
-	29, // 12: jaco.v1.ReplicaObserved.last_health_at:type_name -> google.protobuf.Timestamp
-	29, // 13: jaco.v1.Cert.not_before:type_name -> google.protobuf.Timestamp
-	29, // 14: jaco.v1.Cert.not_after:type_name -> google.protobuf.Timestamp
-	29, // 15: jaco.v1.Cert.lock_until:type_name -> google.protobuf.Timestamp
-	29, // 16: jaco.v1.ChallengeToken.expires_at:type_name -> google.protobuf.Timestamp
-	29, // 17: jaco.v1.CertBlob.updated_at:type_name -> google.protobuf.Timestamp
-	29, // 18: jaco.v1.Token.issued_at:type_name -> google.protobuf.Timestamp
-	29, // 19: jaco.v1.Token.revoked_at:type_name -> google.protobuf.Timestamp
-	29, // 20: jaco.v1.JoinToken.issued_at:type_name -> google.protobuf.Timestamp
-	29, // 21: jaco.v1.JoinToken.expires_at:type_name -> google.protobuf.Timestamp
-	29, // 22: jaco.v1.JoinToken.consumed_at:type_name -> google.protobuf.Timestamp
-	4,  // 23: jaco.v1.AuditEvent.type:type_name -> jaco.v1.AuditEventType
-	29, // 24: jaco.v1.AuditEvent.ts:type_name -> google.protobuf.Timestamp
-	28, // 25: jaco.v1.AuditEvent.payload:type_name -> jaco.v1.AuditEvent.PayloadEntry
-	29, // 26: jaco.v1.Subnet.allocated_at:type_name -> google.protobuf.Timestamp
-	1,  // 27: jaco.v1.RolloutPlan.state:type_name -> jaco.v1.RolloutState
-	29, // 28: jaco.v1.RolloutPlan.started_at:type_name -> google.protobuf.Timestamp
-	29, // 29: jaco.v1.RolloutPlan.last_step_at:type_name -> google.protobuf.Timestamp
-	29, // 30: jaco.v1.RestartCounter.last_attempt_at:type_name -> google.protobuf.Timestamp
-	29, // 31: jaco.v1.RegistryCredential.updated_at:type_name -> google.protobuf.Timestamp
-	32, // [32:32] is the sub-list for method output_type
-	32, // [32:32] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	29, // 4: jaco.v1.Node.last_pressure_at:type_name -> google.protobuf.Timestamp
+	5,  // 5: jaco.v1.ServiceSpec.placement:type_name -> jaco.v1.ServiceSpec.PlacementMode
+	3,  // 6: jaco.v1.Deployment.status:type_name -> jaco.v1.DeploymentStatus
+	26, // 7: jaco.v1.Deployment.status_details:type_name -> jaco.v1.Deployment.StatusDetailsEntry
+	8,  // 8: jaco.v1.Deployment.services:type_name -> jaco.v1.ServiceSpec
+	29, // 9: jaco.v1.Deployment.updated_at:type_name -> google.protobuf.Timestamp
+	0,  // 10: jaco.v1.ReplicaObserved.state:type_name -> jaco.v1.ReplicaState
+	27, // 11: jaco.v1.ReplicaObserved.details:type_name -> jaco.v1.ReplicaObserved.DetailsEntry
+	29, // 12: jaco.v1.ReplicaObserved.started_at:type_name -> google.protobuf.Timestamp
+	29, // 13: jaco.v1.ReplicaObserved.last_health_at:type_name -> google.protobuf.Timestamp
+	29, // 14: jaco.v1.Cert.not_before:type_name -> google.protobuf.Timestamp
+	29, // 15: jaco.v1.Cert.not_after:type_name -> google.protobuf.Timestamp
+	29, // 16: jaco.v1.Cert.lock_until:type_name -> google.protobuf.Timestamp
+	29, // 17: jaco.v1.ChallengeToken.expires_at:type_name -> google.protobuf.Timestamp
+	29, // 18: jaco.v1.CertBlob.updated_at:type_name -> google.protobuf.Timestamp
+	29, // 19: jaco.v1.Token.issued_at:type_name -> google.protobuf.Timestamp
+	29, // 20: jaco.v1.Token.revoked_at:type_name -> google.protobuf.Timestamp
+	29, // 21: jaco.v1.JoinToken.issued_at:type_name -> google.protobuf.Timestamp
+	29, // 22: jaco.v1.JoinToken.expires_at:type_name -> google.protobuf.Timestamp
+	29, // 23: jaco.v1.JoinToken.consumed_at:type_name -> google.protobuf.Timestamp
+	4,  // 24: jaco.v1.AuditEvent.type:type_name -> jaco.v1.AuditEventType
+	29, // 25: jaco.v1.AuditEvent.ts:type_name -> google.protobuf.Timestamp
+	28, // 26: jaco.v1.AuditEvent.payload:type_name -> jaco.v1.AuditEvent.PayloadEntry
+	29, // 27: jaco.v1.Subnet.allocated_at:type_name -> google.protobuf.Timestamp
+	1,  // 28: jaco.v1.RolloutPlan.state:type_name -> jaco.v1.RolloutState
+	29, // 29: jaco.v1.RolloutPlan.started_at:type_name -> google.protobuf.Timestamp
+	29, // 30: jaco.v1.RolloutPlan.last_step_at:type_name -> google.protobuf.Timestamp
+	29, // 31: jaco.v1.RestartCounter.last_attempt_at:type_name -> google.protobuf.Timestamp
+	29, // 32: jaco.v1.RegistryCredential.updated_at:type_name -> google.protobuf.Timestamp
+	33, // [33:33] is the sub-list for method output_type
+	33, // [33:33] is the sub-list for method input_type
+	33, // [33:33] is the sub-list for extension type_name
+	33, // [33:33] is the sub-list for extension extendee
+	0,  // [0:33] is the sub-list for field type_name
 }
 
 func init() { file_jaco_v1_entities_proto_init() }

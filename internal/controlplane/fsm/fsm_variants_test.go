@@ -151,6 +151,77 @@ func TestApply_NodeStatusUpdate_NonIsolationStatusNoAudit(t *testing.T) {
 	}
 }
 
+// TestApply_NodeStatusUpdate_PressureHeartbeatPatchesFields — a
+// heartbeat with IncludePressure=true patches CpuPressure, MemoryPressure,
+// LastPressureAt and PRESERVES the existing Status (Status=UNSPECIFIED
+// must not clobber it).
+func TestApply_NodeStatusUpdate_PressureHeartbeatPatchesFields(t *testing.T) {
+	f, s, _ := newFSM(t)
+	applyCmd(t, f, 1, &pb.Command{
+		Payload: &pb.Command_NodeJoin{NodeJoin: &pb.NodeJoin{Hostname: "node-a"}},
+	})
+	applyCmd(t, f, 2, &pb.Command{
+		Payload: &pb.Command_NodeStatusUpdate{NodeStatusUpdate: &pb.NodeStatusUpdate{
+			Hostname: "node-a", Status: pb.NodeStatus_NODE_STATUS_READY,
+		}},
+	})
+	ts := timestamppb.New(timestamppb.Now().AsTime())
+	applyCmd(t, f, 3, &pb.Command{
+		Ts: ts,
+		Payload: &pb.Command_NodeStatusUpdate{NodeStatusUpdate: &pb.NodeStatusUpdate{
+			Hostname:        "node-a",
+			IncludePressure: true,
+			CpuPressure:     0.72,
+			MemoryPressure:  0.38,
+			// Status intentionally UNSPECIFIED — pressure heartbeats
+			// don't carry status transitions.
+		}},
+	})
+	n, _ := s.Nodes.Get("node-a")
+	if n.GetCpuPressure() != 0.72 || n.GetMemoryPressure() != 0.38 {
+		t.Errorf("pressure = (%v, %v); want (0.72, 0.38)", n.GetCpuPressure(), n.GetMemoryPressure())
+	}
+	if n.GetLastPressureAt() == nil || !n.GetLastPressureAt().AsTime().Equal(ts.AsTime()) {
+		t.Errorf("LastPressureAt = %v; want %v", n.GetLastPressureAt(), ts)
+	}
+	if n.GetStatus() != pb.NodeStatus_NODE_STATUS_READY {
+		t.Errorf("status clobbered: %v; want READY", n.GetStatus())
+	}
+}
+
+// TestApply_NodeStatusUpdate_StatusOnlyPreservesPriorPressure — a
+// status-only update (firewall reconciler) must NOT zero existing
+// pressure fields, because IncludePressure=false.
+func TestApply_NodeStatusUpdate_StatusOnlyPreservesPriorPressure(t *testing.T) {
+	f, s, _ := newFSM(t)
+	applyCmd(t, f, 1, &pb.Command{
+		Payload: &pb.Command_NodeJoin{NodeJoin: &pb.NodeJoin{Hostname: "node-a"}},
+	})
+	applyCmd(t, f, 2, &pb.Command{
+		Ts: timestamppb.Now(),
+		Payload: &pb.Command_NodeStatusUpdate{NodeStatusUpdate: &pb.NodeStatusUpdate{
+			Hostname: "node-a", IncludePressure: true,
+			CpuPressure: 0.9, MemoryPressure: 0.5,
+		}},
+	})
+	applyCmd(t, f, 3, &pb.Command{
+		Payload: &pb.Command_NodeStatusUpdate{NodeStatusUpdate: &pb.NodeStatusUpdate{
+			Hostname: "node-a",
+			Status:   pb.NodeStatus_NODE_STATUS_ISOLATION_UNAVAILABLE,
+			// IncludePressure=false → pressure fields ignored.
+			CpuPressure: 0, MemoryPressure: 0,
+		}},
+	})
+	n, _ := s.Nodes.Get("node-a")
+	if n.GetCpuPressure() != 0.9 || n.GetMemoryPressure() != 0.5 {
+		t.Errorf("pressure clobbered by status-only update: (%v, %v); want (0.9, 0.5)",
+			n.GetCpuPressure(), n.GetMemoryPressure())
+	}
+	if n.GetStatus() != pb.NodeStatus_NODE_STATUS_ISOLATION_UNAVAILABLE {
+		t.Errorf("status = %v; want ISOLATION_UNAVAILABLE", n.GetStatus())
+	}
+}
+
 func TestApply_DeploymentRollback_SwapsRevisions(t *testing.T) {
 	f, s, _ := newFSM(t)
 	applyCmd(t, f, 1, &pb.Command{

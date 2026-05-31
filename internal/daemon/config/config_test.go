@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PatrickRuddiman/jaco/internal/daemon/config"
 )
@@ -195,5 +196,79 @@ func TestACMEEnabled_UnknownFieldStillRejected(t *testing.T) {
 	_, err := config.LoadBytes([]byte("acme_enabledd: false\n"))
 	if err == nil {
 		t.Fatalf("typo acme_enabledd accepted; schema not closed")
+	}
+}
+
+// TestLoad_NodeStatusIntervalDefault — key absent → DefaultNodeStatusInterval.
+func TestLoad_NodeStatusIntervalDefault(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte(`data_dir: /var/lib/jaco
+listen_addr: 0.0.0.0:7000
+cluster_addr: 0.0.0.0:7001
+unix_socket: /run/jaco.sock
+wg_port: 51820
+log_level: info
+ipam_pool: 10.244.0.0/16
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.NodeStatusIntervalOrDefault() != config.DefaultNodeStatusInterval {
+		t.Errorf("default = %s; want %s", cfg.NodeStatusIntervalOrDefault(), config.DefaultNodeStatusInterval)
+	}
+}
+
+// TestLoad_NodeStatusIntervalExplicit — operator pin honored verbatim.
+func TestLoad_NodeStatusIntervalExplicit(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte(`data_dir: /var/lib/jaco
+listen_addr: 0.0.0.0:7000
+cluster_addr: 0.0.0.0:7001
+unix_socket: /run/jaco.sock
+wg_port: 51820
+log_level: info
+ipam_pool: 10.244.0.0/16
+node_status_interval: 45s
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.NodeStatusIntervalOrDefault(); got != 45*time.Second {
+		t.Errorf("got %s; want 45s", got)
+	}
+}
+
+// TestLoad_NodeStatusIntervalTooSmall — anything below the minimum
+// fails validation with an explicit error rather than silent clamping.
+func TestLoad_NodeStatusIntervalTooSmall(t *testing.T) {
+	_, err := config.LoadBytes([]byte(`data_dir: /var/lib/jaco
+listen_addr: 0.0.0.0:7000
+cluster_addr: 0.0.0.0:7001
+unix_socket: /run/jaco.sock
+wg_port: 51820
+log_level: info
+ipam_pool: 10.244.0.0/16
+node_status_interval: 1s
+`))
+	if err == nil {
+		t.Fatalf("want validation error for sub-minimum interval")
+	}
+	if !strings.Contains(err.Error(), "node_status_interval") {
+		t.Errorf("error should mention the field: %v", err)
+	}
+}
+
+// TestLoad_NodeStatusIntervalTooLarge — anything above the maximum
+// fails validation as well.
+func TestLoad_NodeStatusIntervalTooLarge(t *testing.T) {
+	_, err := config.LoadBytes([]byte(`data_dir: /var/lib/jaco
+listen_addr: 0.0.0.0:7000
+cluster_addr: 0.0.0.0:7001
+unix_socket: /run/jaco.sock
+wg_port: 51820
+log_level: info
+ipam_pool: 10.244.0.0/16
+node_status_interval: 10m
+`))
+	if err == nil {
+		t.Fatalf("want validation error for super-maximum interval")
 	}
 }
