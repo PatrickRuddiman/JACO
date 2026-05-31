@@ -18,12 +18,14 @@ import (
 // tolerate a missed cycle, short enough that a crashed node stops
 // influencing decisions within a couple of intervals.
 //
-// ReplicaFootprint is the conservative "declared limit, else tiny
-// default" fallback documented in #137: the leader doesn't gossip
-// per-replica samples (raft volume and RPC fanout both rejected as
-// premature) and the rebalancer's scorer is already conservative
-// enough that a slightly-pessimistic footprint biases toward "don't
-// move", which is the safe direction.
+// ReplicaFootprint is the conservative "declared limit, else
+// just-above-the-relief-floor default" fallback documented in #137:
+// the leader doesn't gossip per-replica samples (raft volume + RPC
+// fanout both rejected as premature) and the rebalancer's scorer
+// gates moves on relief ≥ ReliefFloor. The default lands at 0.12 CPU
+// so a single moved replica clears that floor — anything lower would
+// freeze the rebalancer on every workload that hasn't declared
+// per-replica limits.
 type StateBackedSource struct {
 	State  *state.State
 	MaxAge time.Duration
@@ -32,8 +34,7 @@ type StateBackedSource struct {
 	// FootprintFor returns the declared resource footprint for a
 	// replica id. Wired by the daemon to the scheduler's declared-
 	// limits table; left nil for tests, in which case every replica
-	// reports a tiny default footprint that won't trigger moves on
-	// its own.
+	// reports defaultFootprint.
 	FootprintFor func(replicaID string) (cpu, mem float64)
 }
 
@@ -66,10 +67,8 @@ func (s *StateBackedSource) NodePressure(host string) (Snapshot, bool) {
 }
 
 // ReplicaFootprint returns the declared-limits footprint for a
-// replica, or a tiny default if the lookup is unwired or the
-// replica has no declared limits. The default biases toward
-// under-estimating relief, which the scorer's `relief - 0.01` floor
-// turns into "don't move" — the conservative direction.
+// replica, or defaultFootprint when the lookup is unwired or the
+// replica has no declared limits.
 func (s *StateBackedSource) ReplicaFootprint(replicaID string) Footprint {
 	if s.FootprintFor == nil {
 		return defaultFootprint
@@ -82,7 +81,9 @@ func (s *StateBackedSource) ReplicaFootprint(replicaID string) Footprint {
 }
 
 // defaultFootprint is what the source reports for a replica with no
-// declared limits: 5% of a single CPU and 2% of node memory. Small
-// enough that one unknown replica never tips the relief estimate
-// above the SkipReliefFloor on its own.
-var defaultFootprint = Footprint{CPU: 0.05, Memory: 0.02}
+// declared limits. CPU sits just above the DefaultConfig ReliefFloor
+// (0.10) so a single moved replica is estimated to clear the floor
+// and a move can win on its own. Smaller-than-floor would freeze the
+// rebalancer on every workload without declared per-replica limits,
+// defeating the whole point of #137.
+var defaultFootprint = Footprint{CPU: 0.12, Memory: 0.06}

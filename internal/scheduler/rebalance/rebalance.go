@@ -194,6 +194,19 @@ func (r *Rebalancer) Cycle(_ context.Context) {
 			r.consecutiveOverThreshold[host] = 0
 		}
 	}
+	// Per-cycle telemetry — Info because the cluster fires this
+	// once per CycleInterval (default 30s), low enough volume to
+	// keep, high enough signal to debug why a move didn't happen.
+	r.log().Info("rebalance cycle",
+		"hot", hotHost,
+		"hot_ewma", hotEWMA,
+		"cold_ewma", coldEWMA,
+		"gap", hotEWMA-coldEWMA,
+		"consec_over", r.consecutiveOverThreshold[hotHost],
+		"trigger", r.cfg.TriggerThreshold,
+		"imbalance_gap_req", r.cfg.ImbalanceGap,
+		"hosts_seen", len(snapshotByHost),
+	)
 	if r.consecutiveOverThreshold[hotHost] < r.cfg.ConsecutiveCycles {
 		return // hot node hasn't been hot long enough
 	}

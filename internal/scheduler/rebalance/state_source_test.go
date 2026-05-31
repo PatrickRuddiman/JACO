@@ -85,16 +85,18 @@ func TestStateBackedSource_MissingLastPressureAtNotOk(t *testing.T) {
 }
 
 // TestStateBackedSource_ReplicaFootprintDefaultWhenUnwired — without
-// a FootprintFor closure, the source returns the tiny default that
-// won't trigger moves on its own.
+// a FootprintFor closure, the source returns the calibrated default
+// that clears the rebalancer's ReliefFloor on its own (otherwise no
+// move ever wins on workloads without declared limits).
 func TestStateBackedSource_ReplicaFootprintDefaultWhenUnwired(t *testing.T) {
 	src := &rebalance.StateBackedSource{}
 	fp := src.ReplicaFootprint("any")
-	if fp.CPU == 0 || fp.Memory == 0 {
-		t.Errorf("default footprint must be non-zero, got %+v", fp)
+	cfg := rebalance.DefaultConfig()
+	if fp.CPU < cfg.ReliefFloor {
+		t.Errorf("default footprint CPU (%v) must clear ReliefFloor (%v); the rebalancer freezes otherwise", fp.CPU, cfg.ReliefFloor)
 	}
-	if fp.CPU > 0.2 || fp.Memory > 0.2 {
-		t.Errorf("default footprint must be small (<0.2), got %+v", fp)
+	if fp.CPU > 0.3 || fp.Memory > 0.3 {
+		t.Errorf("default footprint must stay modest (<0.3); got %+v", fp)
 	}
 }
 

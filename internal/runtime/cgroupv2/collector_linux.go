@@ -84,22 +84,32 @@ func (c *Collector) readCPU() (float64, bool) {
 	return clamp01(ratio), true
 }
 
-// readMemory returns memory.current / capacity. Capacity is
-// memory.max when it parses as a uint64; otherwise the host's
-// /proc/meminfo MemTotal (covers the common "max" root cgroup).
+// readMemory returns used/total as a [0, 1] ratio. Tries the cgroup v2
+// files first (memory.current + memory.max); falls back to
+// /proc/meminfo's MemTotal - MemAvailable when either is missing —
+// the root cgroup on a real system never has memory.current /
+// memory.max files (controller writers only exist in subordinate
+// groups per the cgroup v2 spec), so production daemons land in the
+// /proc/meminfo path. The cgroup path is kept for daemons that
+// happen to live inside a constrained subtree (tests, containerised
+// dev environments).
 func (c *Collector) readMemory() (float64, bool) {
-	cur, err := readUint64File(c.Root + "/memory.current")
-	if err != nil {
+	if cur, err := readUint64File(c.Root + "/memory.current"); err == nil {
+		capacity := c.MemTotalBytes
+		if maxBytes, ok := readMemoryMax(c.Root + "/memory.max"); ok {
+			capacity = maxBytes
+		}
+		if capacity > 0 {
+			return clamp01(float64(cur) / float64(capacity)), true
+		}
+	}
+	// /proc/meminfo fallback — the only path that works on the root
+	// cgroup of every real Linux host.
+	total, avail, ok := readProcMeminfoTotalAvail()
+	if !ok || total == 0 || avail > total {
 		return 0, false
 	}
-	capacity := c.MemTotalBytes
-	if maxBytes, ok := readMemoryMax(c.Root + "/memory.max"); ok {
-		capacity = maxBytes
-	}
-	if capacity == 0 {
-		return 0, false
-	}
-	return clamp01(float64(cur) / float64(capacity)), true
+	return clamp01(float64(total-avail) / float64(total)), true
 }
 
 func readUsageUsec(path string) (uint64, error) {
@@ -150,25 +160,47 @@ func readMemoryMax(path string) (uint64, bool) {
 // readMemTotal parses /proc/meminfo's MemTotal (kB) into bytes.
 // Returns 0 on any error — the collector then reports memOk=false.
 func readMemTotal() uint64 {
+	t, _, ok := readProcMeminfoTotalAvail()
+	if !ok {
+		return 0
+	}
+	return t
+}
+
+// readProcMeminfoTotalAvail parses MemTotal and MemAvailable from
+// /proc/meminfo, returning both in bytes. ok=false on any read or
+// parse error, or when either line is missing.
+func readProcMeminfoTotalAvail() (total, avail uint64, ok bool) {
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {
-		return 0
+		return 0, 0, false
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
+	var haveTotal, haveAvail bool
 	for sc.Scan() {
 		line := sc.Text()
-		if !strings.HasPrefix(line, "MemTotal:") {
-			continue
+		switch {
+		case strings.HasPrefix(line, "MemTotal:"):
+			var v uint64
+			if _, err := fmt.Sscanf(line, "MemTotal: %d kB", &v); err != nil {
+				return 0, 0, false
+			}
+			total = v * 1024
+			haveTotal = true
+		case strings.HasPrefix(line, "MemAvailable:"):
+			var v uint64
+			if _, err := fmt.Sscanf(line, "MemAvailable: %d kB", &v); err != nil {
+				return 0, 0, false
+			}
+			avail = v * 1024
+			haveAvail = true
 		}
-		// Format: "MemTotal:       16383128 kB"
-		var v uint64
-		if _, err := fmt.Sscanf(line, "MemTotal: %d kB", &v); err != nil {
-			return 0
+		if haveTotal && haveAvail {
+			break
 		}
-		return v * 1024
 	}
-	return 0
+	return total, avail, haveTotal && haveAvail
 }
 
 func clamp01(v float64) float64 {

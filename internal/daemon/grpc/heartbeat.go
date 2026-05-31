@@ -42,16 +42,33 @@ func pressureHeartbeat(
 		<-ctx.Done()
 		return ctx.Err()
 	}
+	logger.Info("pressure heartbeat started", "interval", interval)
 	t := time.NewTicker(interval)
 	defer t.Stop()
+	var ticks uint64
+	var firstOk bool
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-t.C:
+			ticks++
 			sample := collector.Read()
 			if !sample.Ok {
+				if ticks%10 == 1 {
+					// Log periodically so an operator can tell
+					// the heartbeat is alive but the collector is
+					// returning no data (typical on non-Linux,
+					// unprivileged container, missing cgroup v2).
+					logger.Info("pressure heartbeat: collector returned !ok",
+						"tick", ticks)
+				}
 				continue
+			}
+			if !firstOk {
+				logger.Info("pressure heartbeat: first sample ok",
+					"cpu", sample.CPU, "memory", sample.Memory)
+				firstOk = true
 			}
 			cmd := &pb.Command{
 				Identity: "pressure-heartbeat",
