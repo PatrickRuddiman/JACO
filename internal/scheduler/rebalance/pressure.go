@@ -50,8 +50,9 @@ type Snapshot struct {
 // `post = pre - footprint` arithmetic is meaningful. Bytes is the
 // approximate volume size used by move-cost estimation for stateful
 // replicas (ignored when Stateful=false). Stateful is the hard-filter
-// gate: when true, the rebalancer refuses to move the replica until
-// volume migration (#91) lands.
+// gate: when true, the rebalancer refuses to move the replica until a
+// remote-mounted volume backend (#135) lets it re-attach its data on
+// the destination host.
 type Footprint struct {
 	CPU      float64
 	Memory   float64

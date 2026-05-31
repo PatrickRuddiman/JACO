@@ -21,7 +21,7 @@ func TestBuildConfig_NetworkModeNone(t *testing.T) {
 		Networks:    []string{"jaco_app__default"}, // should be ignored
 		NetworkMode: "none",
 	}
-	_, hc, netCfg, err := buildConfig(spec, nil, managedVolumeOpts{})
+	_, hc, netCfg, err := buildConfig(spec, nil)
 	if err != nil {
 		t.Fatalf("buildConfig: unexpected err: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestBuildConfig_NetworkModeServiceResolves(t *testing.T) {
 		Networks:    []string{"jaco_app__default"}, // should be ignored
 		NetworkMode: "service:app",
 	}
-	_, hc, netCfg, err := buildConfig(spec, resolver, managedVolumeOpts{})
+	_, hc, netCfg, err := buildConfig(spec, resolver)
 	if err != nil {
 		t.Fatalf("buildConfig: unexpected err: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestBuildConfig_NetworkModeServiceNotReady(t *testing.T) {
 				Deployment:  "app",
 				NetworkMode: "service:app",
 			}
-			_, _, _, err := buildConfig(spec, tc.fn, managedVolumeOpts{})
+			_, _, _, err := buildConfig(spec, tc.fn)
 			if err == nil {
 				t.Fatalf("buildConfig: expected ErrNetworkModeTargetNotReady, got nil")
 			}
@@ -147,7 +147,7 @@ func TestBuildConfig_NetworkModeMutuallyExclusiveWithBridges(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, netCfg, err := buildConfig(tc.spec, tc.resolve, managedVolumeOpts{})
+			_, _, netCfg, err := buildConfig(tc.spec, tc.resolve)
 			if err != nil {
 				t.Fatalf("buildConfig: unexpected err: %v", err)
 			}
@@ -166,7 +166,7 @@ func TestBuildConfig_NetworkModeEmptyPreservesBridgeAttach(t *testing.T) {
 		Image: "nginx:1.27", Service: "web", Deployment: "app",
 		Networks: []string{"jaco_app_frontend"},
 	}
-	_, hc, netCfg, err := buildConfig(spec, nil, managedVolumeOpts{})
+	_, hc, netCfg, err := buildConfig(spec, nil)
 	if err != nil {
 		t.Fatalf("buildConfig: unexpected err: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestBuildConfig_NetworkModeStripsDockerConflicts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			spec := base
 			spec.NetworkMode = tc.networkMode
-			cfg, hc, _, err := buildConfig(spec, tc.resolver, managedVolumeOpts{})
+			cfg, hc, _, err := buildConfig(spec, tc.resolver)
 			if err != nil {
 				t.Fatalf("buildConfig: unexpected err: %v", err)
 			}

@@ -10,8 +10,9 @@ import (
 // TestStatefulFilter_HardRejectsAtFootprint — the rebalancer must
 // hard-filter every candidate whose Footprint.Stateful == true,
 // regardless of how attractive the score would otherwise be. ADR
-// 0002 §"Move execution" gates the stateful path on #91; flipping
-// the filter off is a separate follow-up PR.
+// 0002 §"Move execution" filters stateful out today; flipping the
+// filter off depends on a remote-volume backend (#135) being
+// available and is a separate follow-up PR.
 //
 // The test sets up a 2-node hot/cool scenario, marks the replica
 // stateful, and asserts:
@@ -60,7 +61,7 @@ func TestStatefulFilter_HardRejectsAtFootprint(t *testing.T) {
 // HardFilter check (no rig) confirms Stateful is the FIRST reason
 // returned even when other gates would also reject. Important
 // because the audit log carries the reason, and operators reading
-// "stateful_filtered" know they hit the #91-gated branch — not a
+// "stateful_filtered" know they hit the explicit stateful gate — not a
 // resource-limits / anti-affinity false positive.
 func TestStatefulFilter_HardFilterTablePinsFilterOrder(t *testing.T) {
 	c := candidate(func(c *rebalance.MoveCandidate) {

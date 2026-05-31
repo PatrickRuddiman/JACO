@@ -15,7 +15,7 @@ func TestBuildConfig_ForwardsPrivileged(t *testing.T) {
 		Privileged:  true,
 		SecurityOpt: []string{"seccomp=unconfined", "apparmor=unconfined"},
 	}
-	_, hc, _, _ := buildConfig(spec, nil, managedVolumeOpts{})
+	_, hc, _, _ := buildConfig(spec, nil)
 
 	if !hc.Privileged {
 		t.Errorf("HostConfig.Privileged = false, want true")
@@ -35,7 +35,7 @@ func TestBuildConfig_ForwardsPrivileged(t *testing.T) {
 // in the spec produce zero-value docker fields (no --privileged, nil
 // SecurityOpt) so docker's default security profile applies.
 func TestBuildConfig_PrivilegedZeroValues(t *testing.T) {
-	_, hc, _, _ := buildConfig(compose.ContainerSpec{Image: "nginx:1.27"}, nil, managedVolumeOpts{})
+	_, hc, _, _ := buildConfig(compose.ContainerSpec{Image: "nginx:1.27"}, nil)
 	if hc.Privileged {
 		t.Errorf("HostConfig.Privileged = true, want false (no --privileged)")
 	}
