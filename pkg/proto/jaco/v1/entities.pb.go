@@ -270,6 +270,22 @@ const (
 	// `security_opt:`. Payload: deployment, service, identity (token id),
 	// fields (csv of which fields were set on the service).
 	AuditEventType_AUDIT_EVENT_TYPE_PRIVILEGED_WORKLOAD_ADMITTED AuditEventType = 20
+	// Rebalance decisions emitted by internal/scheduler/rebalance (issue
+	// #92, ADR 0002). All three carry the same payload shape so dry-run
+	// and live runs are directly comparable:
+	//
+	//	replica_id, deployment, service, src, dst,
+	//	relief, dominant (cpu|memory|disk_io|count),
+	//	src_pressure_before, dst_pressure_before,
+	//	src_pressure_after, dst_pressure_after,
+	//	move_cost, score, dry_run ("true"|"false"),
+	//	reason (only on SKIPPED: cooldown_replica | cooldown_node |
+	//	        no_eligible_dst | would_break_quorum | dst_cap |
+	//	        relief_floor | stateful_filtered | resource_limits |
+	//	        anti_affinity | no_candidate).
+	AuditEventType_AUDIT_EVENT_TYPE_REBALANCE_MOVED   AuditEventType = 21
+	AuditEventType_AUDIT_EVENT_TYPE_REBALANCE_DRY_RUN AuditEventType = 22
+	AuditEventType_AUDIT_EVENT_TYPE_REBALANCE_SKIPPED AuditEventType = 23
 )
 
 // Enum value maps for AuditEventType.
@@ -296,6 +312,9 @@ var (
 		18: "AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_UPSERT",
 		19: "AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_REMOVE",
 		20: "AUDIT_EVENT_TYPE_PRIVILEGED_WORKLOAD_ADMITTED",
+		21: "AUDIT_EVENT_TYPE_REBALANCE_MOVED",
+		22: "AUDIT_EVENT_TYPE_REBALANCE_DRY_RUN",
+		23: "AUDIT_EVENT_TYPE_REBALANCE_SKIPPED",
 	}
 	AuditEventType_value = map[string]int32{
 		"AUDIT_EVENT_TYPE_UNSPECIFIED":                  0,
@@ -319,6 +338,9 @@ var (
 		"AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_UPSERT":   18,
 		"AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_REMOVE":   19,
 		"AUDIT_EVENT_TYPE_PRIVILEGED_WORKLOAD_ADMITTED": 20,
+		"AUDIT_EVENT_TYPE_REBALANCE_MOVED":              21,
+		"AUDIT_EVENT_TYPE_REBALANCE_DRY_RUN":            22,
+		"AUDIT_EVENT_TYPE_REBALANCE_SKIPPED":            23,
 	}
 )
 
@@ -2184,7 +2206,7 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\x10DeploymentStatus\x12!\n" +
 	"\x1dDEPLOYMENT_STATUS_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19DEPLOYMENT_STATUS_PENDING\x10\x01\x12\x1c\n" +
-	"\x18DEPLOYMENT_STATUS_ACTIVE\x10\x02*\xc6\x06\n" +
+	"\x18DEPLOYMENT_STATUS_ACTIVE\x10\x02*\xbc\a\n" +
 	"\x0eAuditEventType\x12 \n" +
 	"\x1cAUDIT_EVENT_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16AUDIT_EVENT_TYPE_APPLY\x10\x01\x12\x1b\n" +
@@ -2207,7 +2229,10 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"'AUDIT_EVENT_TYPE_ROLLOUT_INVARIANT_HOLD\x10\x11\x12/\n" +
 	"+AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_UPSERT\x10\x12\x12/\n" +
 	"+AUDIT_EVENT_TYPE_REGISTRY_CREDENTIAL_REMOVE\x10\x13\x121\n" +
-	"-AUDIT_EVENT_TYPE_PRIVILEGED_WORKLOAD_ADMITTED\x10\x14B:Z8github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1;jacov1b\x06proto3"
+	"-AUDIT_EVENT_TYPE_PRIVILEGED_WORKLOAD_ADMITTED\x10\x14\x12$\n" +
+	" AUDIT_EVENT_TYPE_REBALANCE_MOVED\x10\x15\x12&\n" +
+	"\"AUDIT_EVENT_TYPE_REBALANCE_DRY_RUN\x10\x16\x12&\n" +
+	"\"AUDIT_EVENT_TYPE_REBALANCE_SKIPPED\x10\x17B:Z8github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1;jacov1b\x06proto3"
 
 var (
 	file_jaco_v1_entities_proto_rawDescOnce sync.Once

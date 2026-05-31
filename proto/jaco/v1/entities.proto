@@ -66,6 +66,21 @@ enum AuditEventType {
   // `security_opt:`. Payload: deployment, service, identity (token id),
   // fields (csv of which fields were set on the service).
   AUDIT_EVENT_TYPE_PRIVILEGED_WORKLOAD_ADMITTED = 20;
+  // Rebalance decisions emitted by internal/scheduler/rebalance (issue
+  // #92, ADR 0002). All three carry the same payload shape so dry-run
+  // and live runs are directly comparable:
+  //   replica_id, deployment, service, src, dst,
+  //   relief, dominant (cpu|memory|disk_io|count),
+  //   src_pressure_before, dst_pressure_before,
+  //   src_pressure_after, dst_pressure_after,
+  //   move_cost, score, dry_run ("true"|"false"),
+  //   reason (only on SKIPPED: cooldown_replica | cooldown_node |
+  //           no_eligible_dst | would_break_quorum | dst_cap |
+  //           relief_floor | stateful_filtered | resource_limits |
+  //           anti_affinity | no_candidate).
+  AUDIT_EVENT_TYPE_REBALANCE_MOVED = 21;
+  AUDIT_EVENT_TYPE_REBALANCE_DRY_RUN = 22;
+  AUDIT_EVENT_TYPE_REBALANCE_SKIPPED = 23;
 }
 
 // ----- Cluster-level entities -----
