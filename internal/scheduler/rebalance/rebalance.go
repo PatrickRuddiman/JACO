@@ -107,6 +107,11 @@ func (r *Rebalancer) Run(ctx context.Context) error {
 	if interval <= 0 {
 		interval = DefaultConfig().CycleInterval
 	}
+	r.log().Info("rebalance loop started",
+		"enabled", r.cfg.Enabled,
+		"cycle_interval", interval,
+		"trigger_threshold", r.cfg.TriggerThreshold,
+		"imbalance_gap", r.cfg.ImbalanceGap)
 	t := time.NewTicker(interval)
 	defer t.Stop()
 

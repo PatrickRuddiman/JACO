@@ -1,6 +1,7 @@
 package rebalance_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/PatrickRuddiman/jaco/internal/scheduler/rebalance"
@@ -13,8 +14,8 @@ import (
 func TestQuorum_HonorsFloor(t *testing.T) {
 	cases := []struct {
 		name           string
-		n              int    // declared replicas
-		runningMembers int    // currently RUNNING same-service replicas
+		n              int // declared replicas
+		runningMembers int // currently RUNNING same-service replicas
 		wantBreaks     bool
 	}{
 		{"N=1 has no quorum constraint", 1, 1, false},
@@ -112,7 +113,7 @@ func TestQuorum_RebalancerCycleDoesNotBreakIt(t *testing.T) {
 	r.source.setNode("node-c", rebalance.Snapshot{CPU: 0.3})
 	r.source.setReplica("dep-web-0", rebalance.Footprint{CPU: 0.3, Memory: 0.1})
 
-	r.rebal.Cycle(nil)
+	r.rebal.Cycle(context.TODO())
 	// A move should have committed off node-a (3 RUNNING ≥ floor 2 → quorum OK).
 	if got := r.replicaHost("dep-web-0"); got == "node-a" {
 		t.Errorf("dep-web-0 was not moved off node-a; still on %q", got)
@@ -147,7 +148,7 @@ func TestQuorum_BlocksMoveWhenWouldBreakFloor(t *testing.T) {
 	r.source.setNode("node-b", rebalance.Snapshot{CPU: 0.2})
 	r.source.setReplica("dep-web-0", rebalance.Footprint{CPU: 0.3, Memory: 0.1})
 
-	r.rebal.Cycle(nil)
+	r.rebal.Cycle(context.TODO())
 	if got := r.replicaHost("dep-web-0"); got != "node-a" {
 		t.Errorf("dep-web-0 should not have moved (quorum break); now on %q", got)
 	}

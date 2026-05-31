@@ -1,6 +1,7 @@
 package rebalance_test
 
 import (
+	"context"
 	"strconv"
 	"testing"
 	"time"
@@ -32,7 +33,7 @@ func TestDryRun_EmitsAuditButCommitsNoMove(t *testing.T) {
 	r.source.setNode("node-a", rebalance.Snapshot{CPU: 0.95})
 	r.source.setNode("node-b", rebalance.Snapshot{CPU: 0.2})
 
-	r.rebal.Cycle(nil)
+	r.rebal.Cycle(context.TODO())
 
 	// The replica MUST NOT have moved.
 	if got := r.replicaHost("dep-web-0"); got != "node-a" {
@@ -86,7 +87,7 @@ func TestDryRun_DryRunFlagPropagatedOnSkips(t *testing.T) {
 	// node-b at 0.6 + 0.3 footprint = 0.9 post-move > DstCap 0.75 → skip.
 	r.source.setNode("node-b", rebalance.Snapshot{CPU: 0.6})
 
-	r.rebal.Cycle(nil)
+	r.rebal.Cycle(context.TODO())
 
 	skipped := r.rebalanceAuditsByType(pbAuditSkipped())
 	if len(skipped) == 0 {
@@ -125,7 +126,7 @@ func TestDryRun_EnabledFlagToggleSwitchesCommitBehaviour(t *testing.T) {
 	}
 
 	live := build(true)
-	live.rebal.Cycle(nil)
+	live.rebal.Cycle(context.TODO())
 	if live.replicaHost("dep-web-0") != "node-b" {
 		t.Errorf("Enabled=true: expected replica on node-b, got %q", live.replicaHost("dep-web-0"))
 	}
@@ -139,7 +140,7 @@ func TestDryRun_EnabledFlagToggleSwitchesCommitBehaviour(t *testing.T) {
 	}
 
 	dry := build(false)
-	dry.rebal.Cycle(nil)
+	dry.rebal.Cycle(context.TODO())
 	if dry.replicaHost("dep-web-0") != "node-a" {
 		t.Errorf("Enabled=false: replica should not have moved, got %q", dry.replicaHost("dep-web-0"))
 	}

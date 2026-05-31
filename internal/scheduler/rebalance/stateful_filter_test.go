@@ -1,6 +1,7 @@
 package rebalance_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/PatrickRuddiman/jaco/internal/scheduler/rebalance"
@@ -14,9 +15,9 @@ import (
 //
 // The test sets up a 2-node hot/cool scenario, marks the replica
 // stateful, and asserts:
-//   1. The replica is NOT moved.
-//   2. A SKIPPED audit lands with reason=stateful_filtered.
-//   3. No ReplicaDesiredUpsert is committed via Applier.
+//  1. The replica is NOT moved.
+//  2. A SKIPPED audit lands with reason=stateful_filtered.
+//  3. No ReplicaDesiredUpsert is committed via Applier.
 func TestStatefulFilter_HardRejectsAtFootprint(t *testing.T) {
 	cfg := rebalance.DefaultConfig()
 	cfg.Enabled = true
@@ -38,7 +39,7 @@ func TestStatefulFilter_HardRejectsAtFootprint(t *testing.T) {
 	r.source.setNode("node-a", rebalance.Snapshot{CPU: 0.95})
 	r.source.setNode("node-b", rebalance.Snapshot{CPU: 0.2})
 
-	r.rebal.Cycle(nil)
+	r.rebal.Cycle(context.TODO())
 
 	if got := r.replicaHost("dep-web-0"); got != "node-a" {
 		t.Errorf("stateful replica was moved off node-a; now on %q", got)

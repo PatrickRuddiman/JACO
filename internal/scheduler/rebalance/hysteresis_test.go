@@ -1,6 +1,7 @@
 package rebalance_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -41,7 +42,7 @@ func TestHysteresis_SingleSpikeDoesNotTrigger(t *testing.T) {
 
 	// Cycle 1: calm baseline so EWMAs seed at 0.2 for both.
 	r.source.setNode("node-a", rebalance.Snapshot{CPU: 0.2})
-	r.rebal.Cycle(nil)
+	r.rebal.Cycle(context.TODO())
 	if r.replicaHost("dep-web-0") != "node-a" {
 		t.Fatalf("baseline cycle moved replica unexpectedly")
 	}
@@ -51,7 +52,7 @@ func TestHysteresis_SingleSpikeDoesNotTrigger(t *testing.T) {
 	// barely budges from 0.2.
 	r.advance(30 * time.Second)
 	r.source.setNode("node-a", rebalance.Snapshot{CPU: 0.95})
-	r.rebal.Cycle(nil)
+	r.rebal.Cycle(context.TODO())
 	if got := r.replicaHost("dep-web-0"); got != "node-a" {
 		t.Errorf("single spike triggered a move; replica now on %q", got)
 	}
@@ -73,7 +74,7 @@ func TestHysteresis_SustainedPressureEventuallyTriggers(t *testing.T) {
 	r.source.setNode("node-a", rebalance.Snapshot{CPU: 0.95})
 	moved := false
 	for i := 0; i < 60; i++ {
-		r.rebal.Cycle(nil)
+		r.rebal.Cycle(context.TODO())
 		if r.replicaHost("dep-web-0") != "node-a" {
 			moved = true
 			break
@@ -98,7 +99,7 @@ func TestHysteresis_DstCapBlocksMove(t *testing.T) {
 	r.source.setNode("node-a", rebalance.Snapshot{CPU: 0.95})
 	r.source.setNode("node-b", rebalance.Snapshot{CPU: 0.6})
 
-	r.rebal.Cycle(nil)
+	r.rebal.Cycle(context.TODO())
 	if got := r.replicaHost("dep-web-0"); got != "node-a" {
 		t.Errorf("dst_cap should have blocked move; replica now on %q", got)
 	}
@@ -120,7 +121,7 @@ func TestHysteresis_ReliefFloorBlocksMove(t *testing.T) {
 	r.source.setReplica("dep-web-0", rebalance.Footprint{CPU: 0.05, Memory: 0.01})
 	r.source.setNode("node-a", rebalance.Snapshot{CPU: 0.95})
 
-	r.rebal.Cycle(nil)
+	r.rebal.Cycle(context.TODO())
 	if got := r.replicaHost("dep-web-0"); got != "node-a" {
 		t.Errorf("relief_floor should have blocked move; replica now on %q", got)
 	}
@@ -142,7 +143,7 @@ func TestHysteresis_CooldownReplicaBlocksRepeatMove(t *testing.T) {
 	r.source.setNode("node-a", rebalance.Snapshot{CPU: 0.95})
 
 	// First cycle moves.
-	r.rebal.Cycle(nil)
+	r.rebal.Cycle(context.TODO())
 	if r.replicaHost("dep-web-0") == "node-a" {
 		t.Fatalf("first cycle did not commit a move")
 	}
@@ -161,7 +162,7 @@ func TestHysteresis_CooldownReplicaBlocksRepeatMove(t *testing.T) {
 
 	r.advance(1 * time.Minute) // well inside the 10m cooldown
 	r.source.setNode("node-a", rebalance.Snapshot{CPU: 0.95})
-	r.rebal.Cycle(nil)
+	r.rebal.Cycle(context.TODO())
 	if r.replicaHost("dep-web-0") != "node-a" {
 		t.Errorf("dep-web-0 was moved despite cooldown_replica")
 	}
@@ -208,7 +209,7 @@ func TestHysteresis_CooldownNodeBlocksSecondMoveOntoDst(t *testing.T) {
 	r.source.setNode("node-c", rebalance.Snapshot{CPU: 0.2})
 
 	// Cycle 1: moves one of the node-a replicas to node-b or node-c.
-	r.rebal.Cycle(nil)
+	r.rebal.Cycle(context.TODO())
 	moved := r.replicaHost("dep-web-0") != "node-a" || r.replicaHost("dep-web-1") != "node-a"
 	if !moved {
 		t.Fatalf("first cycle did not commit a move; hosts: dep-web-0=%q, dep-web-1=%q",
@@ -222,7 +223,7 @@ func TestHysteresis_CooldownNodeBlocksSecondMoveOntoDst(t *testing.T) {
 
 	// Cycle 2: should refuse a second move onto whichever node was
 	// the dst in cycle 1 (cooldown_node fires).
-	r.rebal.Cycle(nil)
+	r.rebal.Cycle(context.TODO())
 	if !hasSkippedReason(r, "cooldown_node") {
 		t.Errorf("expected SKIPPED audit with reason=cooldown_node in second cycle")
 	}
@@ -241,7 +242,7 @@ func TestHysteresis_ImbalanceGapBlocksMove(t *testing.T) {
 	r.source.setNode("node-a", rebalance.Snapshot{CPU: 0.9})
 	r.source.setNode("node-b", rebalance.Snapshot{CPU: 0.85})
 
-	r.rebal.Cycle(nil)
+	r.rebal.Cycle(context.TODO())
 	if got := r.replicaHost("dep-web-0"); got != "node-a" {
 		t.Errorf("imbalance gap should have blocked move; replica now on %q", got)
 	}
