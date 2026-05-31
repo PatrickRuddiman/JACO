@@ -7,7 +7,7 @@
 ---
 
 
-A **leader-driven, hysteretic, opt-in rebalancer** that observes per-node pressure signals already collected by the health subsystem, picks the cheapest replica to move off the hottest node when the cluster is meaningfully imbalanced, and uses the existing scheduler move path (stateless) or the volume-migration primitive from #91 (stateful) to relocate it.
+A **leader-driven, hysteretic, opt-in rebalancer** that observes per-node pressure signals already collected by the health subsystem, picks the cheapest replica to move off the hottest node when the cluster is meaningfully imbalanced, and uses the existing scheduler move path to relocate it. Stateful workloads are filtered out for now (see #135 for the future remote-mounted-volume backend that would let them move).
 
 Default: **off**. Operators enable it cluster-wide. When off, this entire subsystem is a passive observer that emits "would-have-moved" decisions to the audit log so operators can dry-run the policy before turning it on.
 
@@ -74,7 +74,7 @@ A replica that fails any hard filter on every candidate dst is **not movable**, 
 ## Move execution
 
 - Stateless: emit a standard reschedule command through the existing `internal/scheduler/placement` path. The reconciler does stop-on-src / start-on-dst; the rebalancer just *chose* the move.
-- Stateful: **gated on #91**. Until volume-migration lands, the rebalancer **MUST** treat all stateful services as non-movable (hard filter). The selection scorer keeps the `stateless_bonus` knob in place so when #91 lands, stateful candidates start being considered without further changes.
+- Stateful: **permanently filtered for now**. The rebalancer **MUST** treat all stateful services as non-movable (hard filter) until JACO grows a volume backend that lets a replica re-attach its data on a different node (#135). The selection scorer keeps the `stateless_bonus` knob in place so once a remote-volume backend lands, flipping the filter off starts considering stateful candidates without further changes.
 
 Concurrency cap: the rebalancer commits at most **one move per cycle, cluster-wide**. Defends against avalanche: one move lands, next cycle re-evaluates, another move maybe lands, etc. Slower convergence, no thrash.
 
@@ -132,12 +132,12 @@ Audit log records every committed move and (when in dry-run mode) every would-ha
 - `internal/scheduler/rebalance/hysteresis_test.go` — won't trigger on single-cycle spike; won't move when post-move dst would exceed cap; respects both cooldowns
 - `internal/scheduler/quorum_test.go` — never reduces quorum group below floor
 - `internal/scheduler/rebalance/dryrun_test.go` — disabled mode emits audit events but no FSM entries
-- Bed E2E (after #91 lands): drive a node hot with `stress-ng`, observe a move, observe steady state, verify no thrash for 10 minutes
+- Bed E2E: drive a node hot with `stress-ng`, observe a move of a stateless replica, observe steady state, verify no thrash for 10 minutes
 
 ## Acceptance
 
 - A node driven to sustained `cpu_util > 0.85` for >1 minute triggers a move of an eligible replica to a cooler node, observable in `jaco status` and the audit log.
-- Stateless rebalancing works on the 3-node bed end-to-end. Stateful is correctly skipped until #91 ships, then works after.
+- Stateless rebalancing works on the 3-node bed end-to-end. Stateful is correctly skipped today; gets considered once #135 lands a volume backend.
 - Under uniform load, no moves happen — hysteresis verified by a 10-minute soak with all three nodes at 0.6 pressure.
 - A pressure move never lands a replica on a dst that would violate its resource limits, anti-affinity, or quorum constraints. (Property test over a fuzzed cluster state.)
 - Disabling the rebalancer in config stops all moves within one cycle; re-enabling resumes within one cycle.
@@ -151,8 +151,8 @@ Audit log records every committed move and (when in dry-run mode) every would-ha
 
 ## Sequencing
 
-Stateless rebalancing can land first, **before #91**, with stateful explicitly filtered out and the test suite asserting that. The stateful path turns on as soon as #91's `Migrator` interface is callable from the scheduler.
+The stateless path lands now with stateful explicitly filtered out and the test suite asserting that. The stateful path turns on once #135 makes a stateful replica's data reachable on its new host.
 
 ## Estimated size
 
-One medium PR for the stateless path (`rebalance` package + quorum modeling + status surface + tests + dry-run bed validation). A follow-up small PR to flip the stateful filter once #91 lands.
+One medium PR for the stateless path (`rebalance` package + quorum modeling + status surface + tests + dry-run bed validation). A follow-up small PR flips the stateful filter once a volume backend (#135) is available.

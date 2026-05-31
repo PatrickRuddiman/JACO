@@ -89,11 +89,11 @@ const (
 // scorer prefers stateless under equivalent relief.
 const statelessMoveCost = 0.01
 
-// statefulBytesPerSecond is the ADR's "~50 MB/s over wg" move-rate
-// assumption used to convert Footprint.Bytes to a time-shaped cost.
-// Used only when Stateful=true (in which case the stateful filter
-// also rejects in v0, so this is just the formula that will start
-// applying when the filter flips off post-#91).
+// statefulBytesPerSecond is the move-rate assumption used to convert
+// Footprint.Bytes to a time-shaped cost. Used only when Stateful=true
+// (in which case the stateful filter also rejects today, so this is
+// just the formula that will start applying when a remote-volume
+// backend lands and the filter flips off; see #135).
 const statefulBytesPerSecond = 50 * 1024 * 1024
 
 // HardFilter returns the first reason the candidate is unmovable, or
@@ -101,9 +101,9 @@ const statefulBytesPerSecond = 50 * 1024 * 1024
 // "before scoring" list. This is called BEFORE Score.
 func HardFilter(c *MoveCandidate, q *Quorum) SkipReason {
 	if c.Footprint.Stateful {
-		// ADR §"Move execution": stateful is gated on #91. Until
-		// volume-migration lands, the rebalancer refuses to move
-		// any replica that reports Stateful=true.
+		// Stateful is filtered today because JACO has no way to
+		// re-attach a replica's data on a different node. A remote-
+		// mounted volume backend (#135) would unblock this.
 		return SkipStatefulFiltered
 	}
 	if !c.DstResourceFits {

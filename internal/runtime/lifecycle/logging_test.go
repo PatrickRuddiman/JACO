@@ -21,7 +21,7 @@ func TestBuildConfig_LogConfig(t *testing.T) {
 			},
 		},
 	}
-	_, hc, _, _ := buildConfig(spec, nil, managedVolumeOpts{})
+	_, hc, _, _ := buildConfig(spec, nil)
 	if hc.LogConfig.Type != "json-file" {
 		t.Errorf("LogConfig.Type = %q, want json-file", hc.LogConfig.Type)
 	}
@@ -38,7 +38,7 @@ func TestBuildConfig_LogConfig(t *testing.T) {
 // default log driver".
 func TestBuildConfig_NoLogConfig(t *testing.T) {
 	spec := compose.ContainerSpec{Image: "nginx:1.27"}
-	_, hc, _, _ := buildConfig(spec, nil, managedVolumeOpts{})
+	_, hc, _, _ := buildConfig(spec, nil)
 	if hc.LogConfig.Type != "" {
 		t.Errorf("LogConfig.Type = %q, want empty (no spec LogConfig)", hc.LogConfig.Type)
 	}

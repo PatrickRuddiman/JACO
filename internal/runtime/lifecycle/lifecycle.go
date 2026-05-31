@@ -23,7 +23,6 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/runtime/compose"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/pull"
-	"github.com/PatrickRuddiman/jaco/internal/runtime/volumes"
 )
 
 const (
@@ -59,26 +58,6 @@ type IsolationGate struct {
 	// inline fn (or nil for `none` / no network_mode).
 	NetworkModeResolver NetworkModeResolver
 
-	// ManagedVolumes opts the lifecycle into JACO-managed on-host
-	// volumes for this start (issue #91 PR1). When true, every
-	// per-service `Type: volume` mount whose source name appears in
-	// spec.NamedVolumes is rewritten to a bind-mount onto the
-	// VolumesRoot.PathFor(...) path; the daemon EnsureLive's the
-	// directory up front so docker has something to bind. Unmanaged
-	// (anonymous / external) volumes and inline bind mounts flow
-	// unchanged to docker.
-	//
-	// Default false preserves existing behaviour: every named volume
-	// in compose maps to a docker named volume exactly as before. The
-	// flag flips to true via runtime.managed_volumes.enabled in
-	// jacod.yaml.
-	ManagedVolumes bool
-
-	// VolumesRoot is the on-host root the lifecycle uses to compute
-	// managed bind-mount sources. Required when ManagedVolumes is
-	// true; ignored otherwise. The daemon constructs it from
-	// jacod.yaml.data_dir + "/volumes".
-	VolumesRoot *volumes.Root
 }
 
 // Start brings spec's container up. Idempotent on the (replica_id, raft_index)
@@ -165,30 +144,10 @@ func StartWithPullState(ctx context.Context, d dockerx.Docker, spec compose.Cont
 	}
 
 	var netResolver NetworkModeResolver
-	var volOpts managedVolumeOpts
 	if len(gate) > 0 {
 		netResolver = gate[0].NetworkModeResolver
-		volOpts.enabled = gate[0].ManagedVolumes
-		volOpts.root = gate[0].VolumesRoot
 	}
-	// Pre-create the on-host bind-mount source for each managed
-	// volume (issue #91 PR1). Docker bind-mounts a missing source by
-	// creating it as an empty directory inside the container's mount
-	// namespace owned by root with mode 0755 — we want the daemon's
-	// 0750 + correct ownership, materialised once at the host level
-	// so subsequent reconciles and a later ShipVolume share a single
-	// definition of "where the data lives".
-	if volOpts.enabled && volOpts.root != nil {
-		for _, m := range spec.Mounts {
-			if !isManagedVolume(m, spec.NamedVolumes) {
-				continue
-			}
-			if _, err := volOpts.root.EnsureLive(spec.Deployment, spec.Service, m.Source); err != nil {
-				return "", fmt.Errorf("EnsureLive %s/%s/%s: %w", spec.Deployment, spec.Service, m.Source, err)
-			}
-		}
-	}
-	cfg, hostCfg, netCfg, err := buildConfig(spec, netResolver, volOpts)
+	cfg, hostCfg, netCfg, err := buildConfig(spec, netResolver)
 	if err != nil {
 		return "", fmt.Errorf("buildConfig: %w", err)
 	}

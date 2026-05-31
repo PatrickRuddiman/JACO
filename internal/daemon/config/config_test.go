@@ -197,34 +197,3 @@ func TestACMEEnabled_UnknownFieldStillRejected(t *testing.T) {
 		t.Fatalf("typo acme_enabledd accepted; schema not closed")
 	}
 }
-
-// TestManagedVolumes_Parsed covers the issue #91 PR1 feature flag.
-// Default (no key, no file) is false; explicit true via the nested
-// runtime.managed_volumes block parses; a typo under runtime: is
-// rejected by the closed schema (KnownFields).
-func TestManagedVolumes_Parsed(t *testing.T) {
-	// Default: absent key → false.
-	def, err := config.LoadBytes([]byte("acme_email: ops@example.com\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if def.Runtime.ManagedVolumes.Enabled {
-		t.Errorf("default Runtime.ManagedVolumes.Enabled = true, want false")
-	}
-
-	// Explicit true via nested block.
-	cfg, err := config.LoadBytes([]byte("runtime:\n  managed_volumes:\n    enabled: true\n"))
-	if err != nil {
-		t.Fatalf("LoadBytes runtime block: %v", err)
-	}
-	if !cfg.Runtime.ManagedVolumes.Enabled {
-		t.Errorf("runtime.managed_volumes.enabled: true not parsed")
-	}
-
-	// Typo under runtime.managed_volumes must still reject — the
-	// closed-schema invariant has to extend to nested blocks or
-	// operators get silent ignored typos.
-	if _, err := config.LoadBytes([]byte("runtime:\n  managed_volumes:\n    enabledd: true\n")); err == nil {
-		t.Errorf("typo enabledd accepted under runtime.managed_volumes; nested schema not closed")
-	}
-}

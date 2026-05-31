@@ -39,7 +39,6 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/health"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/reconciler"
-	"github.com/PatrickRuddiman/jaco/internal/runtime/volumes"
 	"github.com/PatrickRuddiman/jaco/internal/scheduler"
 	schedhealth "github.com/PatrickRuddiman/jaco/internal/scheduler/health"
 	"github.com/PatrickRuddiman/jaco/internal/scheduler/rebalance"
@@ -117,13 +116,6 @@ type Server struct {
 	// acmeSkipStaging mirrors jacod.yaml.acme_skip_staging.
 	acmeSkipStaging bool
 
-	// managedVolumes mirrors jacod.yaml.runtime.managed_volumes.enabled
-	// (issue #91 PR1). When true, the runtime reconciler passes the
-	// flag + a *volumes.Root into each lifecycle.StartWithPullState
-	// so per-service named-volume mounts bind onto JACO's owned tree
-	// instead of docker named volumes. Default false preserves the
-	// pre-#91 reconciler behaviour byte-for-byte.
-	managedVolumes bool
 	// rebalanceCfg is the operator-supplied pressure-rebalancer
 	// config plumbed from jacod.yaml.scheduler.rebalance (issue #92).
 	// nil → no rebalancer goroutine spawned in startSubsystems.
@@ -213,12 +205,6 @@ type Options struct {
 	// already non-prod.
 	ACMESkipStaging bool
 
-	// ManagedVolumes enables JACO's on-host managed-volume tree
-	// (jacod.yaml.runtime.managed_volumes.enabled). The runtime
-	// reconciler reads this once at boot and forwards it (plus a
-	// *volumes.Root rooted at DataDir/volumes) into every
-	// lifecycle.Start gate.
-	ManagedVolumes bool
 	// Rebalance is the operator-supplied pressure-rebalancer config
 	// (issue #92, ADR 0002). nil → the rebalancer subsystem is not
 	// started. A non-nil value — even one with Enabled=false — is the
@@ -373,7 +359,6 @@ func New(opts Options) (*Server, error) {
 			Enabled: opts.ACMEEnabled,
 		},
 		acmeSkipStaging: opts.ACMESkipStaging,
-		managedVolumes:  opts.ManagedVolumes,
 		rebalanceCfg:    opts.Rebalance,
 	}
 	cluster := &clusterServer{
@@ -920,13 +905,6 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 			return resp.GetCidr(), nil
 		}
 		rec := reconciler.New(s.docker, st, brokers, hostname, health.SubmitFn(submit), reconciler.EnsureSubnetFn(ensureSubnet), s.logger)
-		// Issue #91 PR1: enable JACO's on-host managed-volume tree
-		// when the operator opted in via runtime.managed_volumes.enabled.
-		// The root lives under <data_dir>/volumes so backups + ship-volume
-		// (PR2/PR3) operate against a stable, documented location.
-		if s.managedVolumes {
-			rec.EnableManagedVolumes(true, volumes.NewRoot(filepath.Join(s.dataDir, "volumes")))
-		}
 		s.subsystemsWG.Add(1)
 		go func() {
 			defer s.subsystemsWG.Done()

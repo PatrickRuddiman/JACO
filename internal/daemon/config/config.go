@@ -82,10 +82,6 @@ type Config struct {
 	LogLevel string `yaml:"log_level"`
 	// IPAMPool is the per-deployment subnet allocator CIDR (must be /16).
 	IPAMPool string `yaml:"ipam_pool"`
-	// Runtime nests the per-replica runtime knobs the daemon reads at
-	// boot. Defaults are conservative — every flag here is off until
-	// the operator opts in.
-	Runtime RuntimeConfig `yaml:"runtime"`
 	// Scheduler holds the scheduler subsystem's optional knobs. The only
 	// member today is the pressure-based rebalancer (issue #92, ADR
 	// 0002). The block is OPTIONAL: omitting it leaves the rebalancer
@@ -96,29 +92,6 @@ type Config struct {
 	Scheduler *SchedulerConfig `yaml:"scheduler"`
 }
 
-// RuntimeConfig groups runtime-layer feature flags that flow from
-// jacod.yaml into the per-host reconciler. Keep additions structurally
-// flat (no maps) so the parent Config struct stays comparable in
-// tests.
-type RuntimeConfig struct {
-	// ManagedVolumes enables JACO's on-host managed-volume tree
-	// (issue #91). When enabled, named volumes declared in a
-	// deployment's top-level `volumes:` block bind-mount onto
-	// <data_dir>/volumes/<deployment>/<service>/<volume>/ instead of
-	// using a docker named volume — the prerequisite for the
-	// ship-volume / planned-move primitive landing in PR2/PR3.
-	// Default false: existing clusters keep their docker named
-	// volumes untouched until the operator flips the flag and
-	// migrates each replica.
-	ManagedVolumes ManagedVolumesConfig `yaml:"managed_volumes"`
-}
-
-// ManagedVolumesConfig is the typed view of
-// runtime.managed_volumes.* in jacod.yaml.
-type ManagedVolumesConfig struct {
-	// Enabled is the feature flag (default false).
-	Enabled bool `yaml:"enabled"`
-}
 
 // SchedulerConfig groups scheduler subsystem knobs that are off by
 // default and surface only when the operator opts in. Today: just the

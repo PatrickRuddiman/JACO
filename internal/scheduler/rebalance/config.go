@@ -22,9 +22,9 @@
 //   - Stateful candidates: the hard filter rejects every replica whose
 //     PressureSource.ReplicaFootprint reports Stateful=true. The
 //     stateless_bonus knob in scorer.go stays in place so flipping the
-//     filter off (once #91 lands) starts considering them without
-//     further changes.
-//   - Volume migration itself (#91).
+//     filter off (once a remote-volume backend lands, see #135) starts
+//     considering them without further changes.
+//   - Volume migration itself (#135).
 package rebalance
 
 import "time"

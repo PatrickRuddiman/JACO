@@ -112,7 +112,6 @@ func run(ctx context.Context, configPath string, root *slog.Logger) error {
 		ACMECA:               cfg.ACMECAOrDefault(),
 		ACMEEnabled:          cfg.ACMEEnabledOrDefault(),
 		ACMESkipStaging:      cfg.ACMESkipStaging,
-		ManagedVolumes:       cfg.Runtime.ManagedVolumes.Enabled,
 		Rebalance:            rebalanceOptionFromConfig(cfg),
 	})
 	if err != nil {

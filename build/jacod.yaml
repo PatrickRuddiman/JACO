@@ -40,15 +40,3 @@ log_level: info
 # IPAM pool. Must be a /16 — supplies up to 256 /24 subnets, one per
 # (deployment, network) pair.
 ipam_pool: 10.244.0.0/16
-
-# Runtime-layer feature flags.
-#
-# managed_volumes.enabled (issue #91): when true, named volumes declared
-# in a deployment's top-level `volumes:` block bind-mount onto JACO's
-# managed on-host tree under <data_dir>/volumes/<deployment>/<service>/
-# <volume>/ instead of using docker named volumes. Required for the
-# planned-move / ship-volume primitive landing in #91 PR2/PR3. Default
-# false preserves existing docker-named-volume behaviour byte-for-byte.
-#runtime:
-#  managed_volumes:
-#    enabled: false

@@ -144,21 +144,6 @@ type ContainerSpec struct {
 	// it is NOT resolved here.
 	NetworkMode string
 
-	// NamedVolumes is the set of compose top-level `volumes:` keys
-	// declared on the deployment this replica belongs to. Used by the
-	// lifecycle layer (issue #91 PR1) to decide whether a `Type: volume`
-	// entry in Mounts is a JACO-managed named volume (key present →
-	// rewrite to a bind-mount onto the managed path) or an
-	// anonymous/external docker volume (key absent → forward as-is to
-	// the docker engine).
-	//
-	// Set is keyed by volume name (the left side of `pgdata:` in the
-	// top-level block). Empty / nil means "no top-level volumes
-	// declared on this deployment" — every Mount entry then flows
-	// through the existing docker-named-volume path unchanged, which
-	// is the v0 behaviour PR1 explicitly preserves when the
-	// runtime.managed_volumes.enabled flag is off.
-	NamedVolumes map[string]struct{}
 }
 
 // Mount is a single bind / named-volume / tmpfs attachment.
@@ -229,15 +214,6 @@ type SpecOptions struct {
 	ReplicaID    string
 	ReplicaIndex int
 	RaftIndex    uint64
-
-	// NamedVolumes is the set of compose top-level `volumes:` keys
-	// declared on this deployment. The reconciler reads
-	// project.Volumes and passes the key set verbatim; ToContainerSpec
-	// copies it onto ContainerSpec so the lifecycle layer can decide
-	// per-mount whether to rewrite a Volume to a managed bind-mount.
-	// Nil means "no top-level volumes" — the existing docker-named-
-	// volume path is taken for every Mount.
-	NamedVolumes map[string]struct{}
 }
 
 // ValidationError is the typed result Validate returns when the compose file

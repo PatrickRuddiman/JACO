@@ -35,7 +35,7 @@ func TestBuildConfig_ForwardsBatch1Fields(t *testing.T) {
 		CgroupnsMode:           "private",
 		CgroupParent:           "/custom.slice",
 	}
-	cfg, hc, _, _ := buildConfig(spec, nil, managedVolumeOpts{})
+	cfg, hc, _, _ := buildConfig(spec, nil)
 
 	// Config.* (#114 shutdown + #117 host/domain)
 	if cfg.StopSignal != "SIGINT" {
@@ -104,7 +104,7 @@ func TestBuildConfig_DNSPrecedence(t *testing.T) {
 		DNS:        []string{"1.1.1.1"},
 		DNSServers: []string{"10.42.0.1"}, // runtime-resolved
 	}
-	_, hc, _, _ := buildConfig(spec, nil, managedVolumeOpts{})
+	_, hc, _, _ := buildConfig(spec, nil)
 	if len(hc.DNS) != 1 || hc.DNS[0] != "1.1.1.1" {
 		t.Errorf("compose dns precedence failed: HostConfig.DNS = %v, want [1.1.1.1]", hc.DNS)
 	}
@@ -115,7 +115,7 @@ func TestBuildConfig_DNSPrecedence(t *testing.T) {
 		ReplicaID:  "r",
 		DNSServers: []string{"10.42.0.1"},
 	}
-	_, hc2, _, _ := buildConfig(spec2, nil, managedVolumeOpts{})
+	_, hc2, _, _ := buildConfig(spec2, nil)
 	if len(hc2.DNS) != 1 || hc2.DNS[0] != "10.42.0.1" {
 		t.Errorf("runtime DNS fallback failed: HostConfig.DNS = %v, want [10.42.0.1]", hc2.DNS)
 	}
@@ -127,7 +127,7 @@ func TestBuildConfig_DNSPrecedence(t *testing.T) {
 // leaking into the engine call (e.g. ShmSize=0 must NOT become "0 bytes —
 // reject" on docker's side).
 func TestBuildConfig_Batch1ZeroValuesEmitDockerDefaults(t *testing.T) {
-	cfg, hc, _, _ := buildConfig(compose.ContainerSpec{Image: "nginx", ReplicaID: "r"}, nil, managedVolumeOpts{})
+	cfg, hc, _, _ := buildConfig(compose.ContainerSpec{Image: "nginx", ReplicaID: "r"}, nil)
 	if cfg.StopSignal != "" {
 		t.Errorf("Config.StopSignal = %q, want empty", cfg.StopSignal)
 	}
