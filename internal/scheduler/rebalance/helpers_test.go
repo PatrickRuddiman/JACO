@@ -233,7 +233,6 @@ func (r *rig) replicaHost(id string) string {
 	return rep.GetHost()
 }
 
-// pbAuditMoved / pbAuditSkipped are short aliases for the audit event
-// enum values so test rows stay readable.
-func pbAuditMoved() pb.AuditEventType   { return pb.AuditEventType_AUDIT_EVENT_TYPE_REBALANCE_MOVED }
+// pbAuditSkipped is a short alias for the audit event enum value so test rows
+// stay readable.
 func pbAuditSkipped() pb.AuditEventType { return pb.AuditEventType_AUDIT_EVENT_TYPE_REBALANCE_SKIPPED }
