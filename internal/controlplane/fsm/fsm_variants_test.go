@@ -261,14 +261,28 @@ func TestApply_DeploymentDelete_CascadesReplicasDesired(t *testing.T) {
 			Replica: &pb.ReplicaDesired{Id: "sample-web-0", Deployment: "sample", Service: "web", Host: "h"},
 		}},
 	})
+	// Also seed a ReplicaObserved so we can assert it cascades too —
+	// without this, a delete+re-apply that reuses the same replica id
+	// reads stale observations into the depends_on gate (issue #130).
+	applyCmd(t, f, 3, &pb.Command{
+		Payload: &pb.Command_ReplicaObservedUpdate{ReplicaObservedUpdate: &pb.ReplicaObservedUpdate{
+			Replica: &pb.ReplicaObserved{Id: "sample-web-0", State: pb.ReplicaState_REPLICA_STATE_RUNNING},
+		}},
+	})
 	if s.ReplicasDesired.Len() != 1 {
 		t.Fatalf("ReplicasDesired.Len = %d, want 1", s.ReplicasDesired.Len())
 	}
-	applyCmd(t, f, 3, &pb.Command{
+	if s.ReplicasObserved.Len() != 1 {
+		t.Fatalf("ReplicasObserved.Len = %d, want 1", s.ReplicasObserved.Len())
+	}
+	applyCmd(t, f, 4, &pb.Command{
 		Payload: &pb.Command_DeploymentDelete{DeploymentDelete: &pb.DeploymentDelete{Deployment: "sample"}},
 	})
 	if s.ReplicasDesired.Len() != 0 {
 		t.Errorf("ReplicasDesired.Len after delete = %d, want 0", s.ReplicasDesired.Len())
+	}
+	if s.ReplicasObserved.Len() != 0 {
+		t.Errorf("ReplicasObserved.Len after delete = %d, want 0 (issue #130 cascade)", s.ReplicasObserved.Len())
 	}
 }
 
