@@ -144,7 +144,46 @@ type ContainerSpec struct {
 	// it is NOT resolved here.
 	NetworkMode string
 
+	// DependsOn declares per-replica start-ordering dependencies on other
+	// services in the same deployment (issue #130). Each entry pairs a
+	// service name with a wait condition the reconciler enforces before
+	// calling lifecycle.Start. JACO's analog of compose's same-stack
+	// semantics: "some replica of <service> on any host satisfies the
+	// condition" — compose-go's per-container semantics don't compose with
+	// JACO's multi-host placement, and operators read `depends_on: [api]`
+	// as "wait for api to be up somewhere". Empty slice means no wait.
+	DependsOn []Dependency
 }
+
+// Dependency is one element of ContainerSpec.DependsOn.
+type Dependency struct {
+	// Service is the compose service name to wait for. Must match a service
+	// declared in the same deployment; cross-deployment refs are rejected
+	// by validate.go.
+	Service string
+	// Condition is one of DependencyConditionStarted (default; satisfied
+	// when any replica of Service has reached PULLING/RUNNING/DEGRADED) or
+	// DependencyConditionHealthy (satisfied only when at least one replica
+	// is RUNNING and the runtime has reported healthy). The third compose
+	// condition (service_completed_successfully) is rejected by validate.go
+	// because JACO does not model batch/run-to-completion services.
+	Condition string
+	// Required mirrors compose's `required` flag (default true). When false,
+	// the dependency is advisory: a missing or perpetually unhealthy dep
+	// does not block startup. Today JACO treats Required=false the same as
+	// no entry; the field is kept on the spec so future versions can log
+	// or surface advisory deps in audit without a schema change.
+	Required bool
+}
+
+// DependencyCondition* are the closed enum of wait conditions JACO honors.
+// Validator restricts ServiceDependency.Condition to these values; spec.go
+// normalises the empty string to DependencyConditionStarted to match
+// compose's default.
+const (
+	DependencyConditionStarted = "service_started"
+	DependencyConditionHealthy = "service_healthy"
+)
 
 // Mount is a single bind / named-volume / tmpfs attachment.
 type Mount struct {

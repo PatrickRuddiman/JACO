@@ -98,6 +98,15 @@ func ToContainerSpec(svc types.ServiceConfig, opts SpecOptions) ContainerSpec {
 	// running container id is reflected on every reconcile.
 	spec.NetworkMode = svc.NetworkMode
 
+	// Start-ordering dependencies (#130). compose-go has already parsed
+	// both list-form `depends_on: [api]` and long-form `depends_on: {api:
+	// {condition: service_healthy, required: false}}` into the same
+	// map[string]ServiceDependency, so this is a structural copy with the
+	// empty-condition default applied. Order is sorted by service name so
+	// the spec is deterministic across reconciles (matters for golden-file
+	// tests and audit diffing).
+	spec.DependsOn = dependsOnFromCompose(svc.DependsOn)
+
 
 	return spec
 }
@@ -420,5 +429,31 @@ func gpuRequestsFromCompose(in []types.DeviceRequest) []GPURequest {
 			Options:      mapStringToMap(r.Options),
 		}
 	}
+	return out
+}
+
+// dependsOnFromCompose projects compose's DependsOn map into the spec's
+// sorted []Dependency (issue #130). The validator has already restricted
+// Condition to the closed enum {service_started, service_healthy}; empty
+// (compose default for list-form `depends_on: [api]`) normalises to
+// service_started here so the reconciler can compare without a second
+// default. Output is sorted by service name for deterministic specs.
+func dependsOnFromCompose(in types.DependsOnConfig) []Dependency {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]Dependency, 0, len(in))
+	for name, dep := range in {
+		cond := dep.Condition
+		if cond == "" {
+			cond = DependencyConditionStarted
+		}
+		out = append(out, Dependency{
+			Service:   name,
+			Condition: cond,
+			Required:  dep.Required,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Service < out[j].Service })
 	return out
 }
