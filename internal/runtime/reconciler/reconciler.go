@@ -105,6 +105,15 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	sub := r.brokers.ReplicasDesired.Subscribe()
 	defer sub.Cancel()
 
+	// Separate ReplicasObserved subscription drives the depends_on
+	// re-dispatch path (issue #130): when a dep service's replica
+	// transitions to RUNNING / DEGRADED, every host that has a deferred
+	// dependent re-resyncs and starts it. Without this the only re-
+	// dispatch path is the 30s safety tick, which makes `depends_on`
+	// feel laggy on a fresh deploy.
+	obsSub := r.brokers.ReplicasObserved.Subscribe()
+	defer obsSub.Cancel()
+
 	// Orphan sweep: stop+remove any container labeled with our cluster_id
 	// but whose replica_id isn't in our desired set. Then start every
 	// desired replica for this host (lifecycle.Start is idempotent).
@@ -141,6 +150,19 @@ func (r *Reconciler) Run(ctx context.Context) error {
 				return nil
 			}
 			r.handle(ctx, ev)
+		case ev, ok := <-obsSub.Events():
+			if !ok {
+				return nil
+			}
+			// Re-resync local replicas whenever a dep service's replica
+			// transitions into a satisfying state. Cheap: dispatchStart
+			// dedupes by (replica_id, raft_index), so already-running
+			// replicas are no-ops; only deferred replicas (whose start
+			// goroutine self-cleared after ErrDependsOnUnmet) actually
+			// re-enter runStart.
+			if observedTriggersResync(ev) {
+				r.resync(ctx)
+			}
 		case <-ticker.C:
 			if err := r.orphanSweep(ctx); err != nil {
 				r.logger.Debug("safety-tick orphan sweep skipped", "error", err)
@@ -148,6 +170,30 @@ func (r *Reconciler) Run(ctx context.Context) error {
 			r.resync(ctx)
 		}
 	}
+}
+
+// observedTriggersResync returns true when a ReplicasObserved event
+// represents a transition that could unblock a deferred depends_on. We
+// only resync on transitions INTO satisfying states (PULLING / RUNNING /
+// DEGRADED) — transitions out are uninteresting because the dependent is
+// already started and the gate isn't re-evaluated post-start.
+func observedTriggersResync(ev watch.Event[*pb.ReplicaObserved]) bool {
+	switch ev.Kind {
+	case watch.KindAdded, watch.KindUpdated, watch.KindResync:
+	default:
+		return false
+	}
+	after := ev.After
+	if after == nil {
+		return false
+	}
+	switch after.GetState() {
+	case pb.ReplicaState_REPLICA_STATE_PULLING,
+		pb.ReplicaState_REPLICA_STATE_RUNNING,
+		pb.ReplicaState_REPLICA_STATE_DEGRADED:
+		return true
+	}
+	return false
 }
 
 // orphanSweep stops+removes any local container labeled with our cluster_id
@@ -268,6 +314,21 @@ func (r *Reconciler) runStart(workCtx, watchCtx context.Context, rep *pb.Replica
 		ReplicaIndex: int(rep.GetIndex()),
 		RaftIndex:    rep.GetRaftIndex(),
 	})
+	// Start-ordering gate (issue #130). Evaluated before subnet alloc,
+	// image pull, and lifecycle.Start so a stuck dep doesn't waste pulls
+	// or hold bridges that other replicas need. On unmet, return the
+	// sentinel so dispatchStart logs the defer and the 30s safety tick
+	// + the ReplicasObserved watch re-dispatch when the dep transitions
+	// (see Run's select loop).
+	if unmet, ok := checkDependsOn(r.state, rep.GetDeployment(), spec.DependsOn); !ok {
+		r.logger.Info("depends_on unmet; deferring start",
+			logging.KeyReplicaID, rep.GetId(),
+			logging.KeyDeployment, rep.GetDeployment(),
+			"service", rep.GetService(),
+			"waiting_on", unmet.Service,
+			"condition", unmet.Condition)
+		return ErrDependsOnUnmet
+	}
 	// Bug 007: ensure each declared docker network exists on the local
 	// engine before lifecycle.Start tries to NetworkConnect.
 	// Idempotent; safe to call on every reconcile.
@@ -389,7 +450,7 @@ func (r *Reconciler) dispatchStart(parent context.Context, rep *pb.ReplicaDesire
 			}
 			r.startMu.Unlock()
 		}()
-		if err := r.runStart(workCtx, parent, rep); err != nil && !errors.Is(err, context.Canceled) {
+		if err := r.runStart(workCtx, parent, rep); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, ErrDependsOnUnmet) {
 			r.logger.Error("start replica failed",
 				logging.KeyReplicaID, id, logging.KeyDeployment, rep.GetDeployment(), "error", err)
 		}

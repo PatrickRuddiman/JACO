@@ -210,6 +210,11 @@ func Validate(rawYAML []byte) error {
 				return verr
 			}
 		}
+		if dep, ok := svc["depends_on"]; ok {
+			if verr := checkDependsOn(svcName, dep, doc.Services); verr != nil {
+				return verr
+			}
+		}
 	}
 	return nil
 }
@@ -266,6 +271,103 @@ func checkNetworkMode(svcName string, modeField any, services map[string]map[str
 			"value":   mode,
 		},
 	}
+}
+
+// allowedDependsOnConditions is the closed set of compose `depends_on`
+// wait conditions JACO enforces (issue #130). `service_completed_successfully`
+// is rejected because JACO doesn't model run-to-completion services; the
+// reconciler has no signal for "completed", so silently accepting it would
+// let dependent containers wait forever.
+var allowedDependsOnConditions = map[string]bool{
+	DependencyConditionStarted: true,
+	DependencyConditionHealthy: true,
+}
+
+// checkDependsOn enforces (issue #130):
+//   - every named dep is a service declared in the same compose document
+//     (cross-deployment refs are rejected because JACO scopes ordering to
+//     a single deployment's compose project),
+//   - long-form `condition` values are restricted to the closed enum
+//     above (`service_completed_successfully` and any typo land here),
+//   - no service depends on itself (compose-go accepts it; the reconciler
+//     would deadlock waiting on its own peer).
+//
+// Accepts both list form (`depends_on: [api]`) and map form
+// (`depends_on: {api: {condition: service_healthy}}`); compose-go normalises
+// both into ServiceDependency at load, but Validate runs against the raw
+// YAML so both shapes show up here.
+func checkDependsOn(svcName string, dep any, services map[string]map[string]any) *ValidationError {
+	switch v := dep.(type) {
+	case []any:
+		for _, item := range v {
+			name, ok := item.(string)
+			if !ok {
+				continue
+			}
+			if err := checkOneDep(svcName, name, "", services); err != nil {
+				return err
+			}
+		}
+	case map[string]any:
+		// Stable iteration so the first violation is deterministic.
+		names := make([]string, 0, len(v))
+		for n := range v {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			cond := ""
+			if cfg, ok := v[name].(map[string]any); ok {
+				if c, ok := cfg["condition"].(string); ok {
+					cond = c
+				}
+			}
+			if err := checkOneDep(svcName, name, cond, services); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// checkOneDep validates a single `depends_on` entry. The empty condition
+// (list-form bare service name) passes — spec.go normalises it to
+// service_started.
+func checkOneDep(svcName, depName, condition string, services map[string]map[string]any) *ValidationError {
+	if depName == svcName {
+		return &ValidationError{
+			Code:    "invalid_depends_on",
+			Message: fmt.Sprintf("service %q depends on itself", svcName),
+			Details: map[string]string{
+				"service":    svcName,
+				"depends_on": depName,
+			},
+		}
+	}
+	if _, ok := services[depName]; !ok {
+		return &ValidationError{
+			Code: "unknown_depends_on_service",
+			Message: fmt.Sprintf("service %q depends_on undeclared service %q",
+				svcName, depName),
+			Details: map[string]string{
+				"service":    svcName,
+				"depends_on": depName,
+			},
+		}
+	}
+	if condition != "" && !allowedDependsOnConditions[condition] {
+		return &ValidationError{
+			Code: "unsupported_depends_on_condition",
+			Message: fmt.Sprintf("service %q depends_on %q uses unsupported condition %q (accepted: %s)",
+				svcName, depName, condition, "service_started, service_healthy"),
+			Details: map[string]string{
+				"service":    svcName,
+				"depends_on": depName,
+				"condition":  condition,
+			},
+		}
+	}
+	return nil
 }
 
 // reservedHostPorts are the host ports JACO's HTTP/S ingress owns; a compose
