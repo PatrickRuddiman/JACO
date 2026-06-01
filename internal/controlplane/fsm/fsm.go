@@ -265,6 +265,14 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 		for _, rd := range f.State.ReplicasDesired.List() {
 			if rd.GetDeployment() == name {
 				f.State.ReplicasDesired.Remove(rd.GetId(), idx)
+				// Cascade observed records too. Without this, a later
+				// re-apply of the same deployment name (which reuses
+				// the same `<dep>-<svc>-<idx>` replica ids) reads stale
+				// observations from the prior incarnation — broke the
+				// depends_on gate (issue #130) when a redeploy
+				// satisfied the gate against a previous run's RUNNING
+				// records.
+				f.State.ReplicasObserved.Remove(rd.GetId(), idx)
 			}
 		}
 		// Free every per-host /24 allocated for this deployment.

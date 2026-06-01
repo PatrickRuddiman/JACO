@@ -26,8 +26,11 @@ var ErrDependsOnUnmet = errors.New("depends_on unmet; deferring start")
 //
 //   - DependencyConditionStarted ("service_started", compose default):
 //     at least one ReplicaDesired exists for (deployment, dep service) AND
-//     its ReplicaObserved is in PULLING / RUNNING / DEGRADED. PENDING and
-//     FAILED do NOT satisfy — they mean the dep hasn't actually started.
+//     its ReplicaObserved is in RUNNING or DEGRADED — i.e. the container
+//     has actually been run on docker. PULLING does NOT satisfy: a pull
+//     in progress means the container doesn't exist yet, so a dependent
+//     starting now would race the dep's actual `docker run` and that
+//     defeats the point of the gate.
 //
 //   - DependencyConditionHealthy ("service_healthy"): at least one replica
 //     in RUNNING. DEGRADED does NOT satisfy — degraded means the dep failed
@@ -79,6 +82,9 @@ func depSatisfied(st *state.State, deployment, service, condition string) bool {
 		if !ok {
 			continue
 		}
+		// (Cascade-delete on DeploymentDelete in the FSM ensures
+		// stale observations from a prior incarnation of the same
+		// replica id can't satisfy the gate after delete+re-apply.)
 		if satisfies(obs.GetState(), condition) {
 			return true
 		}
@@ -92,9 +98,16 @@ func depSatisfied(st *state.State, deployment, service, condition string) bool {
 func satisfies(s pb.ReplicaState, condition string) bool {
 	switch condition {
 	case compose.DependencyConditionStarted:
+		// "started" matches compose's semantics: the container has been
+		// run on docker. RUNNING covers the healthy / no-healthcheck
+		// case; DEGRADED covers the healthcheck-failing case (the
+		// container IS started; healthcheck status is separate). PULLING
+		// must NOT satisfy — the container hasn't been created yet, so
+		// any dependent that starts now races the dep's actual `docker
+		// run`. PENDING / FAILED / STOPPED / UNSPECIFIED also fail
+		// because the container is absent.
 		switch s {
-		case pb.ReplicaState_REPLICA_STATE_PULLING,
-			pb.ReplicaState_REPLICA_STATE_RUNNING,
+		case pb.ReplicaState_REPLICA_STATE_RUNNING,
 			pb.ReplicaState_REPLICA_STATE_DEGRADED:
 			return true
 		}
