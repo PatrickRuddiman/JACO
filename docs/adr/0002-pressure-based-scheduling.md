@@ -1,3 +1,10 @@
+---
+sources:
+  - internal/scheduler/rebalance/
+  - internal/runtime/cgroupv2/
+  - internal/daemon/grpc/heartbeat.go
+---
+
 # ADR 0002: Pressure-based scheduling
 
 - **Status:** accepted (simplified 2026-05-31)

@@ -1,3 +1,8 @@
+---
+sources:
+  - docs/adr/
+---
+
 # Architecture Decision Records
 
 This directory holds the load-bearing design decisions for JACO. An ADR is a

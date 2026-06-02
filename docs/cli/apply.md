@@ -49,30 +49,47 @@ Operator token (TCP) or unix-socket trust (local).
    [manifests/jaco-yaml.md](../manifests/jaco-yaml.md)) and the compose
    file against the supported-field allowlist (see
    [manifests/compose.md](../manifests/compose.md)). Unknown fields,
-   unknown services, unknown hosts, unknown networks, or attempts to
-   publish a reserved port (80/443) reject the apply with a typed
+   unknown services, unknown hosts, unknown networks, a
+   `cross-deployment` collision, attempts to publish a reserved port
+   (80/443), and two services in the same deployment publishing the
+   same host port (`port_conflict`) reject the apply with a typed
    error and **no state changes**.
 3. Cross-check: every `services[*].name` in the jaco.yaml must match a
-   key in the compose file.
-4. The leader writes a new `Deployment{applied_revision: N+1}` through
+   key in the compose file. A route targeting a service that sets
+   `network_mode: none` or `network_mode: service:<name>` is rejected
+   — those services have no reachable listener of their own, so the
+   route would publish a dead upstream.
+4. **Privileged admission** (issue #119). A compose service that sets
+   `privileged: true` or a non-empty `security_opt:` list requires:
+   the calling operator token has `allows_privileged=true` (see
+   [`jaco token issue --allow-privileged`](token.md)), AND the service
+   carries `labels: { "jaco.io/allow-privileged": "true" }`. A
+   missing token flag rejects with `PermissionDenied` naming the
+   first offending service; a missing label rejects in step 2 with
+   `validation_failed`. Admitted privileged workloads write one
+   `privileged_workload_admitted` audit event per gated service.
+5. The leader writes a new `Deployment{applied_revision: N+1}` through
    raft. The scheduler reconciles `ReplicaDesired` and the runtime
    converges containers.
-5. The RPC returns `Applied revision: <N+1>` once the leader has
+6. The RPC returns `Applied revision: <N+1>` once the leader has
    committed the new revision. Container start + health is observed
    asynchronously; `jaco status -w` shows replicas moving through
    `pending → pulling → running`.
 
 With `--dry-run` the apply returns the `Diff` (adds, updates, removes)
-without committing. The diff currently surfaces as `No changes` on a
-no-op apply; richer per-entity diffs are tracked separately.
+without committing. **Privileged admission still runs** under dry-run
+so the diff reflects what the live apply would decide. The diff itself
+currently surfaces as `No changes` on a no-op apply; richer per-entity
+diffs are tracked separately.
 
 ## Exit codes
 
 - `0` — apply succeeded, or `--dry-run` returned a diff.
 - `1` — `validation_failed`, `unknown_service`, `unknown_host`,
-  `unknown_network`, `reserved_port`, `cannot place N replicas on M
-  pinned hosts`, `quorum_lost`, `no_leader`, or any auth / transport
-  error.
+  `unknown_network`, `reserved_port`, `port_conflict`,
+  `cannot place N replicas on M pinned hosts`, `PermissionDenied`
+  (privileged admission), `quorum_lost`, `no_leader`, or any auth /
+  transport error.
 
 See [Status and errors](../concepts/status-and-errors.md) for the
 closed code set.

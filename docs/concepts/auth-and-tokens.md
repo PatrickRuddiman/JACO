@@ -25,10 +25,29 @@ A 64-character hex string bound to an **identity name** (e.g.
 RPC over the cross-host gRPC listener. Issued by:
 
 - `jaco cluster init` — prints the first one once. Identity
-  `bootstrap`.
-- `jaco token issue --name <id>` — mints additional ones. The
-  plaintext is printed once; only the SHA-256 hash is stored in raft
-  as `Token{identity, hashed_secret, issued_at}`.
+  `bootstrap`. Carries `allows_privileged = false`.
+- `jaco token issue --name <id> [--allow-privileged]` — mints
+  additional ones. The plaintext is printed once; only the SHA-256
+  hash is stored in raft as `Token{identity, hashed_secret,
+  issued_at, allows_privileged}`.
+
+#### `allows_privileged` flag (issue #119)
+
+A token's persisted `allows_privileged` flag gates admission of
+manifests that set compose `privileged: true` or a non-empty
+`security_opt:` list. Apply checks BOTH the token flag AND a
+matching `labels: { "jaco.io/allow-privileged": "true" }` on the
+service before admitting; see
+[Supported compose fields → Privileged services](../manifests/compose.md#privileged-services).
+
+Issuing the flag is itself **not** gated on the caller already being
+privileged — any valid operator token can mint a privileged one. The
+second fence (the service label) is what defends against accidental
+`privileged: true` in a manifest from a non-privileged author.
+
+Local unix-socket callers bypass the token check entirely (the socket
+permissions already gate operator-class access); the label fence
+still runs.
 
 Revoked via `jaco token revoke <id>`. Revocation is a raft write
 applied on every node; the next RPC presented with the revoked

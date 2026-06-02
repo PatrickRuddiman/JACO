@@ -39,7 +39,15 @@ the lowercase short-form names: `apply`, `delete`, `rollback`,
 `certificate_issued`, `certificate_renewed`, `certificate_failed`,
 `isolation_ruleset_reconciled`, `isolation_unavailable`,
 `backup_taken`, `restore_completed`, `upgrade_succeeded`,
-`upgrade_failed`, `rollout_invariant_hold`.
+`upgrade_failed`, `rollout_invariant_hold`,
+`registry_credential_upsert`, `registry_credential_remove`,
+`privileged_workload_admitted`, `rebalance_moved`,
+`rebalance_skipped`. Unknown names exit non-zero with the offender
+named.
+
+The closed set lives in [`AuditEventType` in entities.proto](../../proto/jaco/v1/entities.proto)
+(field number 22 is reserved — the dry-run rebalance type was removed
+when the rebalancer became always-on; historical blobs still decode).
 
 ## Auth
 
