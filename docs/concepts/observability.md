@@ -108,9 +108,12 @@ Precedence: `--log-level` > `--verbose` > `JACO_LOG` > `warn`.
 Every log line carries a `subsystem` attribute set by the package
 that emitted it:
 
-`raft`, `scheduler`, `runtime`, `discovery`, `ingress`,
-`controlplane`, `admission`, `bootstrap`, `wgmesh`, `firewall`,
-`dns`, `health`, …
+`raft`, `scheduler`, `scheduler/rebalance` (the leader-only
+pressure-based rebalancer), `scheduler/pressure` (the per-node
+cgroup-v2 sampler that publishes
+`NodeStatusUpdate{IncludePressure: true}`), `runtime`, `discovery`,
+`ingress`, `controlplane`, `admission`, `bootstrap`, `wgmesh`,
+`firewall`, `dns`, `health`, …
 
 Filtering on subsystem (`SUBSYSTEM=firewall` under journald,
 `jq 'select(.subsystem=="firewall")'` on the JSON path) is the

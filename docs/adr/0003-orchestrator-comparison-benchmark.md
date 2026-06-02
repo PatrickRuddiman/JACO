@@ -1,3 +1,9 @@
+---
+sources:
+  - tests/samples/
+  - tests/testbed/
+---
+
 # ADR 0003: Orchestrator comparison benchmark
 
 - **Status:** proposed

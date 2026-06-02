@@ -38,14 +38,16 @@ replicas back one at a time using the prior `jaco.yaml` + compose
 pair the cluster already has on hand. Routes and certs revert in step.
 
 The previous revision must exist — there is no rollback past the first
-applied revision. On a freshly-applied deployment the call returns the
-new revision number.
+applied revision; a fresh deployment with only one applied revision
+returns `no_previous_revision`. Rolling back an unknown deployment
+returns `deployment_not_found`.
 
 ### Exit codes
 
 - `0` — rolled back; the new active revision is printed.
-- `1` — `validation_failed` (no previous revision), `no_leader`, or
-  auth / transport error.
+- `1` — `deployment_not_found`, `no_previous_revision`,
+  `validation_failed` (empty name), `no_leader`, or auth / transport
+  error.
 
 ### Examples
 

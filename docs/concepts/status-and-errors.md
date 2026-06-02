@@ -54,6 +54,9 @@ constructors.
 | `isolation_unavailable`               | node could not bring up nftables ruleset; replicas not scheduled here                 |
 | `isolation_self_test_failed`          | startup self-test of nftables ruleset failed                                          |
 | `subnet_pool_exhausted`               | IPAM pool ran out of `/24`s                                                           |
+| `port_conflict`                       | two services in one deployment publish the same host port, or a deployment publishes a host port another deployment already owns cluster-wide |
+| `deployment_not_found`                | `jaco rollback` / `jaco delete` against a deployment the cluster has no record of     |
+| `no_previous_revision`                | `jaco rollback` against a deployment that has never been rolled forward; nothing to revert to |
 | `upgrade_verification_failed`         | minisign signature or SHA-256 checksum mismatch in `self-upgrade`                     |
 | `upgrade_failed`                      | post-upgrade health check failed; rollback executed                                   |
 | `internal`                            | unrecoverable daemon error not better-categorized; details include `reason`           |
@@ -125,7 +128,16 @@ A `failed` replica is not retried automatically beyond the
 `certificate_renewed`, `certificate_failed`,
 `isolation_ruleset_reconciled`, `isolation_unavailable`,
 `backup_taken`, `restore_completed`, `upgrade_succeeded`,
-`upgrade_failed`, `rollout_invariant_hold`.
+`upgrade_failed`, `rollout_invariant_hold`,
+`registry_credential_upsert`, `registry_credential_remove`,
+`privileged_workload_admitted`, `rebalance_moved`,
+`rebalance_skipped`.
+
+Tag 22 (`rebalance_dry_run`) is reserved — the rebalancer was
+simplified to always-on; the type is gone but the tag stays so
+historical audit blobs decode cleanly. See
+[Scheduling → Pressure-based rebalancing → Observability](scheduling.md#observability)
+for the rebalance payload shape.
 
 `jaco audit --type <name,…>` filters on the short forms. See
 [`jaco audit`](../cli/audit.md).

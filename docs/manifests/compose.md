@@ -30,7 +30,7 @@ create:
 | `env_file`     | env file(s); merged into `environment` **client-side** before apply (see [§ `env_file` resolution](#env_file-resolution)) |
 | `volumes`      | named volumes and host bind mounts                             |
 | `ports`        | declares cluster-wide TCP listeners (see below)                |
-| `depends_on`   | **ordering only**; runtime starts in topological order         |
+| `depends_on`   | **ordering only**; runtime starts in topological order. Closed condition enum: `service_started` (compose default) and `service_healthy`. `service_completed_successfully` is rejected — JACO does not model run-to-completion services. Self-deps and cross-deployment refs are rejected. Dependencies are evaluated **cluster-wide** (any replica of the dep service in the satisfying state unblocks the dependent, even on a different host). See [§ `depends_on` semantics](#depends_on-semantics) |
 | `healthcheck`  | docker built-in healthcheck; drives JACO replica state         |
 | `labels`       | merged with JACO-managed labels (see "Labels JACO adds")       |
 | `user`         | UID/GID for the container process                              |
@@ -51,6 +51,8 @@ create:
 | `init`         | run `tini` (docker's bundled PID 1) as init |
 | `shm_size`     | size of `/dev/shm` (compose syntax: `"64m"`, `"1g"`) |
 | `ipc`, `pid`, `uts`, `userns_mode`, `cgroup`, `cgroup_parent` | namespace knobs forwarded verbatim. `host`-mode values weaken isolation by design; JACO honors them as-written with no runtime gate |
+| `network_mode` | closed accept-set: empty (default — attach the per-deployment bridge), `none` (no network at all), `service:<name>` (share the netns of another service in the same deployment). `host`, `bridge`, `container:<id>`, and any named-network value are **rejected** — they bypass the per-deployment bridge, the WireGuard mesh, the nftables isolation, and ingress. `service:<name>` requires the target to live on the same docker daemon (issue #121); the sidecar bounces on the first deploy waiting for its primary's running container. A service that sets `network_mode` cannot receive an ingress route (apply rejects with `validation_failed`) |
+| `privileged`, `security_opt` | gated. Requires both `labels: { "jaco.io/allow-privileged": "true" }` on the service AND a calling operator token with `allows_privileged=true` ([`jaco token issue --allow-privileged`](../cli/token.md)). See [§ Privileged services](#privileged-services) |
 | `devices`      | host device bind-mounts (e.g. `/dev/fuse`, `/dev/snd`, `/dev/dri`). Compose short (`"/dev/fuse:/dev/fuse:rwm"`) and long form (`{source, target, permissions}`) both honored. Grants host-kernel surface; operator-side policy gating is out of scope for this PR |
 | `gpus`         | modern GPU request syntax (`gpus: all` or long-form list with `driver`/`count`/`device_ids`/`capabilities`/`options`). Forwarded onto docker `HostConfig.DeviceRequests`. Requires the operator-managed nvidia-container-runtime (or AMD equivalent) on each node |
 | `pull_policy`  | per-service pull strategy. Accepted values: `always` and `missing` (current JACO behavior — call `ImagePull`, daemon manifest-checks; cheap when up-to-date), `never` (skip the pull entirely; needed for air-gapped operators that side-load images), `build` (treated as `missing` — JACO never builds). `daily`/`weekly` are rejected with `validation_failed` |
@@ -136,6 +138,60 @@ Two practical consequences:
   directory for relative paths.
 - `jaco apply --dry-run` runs the resolver before computing the diff,
   so the diff reflects the values the daemon would actually see.
+
+## `depends_on` semantics
+
+The runtime defers a replica's `Start` until every required dep
+entry is satisfied. Conditions:
+
+- `service_started` (compose default for the bare `depends_on: [api]`
+  list form) — satisfied when **at least one** replica of the named
+  service is in `running` or `degraded`. `pulling` does **not**
+  satisfy: the container hasn't been run on docker yet, so starting
+  the dependent would race the dep's actual `docker run`.
+- `service_healthy` — satisfied when at least one replica is in
+  `running`. `degraded` does **not** satisfy — a waiter chose
+  `service_healthy` explicitly because it needs a healthy peer, not
+  just a live one.
+
+Evaluation is **cluster-wide, not per-host**. A web replica on
+`jaco-1` with `depends_on: [api]` is unblocked the moment any `api`
+replica reaches the wait condition, even when that replica lives on
+`jaco-3`. This matches operator expectations from compose ("api is up
+somewhere") and avoids deadlocks when the scheduler spreads dep and
+dependent across different hosts.
+
+Unsatisfied deps surface as a deferred replica — the next 30 s safety
+tick (or a `ReplicasObserved` watch event for a transition INTO a
+satisfying state) re-dispatches the start. Operators see "depends_on
+unmet; deferring start" in the node logs.
+
+## Privileged services
+
+A service that sets `privileged: true` or a non-empty `security_opt:`
+list trips the **two-fence admission gate** (issue #119):
+
+1. **Schema-time** — the service MUST carry
+   `labels: { "jaco.io/allow-privileged": "true" }` (exact string,
+   bare booleans / `True` / `1` do **not** count — compose serialises
+   label values as strings). Missing the label rejects locally via
+   `jaco validate` and at the daemon on `jaco apply` with
+   `validation_failed` naming the gated fields.
+2. **Apply-time** — the calling operator's token MUST have
+   `allows_privileged=true`. The bootstrap token does not; mint one
+   with `jaco token issue --name <id> --allow-privileged`. Missing the
+   flag rejects with `PermissionDenied` naming the first offending
+   service.
+
+Local unix-socket callers bypass the token check (the socket's `0660`
+filesystem permissions already gate operator-class access); the label
+check still runs.
+
+Each admitted privileged service writes one
+`privileged_workload_admitted` audit event after the apply commits, so
+the audit log records every workload that actually landed (best-effort
+— an audit failure does not fail the apply, mirroring other
+post-commit audit emissions).
 
 ## Rejected fields
 

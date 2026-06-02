@@ -16,7 +16,9 @@ operation.
 ### Synopsis
 
 ```
-jaco token issue --server <host:port> --name <identity> [--token <op>] [--ca-cert <path>]
+jaco token issue --server <host:port> --name <identity>
+                 [--allow-privileged]
+                 [--token <op>] [--ca-cert <path>]
 ```
 
 ### Flags
@@ -25,20 +27,34 @@ jaco token issue --server <host:port> --name <identity> [--token <op>] [--ca-cer
 |-----------------------|-------------------------------|------------------------------------------|
 | `--server <addr>`     | — (required)                  | leader gRPC                              |
 | `--name <s>`          | — (required)                  | identity for the new token               |
+| `--allow-privileged`  | `false`                       | stamp `allows_privileged=true` so the token can apply manifests using `privileged:` or `security_opt:` (issue #119) |
 | `--token <op>`        | `JACO_TOKEN`                  | calling operator's bearer token          |
 | `--ca-cert <path>`    | `/var/lib/jaco/node/ca.crt`   | cluster CA PEM                           |
 
 ### Auth
 
-Operator token, required.
+Operator token, required. Any valid operator token may mint a
+`--allow-privileged` token — there is no separate "issuer must already
+be privileged" gate. The bootstrap token issued by `jaco cluster init`
+does not carry the flag by default; issue a privileged one explicitly
+when you need it. Mint sparingly.
 
 ### Behavior
 
 Mints a new opaque bearer token bound to `--name` (e.g. `alice`,
 `ci-deploy`). The plaintext is printed once on stdout; only the SHA-256
-hash is stored in raft as a `Token{identity, hashed_secret, issued_at}`
-entity. Subsequent state-changing RPCs presented with this token are
-attributed to `<name>` in the audit log.
+hash is stored in raft as a `Token{identity, hashed_secret, issued_at,
+allows_privileged}` entity. Subsequent state-changing RPCs presented
+with this token are attributed to `<name>` in the audit log.
+
+`--allow-privileged` stamps the persisted token entity. Apply admission
+then admits manifests that set `privileged: true` or a non-empty
+`security_opt:` list (the compose validator additionally requires a
+`labels: { "jaco.io/allow-privileged": "true" }` marker on the gated
+service — see
+[Supported compose fields](../manifests/compose.md#privileged-services)).
+An apply by a non-privileged token rejects with `PermissionDenied` and
+names the offending service.
 
 ### Exit codes
 
@@ -50,6 +66,9 @@ attributed to `<name>` in the audit log.
 ```sh
 jaco token issue --server $LEADER --name ci-deploy
 # Token for ci-deploy (save this; not recoverable): 1b2c...
+
+jaco token issue --server $LEADER --name infra-admin --allow-privileged
+# Token for infra-admin (save this; not recoverable): 9f0a...
 ```
 
 ## `jaco token revoke`

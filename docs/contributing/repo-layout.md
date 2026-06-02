@@ -48,6 +48,7 @@ What lives where. Use this as the map when you're about to grep.
 │   ├── logging/         # log/slog convention; journal + JSON + text handlers
 │   ├── packaging/       # tarball signature/checksum verify for self-upgrade
 │   ├── runtime/         # docker engine driver
+│   │   ├── cgroupv2/    # per-node CPU + memory pressure collector (Linux)
 │   │   ├── compose/     # compose parser + closed-field validator
 │   │   ├── dockerx/     # docker client glue
 │   │   ├── health/      # per-replica healthcheck poller
@@ -60,6 +61,7 @@ What lives where. Use this as the map when you're about to grep.
 │       ├── drain/       # graceful node remove
 │       ├── health/      # restart-with-fail-after-3
 │       ├── placement/   # spread / pack / hosts
+│       ├── rebalance/   # pressure-based rebalancer (ADR 0002)
 │       └── rollout/     # per-service rolling-update plan
 ├── pkg/                 # generated, exported packages
 │   └── proto/jaco/v1/   # buf-generated gRPC + proto types

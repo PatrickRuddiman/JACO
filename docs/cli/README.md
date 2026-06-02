@@ -92,8 +92,11 @@ Level precedence: `--log-level` > `--verbose` > `JACO_LOG` > `warn`.
   attributed to the `local` identity in the audit log.
 - **Operator tokens** are 64-character hex strings. The first one is
   printed once by `jaco cluster init`; subsequent ones are minted via
-  `jaco token issue --name <identity>`. Token revocation is a raft
-  write, effective cluster-wide within one apply (well under 5 s).
+  `jaco token issue --name <identity>` and optionally carry an
+  `allows_privileged` flag (`--allow-privileged`) that admits
+  manifests using compose `privileged:` or `security_opt:`. Token
+  revocation is a raft write, effective cluster-wide within one apply
+  (well under 5 s).
 - **Join tokens** are single-use, 24-hour TTL, hashed in raft state.
   Mint with `jaco node issue-join-token`, consume with
   `jaco node join`.

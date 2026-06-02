@@ -46,7 +46,15 @@ None — fully local; no cluster contact.
   field. Networks referenced under a service but absent from the
   top-level `networks:` block fail with `unknown_network`. Services
   that publish reserved host ports (80 or 443) fail with
-  `reserved_port`. See
+  `reserved_port`. Closed enums are additionally enforced for
+  `pull_policy:` (`always | missing | never | build`),
+  `network_mode:` (empty / `none` / `service:<name>` only), and
+  `depends_on` `condition:` (`service_started | service_healthy`);
+  any other value fails with `validation_failed`. A service that
+  sets `privileged: true` or a non-empty `security_opt:` without a
+  matching `labels: { "jaco.io/allow-privileged": "true" }` is
+  rejected here too — the apply-time token-class gate is the second
+  half (see [`jaco apply`](apply.md)). See
   [manifests/compose.md](../manifests/compose.md) for the closed
   field set.
 - Cross-check failures (jaco service name not in compose) fail with

@@ -147,6 +147,49 @@ a new daemon, or the document was synthesized by a tool that bypassed
 the CLI's resolver. Upgrade the CLI (`jaco self-upgrade`) or run the
 resolution step yourself.
 
+## `port_conflict`
+
+Apply rejected because two compose services in the deployment publish
+the same host port, or because a host port the deployment wants is
+already published by another deployment cluster-wide. The proto's
+`TCPRoute` is keyed by `published_port` cluster-wide: there is no
+per-host scope.
+
+Pick a different host port on the conflicting `ports:` entry, or
+`jaco delete` the deployment that already owns the port. Reserved
+ports `80` and `443` continue to surface as `reserved_port`, not
+`port_conflict`.
+
+## `PermissionDenied` (privileged admission)
+
+Apply rejected because a compose service set `privileged: true` or
+a non-empty `security_opt:` list and the calling operator's token
+lacks `allows_privileged=true`. The first offending service is named
+in the message. Two fixes, depending on intent:
+
+- The workload genuinely needs the privileged bit — mint a privileged
+  operator token (`jaco token issue --server $LEADER --name <id>
+  --allow-privileged`) and re-apply with that token.
+- The workload should not be privileged — drop `privileged:` /
+  `security_opt:` from the compose file and re-apply with the
+  existing token.
+
+If the rejection is the schema-time half instead (the service is
+missing `labels: { "jaco.io/allow-privileged": "true" }`), the error
+code is `validation_failed`, not `PermissionDenied` — see
+[`jaco validate`](../cli/validate.md) and
+[Supported compose fields → Privileged services](../manifests/compose.md#privileged-services).
+
+## `deployment_not_found` / `no_previous_revision`
+
+From `jaco rollback`:
+
+- `deployment_not_found` — the named deployment is not in raft
+  state. Confirm spelling with `jaco status --server $LEADER`.
+- `no_previous_revision` — the deployment has only ever been applied
+  once, so there's nothing to roll back to. Apply a new revision
+  forward instead.
+
 ## `replicas_exceed_pinned_hosts`
 
 `placement: hosts` with `replicas` greater than the number of hosts

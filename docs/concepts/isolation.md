@@ -278,9 +278,20 @@ values (`pid: host`, `ipc: host`, `uts: host`, `userns_mode: host`)
 share the host kernel's namespace with the container and weaken
 isolation by design. JACO does **not** gate them at apply time — an
 operator declaring `pid: host` is presumed to know they are giving the
-container visibility into every host process. Operator policy (e.g.
-rejecting host-mode at admission) is a separate decision tracked
-outside this iteration.
+container visibility into every host process.
+
+The adjacent fields `privileged` and `security_opt` **are** gated
+(issue #119). Both require the service to carry
+`labels: { "jaco.io/allow-privileged": "true" }` AND the calling
+operator's token to carry `allows_privileged=true`. See
+[Auth and tokens → `allows_privileged` flag](auth-and-tokens.md#allows_privileged-flag-issue-119)
+and [Supported compose fields → Privileged services](../manifests/compose.md#privileged-services).
+
+`network_mode` is also restricted (issue #121): empty / `none` /
+`service:<name>` only. `host`, `bridge`, `container:<id>`, and any
+named-network value are rejected outright — they would bypass the
+per-deployment bridge, the WireGuard mesh, this ruleset, and ingress
+all at once.
 
 The bridge / nftables isolation described above still holds: a
 container with `pid: host` sees the host's processes but its network

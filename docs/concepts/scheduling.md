@@ -1,6 +1,8 @@
 ---
 sources:
   - internal/scheduler/
+  - internal/scheduler/rebalance/
+  - internal/runtime/cgroupv2/
   - internal/runtime/reconciler/
   - internal/runtime/pull/
   - internal/runtime/lifecycle/lifecycle.go
@@ -190,14 +192,169 @@ aborts with `pending: drain_timeout`.
 
 ## Quotas
 
-The scheduler is **not** capacity-aware. Per-replica CPU/memory limits
-are enforced by the runtime (compose `deploy.resources` + the legacy
-top-level keys; see [compose.md](../manifests/compose.md)), but the
-scheduler does not model node capacity or resource requests. A pack
-placement can overcommit a node if the operator asks for it.
+Per-replica CPU/memory limits are enforced by the runtime (compose
+`deploy.resources` + the legacy top-level keys; see
+[compose.md](../manifests/compose.md)). The placement scheduler is
+not capacity-aware: it does not model node capacity or per-service
+resource requests, so a `pack` placement can overcommit a node if the
+operator asks for it. The pressure-based rebalancer (below) is the
+feedback loop that catches the over-packed case at runtime.
 
 IO/block-device limits and autoscaling are explicitly out of scope
 for v1.
+
+## Pressure-based rebalancing
+
+The leader runs a second, **independent** scheduler loop: the
+`internal/scheduler/rebalance` package
+([ADR 0002](../adr/0002-pressure-based-scheduling.md), issue #92).
+It observes per-node CPU + memory pressure, picks the cheapest
+stateless replica to move off the hottest node when the cluster is
+meaningfully imbalanced, and emits a single move per cycle through
+the existing scheduler raft-Apply path
+(`ReplicaDesiredUpsert` with a new `Host`). The runtime reconciler
+on the source node then stops the container, and the new host's
+reconciler pulls the image and starts it — same code path as any
+other placement change.
+
+The rebalancer is **always-on** and has **no operator-facing config
+block**. Defaults bake in; tight gates bias so strongly toward
+inaction that an idle or uniformly-busy cluster never moves anything.
+
+### Pressure signal
+
+Every daemon samples its local cgroup v2 + `/proc/meminfo`
+utilisation on the `node_status_interval` cadence (default 30 s,
+range 5 s..5 m; see [Configuration](../configuration.md)) and
+gossips a `NodeStatusUpdate{IncludePressure: true}` through raft.
+The leader's `StateBackedSource` reads each node's latest sample
+out of state, gated on a freshness window of 3× the heartbeat
+interval — a crashed node stops influencing decisions within a
+couple of intervals.
+
+The cycle loop folds each sample into a per-node EWMA with a 5-minute
+continuous-time window, so the trigger fires on **sustained drift**,
+not on instantaneous spikes. Composite pressure for the gates is
+`max(cpu_ewma, memory_ewma)` — two dimensions, by design; disk-io and
+replica-count were considered and cut.
+
+### Trigger gates (all must hold)
+
+A move commits only when **every** check passes for the candidate
+`(replica, src, dst)`:
+
+| gate                | default                    | what blocks it                                                                |
+|---------------------|----------------------------|-------------------------------------------------------------------------------|
+| trigger threshold   | `max(pressure) ≥ 0.85`     | hot node has been hot for the last `consecutive_cycles` cycles                |
+| consecutive cycles  | 2 (≈1 min at 30 s tick)    | a transient single-tick spike                                                 |
+| imbalance gap       | `max − min ≥ 0.25`         | the whole cluster is uniformly busy — no cooler host to move to               |
+| relief floor        | `pre_src − post_src ≥ 0.10`| the chosen replica's footprint is too small to materially relieve src         |
+| dst cap             | `post_dst < 0.75`          | the move would push dst into the trigger band — relocating the hotspot       |
+| dst resource fit    | `post_cpu + post_mem ≤ 1.0`| dst would over-saturate one dimension after the move                          |
+| anti-affinity       | per `placement` mode       | SPREAD collision on dst, HOSTS dst not in spec.Hosts, GLOBAL never moves      |
+| replica cooldown    | 10 min                     | replica was moved (or placed) recently — refuses to ping-pong it              |
+| node cooldown       | 2 min                      | dst received a move recently — staggers convergence                           |
+
+These bake into `internal/scheduler/rebalance/config.Config`. Tests
+inject a `Config` to drive deterministic cycles; production
+constructs `DefaultConfig()` once at boot.
+
+### Replica eligibility
+
+The rebalancer enumerates candidates from `ReplicasDesired` on the
+hot node and applies the hard filters above before scoring. Notable
+exclusions:
+
+- **Stateful replicas** are not candidates. JACO has no networked
+  storage, so moving a replica whose service spec carries a bind
+  mount or named-volume reference would strand its data on the old
+  host. The scorer is stateless-only by construction.
+- **`placement: global`** replicas are never moved — daemonsets are
+  one-per-host by definition and migration would double-place them
+  on the target.
+- A replica whose **deployment / service spec is missing** (deleted
+  out from under it) is treated as having no anti-affinity
+  constraint — the rebalancer can still move it if a dst exists.
+
+### Scoring
+
+Among the survivors, the winner is the **cheapest move that buys the
+most relief**:
+
+```
+score(replica) = relief_estimate(replica) − move_cost
+```
+
+- `relief_estimate` is the replica's contribution to src's **dominant**
+  pressure dimension (CPU-dominant hotspot → replica CPU footprint;
+  memory-dominant → memory footprint). The footprint comes from the
+  declared per-replica limit in the service spec when available; a
+  workload without declared limits falls back to a conservative
+  default (`CPU 0.12, mem 0.06`) sized just above the relief floor so
+  a single move estimates to clear it.
+- `move_cost` is a small constant (`0.01`) so ties break
+  deterministically by replica id.
+
+### Convergence rate
+
+**At most one move per cycle, cluster-wide.** A single move lands,
+the next cycle re-evaluates against the new state. Slower
+convergence, no avalanche. Cycle cadence is `cycle_interval`
+(default 30 s, same as the heartbeat).
+
+### Decision authority
+
+The rebalancer runs on every daemon but `Cycle` self-gates on
+`LeaderStatus.IsLeader()` (same pattern as the placement scheduler) —
+followers tick the loop but commit nothing. The leader-local state
+the gates need (per-node EWMAs, cooldown timestamps, consecutive-over
+counters) is intentionally **not** in raft: losing it on a failover
+is fine, because the new leader rebuilds it within two cycles of
+fresh pressure samples. The decision itself (the move command) goes
+through raft like any other placement change, so `jaco status` and
+the audit log reflect committed moves.
+
+### Observability
+
+Every committed move writes one
+`rebalance_moved` audit event; every per-candidate skip writes one
+`rebalance_skipped`. Both carry the same payload shape:
+
+```
+replica_id, deployment, service, src, dst,
+dominant (cpu|memory),
+relief, score, move_cost,
+src_pressure_before, dst_pressure_before,
+src_pressure_after,  dst_pressure_after,
+reason  (only on SKIPPED — see below)
+```
+
+`reason` is one of: `cooldown_replica`, `cooldown_node`, `dst_cap`,
+`relief_floor`, `resource_limits`, `anti_affinity`, `no_eligible_dst`,
+`no_candidate`. Audit field number `22` is reserved for the
+now-removed `rebalance_dry_run` type (the rebalancer was simplified
+to always-on; the tag stays reserved so historical blobs decode).
+
+Tail decisions live:
+
+```sh
+jaco audit --server $LEADER -f --type rebalance_moved,rebalance_skipped
+```
+
+### What makes the rebalancer effectively dormant today
+
+The daemon currently wires the rebalancer with a real cgroup v2
+collector + `StateBackedSource`, so the gates fire as designed on
+Linux hosts where cgroup v2 is mounted and readable. On non-Linux dev
+hosts, in a container without cgroup access, or while a node has not
+yet emitted its first pressure sample, the freshness gate drops the
+node from scoring — the cycle still runs, gates short-circuit on "no
+data this cycle", and zero audit events are produced. This is the
+designed posture: absence is treated as silence, not as a hard fault.
+
+The rebalancer never moves a stateful workload, and there is no
+per-deployment opt-out — operators who need a service immovable use
+a pinned `placement: hosts` or attach a volume.
 
 ## GPU workloads
 

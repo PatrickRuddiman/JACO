@@ -2,6 +2,8 @@
 sources:
   - internal/daemon/config/
   - internal/daemon/netdetect/
+  - internal/daemon/grpc/heartbeat.go
+  - internal/runtime/cgroupv2/
   - cmd/jacod/main.go
 ---
 
@@ -18,24 +20,24 @@ honored by `cmd/jacod`.
 ## Defaults
 
 ```yaml
-data_dir:     /var/lib/jaco
-listen_addr:  0.0.0.0:7000
-cluster_addr: 0.0.0.0:7001
-unix_socket:  /var/run/jaco/jaco.sock
-wg_port:      51820
-log_level:    info
-ipam_pool:    10.244.0.0/16
-acme_email:   ""
-acme_ca:      "https://acme-v02.api.letsencrypt.org/directory"
-acme_enabled: true
-acme_skip_staging: false
+data_dir:             /var/lib/jaco
+listen_addr:          0.0.0.0:7000
+cluster_addr:         0.0.0.0:7001
+unix_socket:          /var/run/jaco/jaco.sock
+wg_port:              51820
+log_level:            info
+ipam_pool:            10.244.0.0/16
+node_status_interval: 30s
+acme_email:           ""
+acme_ca:              "https://acme-v02.api.letsencrypt.org/directory"
+acme_enabled:         true
+acme_skip_staging:    false
 ```
 
 All defaults live in `internal/daemon/config/config.go`. The same
 constants seed the `jacod.yaml` template shipped in the packages, so a
 freshly-installed cluster is functional with zero edits provided the
 host has a private-LAN interface JACO can auto-detect.
-
 ## Keys
 
 ### `data_dir` (string, required)
@@ -135,6 +137,25 @@ Cluster-wide IP pool the leader carves into `/24`s, one per
 allocations before exhaustion. MUST be exactly a `/16` — any other
 prefix length is rejected.
 
+### `node_status_interval` (Go duration, optional)
+
+How often each daemon samples its local cgroup v2 CPU + memory
+utilisation and gossips a `NodeStatusUpdate` heartbeat through raft.
+The leader-side rebalancer
+([Scheduling](concepts/scheduling.md#pressure-based-rebalancing))
+folds those samples into a per-node EWMA and uses them to decide
+whether to move a replica off a hot host. Default `30s`; valid range
+`5s..5m`. A value outside that window is **rejected** at parse time
+with `node_status_interval … must be between 5s and 5m` — there is no
+silent clamping. Set to the default by omitting the key entirely; an
+explicit `0` also means "use the default".
+
+The collector reads `/sys/fs/cgroup` + `/proc/meminfo` and is
+Linux-only. On non-Linux dev hosts, or when cgroup v2 is missing /
+unreadable, the heartbeat skips that tick and the leader's freshness
+gate (3× this interval) drops the node from rebalance scoring. The
+rebalancer is therefore safely dormant when no signal is available.
+
 ## Validation rules (enforced at parse time)
 
 - `data_dir`, `listen_addr`, `cluster_addr`, `unix_socket`,
@@ -144,6 +165,8 @@ prefix length is rejected.
 - `log_level` is one of `debug | info | warn | error`.
 - `acme_ca`, when set, MUST be an `https://…` URL.
 - `ipam_pool` parses as a CIDR with a `/16` mask exactly.
+- `node_status_interval`, when set, parses as a Go duration string and
+  MUST fall in `[5s, 5m]`. Zero / omitted maps to the default `30s`.
 - Any unknown top-level key fails the parse with the offending field
   name in the error message.
 

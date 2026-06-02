@@ -33,8 +33,8 @@ Each has its own package doc under [`internal/`](../../internal).
 | vertical          | responsibility                                                                                       |
 |-------------------|------------------------------------------------------------------------------------------------------|
 | **control-plane** | raft group, replicated state machine, command admission, watch fan-out, audit log, cluster CA       |
-| **scheduler**     | leader-only desired-state reconciler; placement, rolling updates, drain, restart-after-3            |
-| **runtime**       | per-node docker engine driver; image pull, container lifecycle, healthcheck observation, log tail   |
+| **scheduler**     | leader-only desired-state reconciler; placement, rolling updates, drain, restart-after-3, **pressure-based rebalancer** ([ADR 0002](../adr/0002-pressure-based-scheduling.md)) |
+| **runtime**       | per-node docker engine driver; image pull, container lifecycle, healthcheck observation, log tail, cgroup v2 pressure collector |
 | **discovery**     | per-node bridges, /24 IPAM, WireGuard mesh, nftables isolation, per-bridge DNS                      |
 | **ingress**       | embedded Caddy on `:80, :443`; ACME issuance + renewal via raft-backed CertMagic storage            |
 | **daemon**        | `jacod` itself: config loading, lifecycle, goroutine orchestration, admission gating                |
@@ -68,7 +68,7 @@ Canonical entities held in the raft FSM (see
 [`proto/jaco/v1/entities.proto`](../../proto/jaco/v1/entities.proto)):
 
 - `ClusterMeta` — cluster id, CA cert, CA key (singleton).
-- `Node` — one per cluster member; hostname, addresses, WG pubkey, status.
+- `Node` — one per cluster member; hostname, addresses, WG pubkey, status, plus the latest gossiped CPU + memory pressure sample (`cpu_pressure`, `memory_pressure`, `last_pressure_at`) consumed by the rebalancer.
 - `Deployment` — one per `jaco apply`; carries the literal jaco.yaml
   + compose bytes plus the parsed `ServiceSpec` list.
 - `ReplicaDesired` — one per `<deployment, service, index>`; the
@@ -87,6 +87,19 @@ Canonical entities held in the raft FSM (see
 
 The set is **closed**: there is no plugin mechanism for new entities in
 v1.
+
+## Per-node gossip
+
+Each daemon ticks `pressureHeartbeat` (cadence
+[`node_status_interval`](../configuration.md), default 30 s) and
+gossips a `NodeStatusUpdate{IncludePressure: true}` carrying its
+local cgroup v2 + `/proc/meminfo` utilisation. The FSM patches the
+heartbeating node's `cpu_pressure`, `memory_pressure`, and
+`last_pressure_at` fields without touching `status` (a pressure-only
+heartbeat leaves status under the membership / firewall reconciler's
+control). The leader's rebalancer reads the patched fields through a
+freshness-gated `StateBackedSource`. See
+[Scheduling → Pressure-based rebalancing](scheduling.md#pressure-based-rebalancing).
 
 ## Project status
 
