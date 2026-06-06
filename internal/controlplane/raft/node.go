@@ -198,6 +198,24 @@ func (n *Node) IsLeader() bool {
 	return n.Raft.State() == hraft.Leader
 }
 
+// GetConfiguration returns the latest raft configuration. Thin pass-
+// through; exists so packages that consume only the Raft interface
+// (e.g. internal/controlplane/raft/membership) can depend on *Node
+// directly without dragging hashicorp/raft into their seams.
+func (n *Node) GetConfiguration() hraft.ConfigurationFuture {
+	return n.Raft.GetConfiguration()
+}
+
+// AddVoter is a thin pass-through; see GetConfiguration for why.
+func (n *Node) AddVoter(id hraft.ServerID, addr hraft.ServerAddress, prevIndex uint64, timeout time.Duration) hraft.IndexFuture {
+	return n.Raft.AddVoter(id, addr, prevIndex, timeout)
+}
+
+// DemoteVoter is a thin pass-through; see GetConfiguration for why.
+func (n *Node) DemoteVoter(id hraft.ServerID, prevIndex uint64, timeout time.Duration) hraft.IndexFuture {
+	return n.Raft.DemoteVoter(id, prevIndex, timeout)
+}
+
 // LocalAddr returns the bound transport address; useful for join exchanges
 // when BindAddr used port 0.
 func (n *Node) LocalAddr() hraft.ServerAddress {

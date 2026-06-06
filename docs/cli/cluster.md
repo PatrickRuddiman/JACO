@@ -87,8 +87,17 @@ liveness probing; no token required.
 ### Behavior
 
 Reports whether the local daemon is initialized, the current raft
-leader (if any), the latest raft index, and every member node with its
-status (`READY`, `JOINING`, `ISOLATION_UNAVAILABLE`, etc.).
+leader (if any), the latest raft index, and every member node with
+its status (`READY`, `JOINING`, `ISOLATION_UNAVAILABLE`, etc.) and its
+raft **suffrage** (`VOTER` or `NONVOTER`).
+
+The suffrage column is populated from `raft.GetConfiguration()` on the
+leader at request time. On a follower the suffrage is rendered as `?`
+because the follower's view of the raft configuration would be stale
+across an election — the CLI refuses to mislead operators with a
+suffrage value it can't vouch for. To see suffrages, run `jaco
+cluster status` on the leader (the `Leader:` line tells you which
+node it is).
 
 On an uninitialized node, the output is:
 
@@ -112,9 +121,25 @@ jaco cluster status
 # Leader:     node-1
 # Raft index: 4178
 # Nodes (3):
-#   - node-1 @ 10.0.0.5:7001 [READY]
-#   - node-2 @ 10.0.0.6:7001 [READY]
-#   - node-3 @ 10.0.0.7:7001 [READY]
+#   - node-1 @ 10.0.0.5:7001 [READY, VOTER]
+#   - node-2 @ 10.0.0.6:7001 [READY, VOTER]
+#   - node-3 @ 10.0.0.7:7001 [READY, VOTER]
+```
+
+A 4-node cluster — the 4th node stays NONVOTER because
+[the voter-set policy](../concepts/cluster-lifecycle.md#voter-set-policy)
+caps voters at the next odd number below the member count:
+
+```sh
+jaco cluster status
+# Status:     initialized
+# Leader:     node-1
+# Raft index: 6210
+# Nodes (4):
+#   - node-1 @ 10.0.0.5:7001 [READY, VOTER]
+#   - node-2 @ 10.0.0.6:7001 [READY, VOTER]
+#   - node-3 @ 10.0.0.7:7001 [READY, VOTER]
+#   - node-4 @ 10.0.0.8:7001 [READY, NONVOTER]
 ```
 
 ## See also

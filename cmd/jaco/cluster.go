@@ -120,10 +120,31 @@ func runClusterStatus(ctx context.Context, client pb.ClusterClient, out io.Write
 	}
 	fmt.Fprintf(out, "Leader:     %s\n", leader)
 	fmt.Fprintf(out, "Raft index: %d\n", resp.GetRaftIndex())
+	// Build a hostname -> suffrage lookup so the render below joins
+	// in a single pass. suffrages is empty when this jacod isn't the
+	// leader; we render "?" for the suffrage cell in that case so
+	// operators see they're looking at follower-derived data rather
+	// than misread an absent column.
+	suffrage := make(map[string]string, len(resp.GetSuffrages()))
+	for _, s := range resp.GetSuffrages() {
+		switch s.GetKind() {
+		case pb.NodeSuffrage_KIND_VOTER:
+			suffrage[s.GetHostname()] = "VOTER"
+		case pb.NodeSuffrage_KIND_NONVOTER:
+			suffrage[s.GetHostname()] = "NONVOTER"
+		}
+	}
 	fmt.Fprintf(out, "Nodes (%d):\n", len(resp.GetNodes()))
 	for _, n := range resp.GetNodes() {
-		fmt.Fprintf(out, "  - %s @ %s [%s]\n", n.GetHostname(), n.GetAddress(),
-			strings.TrimPrefix(n.GetStatus().String(), "NODE_STATUS_"))
+		status := strings.TrimPrefix(n.GetStatus().String(), "NODE_STATUS_")
+		s, ok := suffrage[n.GetHostname()]
+		if !ok {
+			// Either the daemon isn't the leader (so suffrages is
+			// empty) or this node hasn't reached the raft config
+			// yet. Either way, don't claim a suffrage we can't see.
+			s = "?"
+		}
+		fmt.Fprintf(out, "  - %s @ %s [%s, %s]\n", n.GetHostname(), n.GetAddress(), status, s)
 	}
 	return nil
 }

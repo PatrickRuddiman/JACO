@@ -122,6 +122,12 @@ func (c *clusterServer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*p
 	if _, err := r.Apply(data, 5*time.Second); err != nil {
 		return nil, status.Errorf(codes.Internal, "raft_apply_failed: %v", err)
 	}
+	// Kick the voter-set reconciler so promotion (if any — bug-003
+	// rule: only when members ≥ 3 and the joiner has settled past
+	// PromoteAfter) lands without waiting for the next tick.
+	if m := c.server.Membership(); m != nil {
+		m.Kick()
+	}
 
 	// Build the peer list returned to the joiner: leader (self) + every
 	// other known node, excluding the joiner itself.

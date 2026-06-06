@@ -82,9 +82,64 @@ What the joining daemon does:
 5. The leader raft-applies `Command{NodeJoin{hostname, address}}`; the
    new node appears in `state.Nodes` and `jaco node list` on every
    member.
+6. The joiner enters raft as a **nonvoter** (it replicates the log but
+   doesn't count toward quorum). The leader's voter-set reconciler
+   then promotes it to voter or leaves it as a nonvoter according to
+   the [odd-count rule](#voter-set-policy) below.
 
 The join token is single-use. A consumed token cannot be reused; a
 fresh one must be issued.
+
+## Voter-set policy
+
+Joining nodes start as raft **nonvoters** and the leader-side
+reconciler decides whether to promote them to voters. The policy is a
+pure function of the current cluster member count:
+
+| Members | Voters | Failures tolerated |
+|---:|---:|---:|
+| 1 | 1 | 0 |
+| 2 | 1 | 0 |
+| 3 | 3 | 1 |
+| 4 | 3 | 1 |
+| 5 | 5 | 2 |
+| 6 | 5 | 2 |
+| 7 | 7 | 3 |
+| 8+ | 7 | 3 |
+
+Two properties this guarantees:
+
+- **Voter counts are odd.** Even voter counts buy nothing — a 4-voter
+  cluster tolerates the same single failure as 3 voters but pays an
+  extra ack on every commit. The reconciler skips the even rung.
+- **Voter count is capped at 7.** A 7-voter cluster already tolerates
+  3 simultaneous failures; more voters add commit latency without
+  meaningful resilience improvement (the etcd / consul recommendation).
+
+Each tick, the leader-side reconciler nudges the actual voter count
+toward this target one suffrage change at a time — promoting the
+lexicographically-first nonvoter or demoting the
+lexicographically-last voter (excluding the leader, which never
+demotes itself). Determinism across leaders means a failover doesn't
+oscillate the voter set.
+
+**Promotion is gated on catch-up.** A nonvoter must have been observed
+in the raft configuration for at least the reconciler's `PromoteAfter`
+window (3 s by default) before it becomes eligible. This defends the
+1 → 2 bug-003 race: `AddNonvoter` commits the moment the
+configuration-change log entry replicates, but the joiner's transport
+may still be racing to catch up the rest of the log. The settle window
+gives raft time to surface a failed peer before its vote can wedge
+commits.
+
+On graceful remove, the reverse holds: if removing the leaver would
+drop the cluster below its post-remove target, the handler demotes
+excess voters **before** issuing `RemoveServer`, so the cluster never
+lands in a `voters > members − failure_budget` window.
+
+`jaco cluster status` surfaces the per-node suffrage as `[STATUS,
+VOTER]` or `[STATUS, NONVOTER]` so operators can verify the shape at a
+glance.
 
 ## Leader election
 
@@ -97,9 +152,12 @@ Raft handles election. Practically:
   leader within the raft election timeout. The spec's bar is **a new
   leader within 10 s**. During the window, write RPCs return
   `no_leader, retrying`; once the new leader exists, retries succeed.
-- A cluster of N nodes tolerates `⌊(N−1)/2⌋` simultaneous failures
-  without losing write availability. A 3-node cluster survives one
-  loss; a 5-node cluster survives two.
+- A cluster with V voters tolerates `⌊(V−1)/2⌋` simultaneous **voter**
+  losses without losing write availability. The voter target table in
+  [Voter-set policy](#voter-set-policy) maps cluster size to V; e.g.
+  a 5-member cluster has 5 voters and tolerates 2 voter losses, while
+  a 4-member cluster has 3 voters and tolerates 1. Nonvoter losses
+  don't count against the failure budget — they're spare capacity.
 
 `jaco cluster status` reports the current leader; `jaco status` is
 served from any node's local watch cache.

@@ -24,6 +24,7 @@ import (
 	cpadmission "github.com/PatrickRuddiman/jaco/internal/controlplane/admission"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/fsm"
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
+	raftmembership "github.com/PatrickRuddiman/jaco/internal/controlplane/raft/membership"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	"github.com/PatrickRuddiman/jaco/internal/daemon/admission"
@@ -83,6 +84,13 @@ type Server struct {
 	// on one mutex (separate instances would race on the free pool). Set in
 	// startSubsystems under raftMu.
 	ipamAllocator *ipam.IPAM
+
+	// membership reconciles the raft voter set toward the
+	// odd-count-capped-at-7 target on the leader (issue #143). Spawned
+	// in startSubsystems; NodeJoin / NodeRemove handlers call its
+	// Kick() so the post-join / post-remove reconcile doesn't wait for
+	// the next tick. nil pre-OpenRaft.
+	membership *raftmembership.Reconciler
 
 	// subsystemsCancel cancels every steady-state goroutine spawned by
 	// OpenRaft (scheduler.Run, restarter.Run, etc). Reset to nil after Stop
@@ -564,6 +572,23 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 		}
 	}()
 
+	// Raft voter-set reconciler (issue #143). Owns the odd-count-capped-
+	// at-7 voter target: promotes nonvoters and demotes excess voters one
+	// suffrage change per tick. Always-on; self-gates on raft leader
+	// status. NodeJoin / NodeRemove handlers call Membership().Kick()
+	// after their applies commit so the post-membership reconcile lands
+	// without waiting for the next tick.
+	memrec := raftmembership.New(node, hostname, raftmembership.Config{})
+	memrec.Logger = logging.Subsystem(s.logger, "raft/membership").With(logging.KeyNode, hostname)
+	s.membership = memrec
+	s.subsystemsWG.Add(1)
+	go func() {
+		defer s.subsystemsWG.Done()
+		if err := memrec.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			s.srvLog.Error("raft/membership.Reconciler.Run exited", "error", err)
+		}
+	}()
+
 	// Cgroup v2 pressure heartbeat (issue #137). Samples local CPU +
 	// memory once per hbInterval and gossips a NodeStatusUpdate
 	// {IncludePressure:true} via the leader-or-forward helper. On
@@ -966,6 +991,15 @@ func (s *Server) IPAMAllocator() *ipam.IPAM {
 	s.raftMu.RLock()
 	defer s.raftMu.RUnlock()
 	return s.ipamAllocator
+}
+
+// Membership returns the raft voter-set reconciler. nil pre-OpenRaft.
+// Used by NodeJoin / NodeRemove handlers to Kick() an immediate
+// reconcile after their applies commit.
+func (s *Server) Membership() *raftmembership.Reconciler {
+	s.raftMu.RLock()
+	defer s.raftMu.RUnlock()
+	return s.membership
 }
 
 // Serve blocks until Stop is called or one of the listeners errors. When a
