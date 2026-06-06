@@ -50,3 +50,13 @@ inline** (heredocs into its work dir) rather than reading these files, so today
 they serve as the canonical, reviewable reference and the CI path-trigger for
 the rig. Pointing the rig at these files directly (single source of truth) is a
 worthwhile follow-up — until then, keep the two in sync when editing either.
+
+## Volume isolation (separate fixture, not yet in the rig)
+
+JACO's per-deployment scoping for **named volumes** uses the same
+`(deployment, key)` decomposition this rig probes for networks. The
+manual smoke fixtures for that invariant live alongside the bench
+sample at
+[`tests/samples/jaco/smoke-volumes/`](../samples/jaco/smoke-volumes/README.md);
+promoting that probe into this privileged rig is a worthwhile
+follow-up.

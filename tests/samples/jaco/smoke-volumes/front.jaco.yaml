@@ -1,0 +1,11 @@
+deployment: vol-front
+# Pinned to a single host so the back deployment lands on the SAME node —
+# that's the only configuration where the "two deployments collide on a
+# shared local docker volume" bug can actually manifest. Without
+# co-location, each deployment lives on its own node with its own
+# fragment of state, which hides the bug rather than exposing it.
+services:
+  - name: redis
+    replicas: 1
+    placement: hosts
+    hosts: [jaco-1]

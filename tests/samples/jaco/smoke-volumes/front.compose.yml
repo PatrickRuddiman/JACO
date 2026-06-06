@@ -1,0 +1,11 @@
+# Default-scoped: no top-level `volumes.data.name:` override, so JACO
+# must compute the docker volume name as `jaco_vol-front_data`. The
+# back.compose.yml uses the IDENTICAL bare key `data`; the smoke's
+# isolation invariant fails if the two end up sharing storage.
+services:
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - data:/data
+volumes:
+  data: {}
