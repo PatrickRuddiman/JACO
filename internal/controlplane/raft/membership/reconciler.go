@@ -62,7 +62,6 @@ type Reconciler struct {
 	cfg      Config
 	clock    func() time.Time
 	kick     chan struct{}
-	stopOnce sync.Once
 
 	mu sync.Mutex
 	// firstSeen tracks when each server was first observed in the raft
