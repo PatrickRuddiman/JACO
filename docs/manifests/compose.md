@@ -28,7 +28,7 @@ create:
 | `entrypoint`   | overrides image ENTRYPOINT                                     |
 | `environment`  | env vars                                                       |
 | `env_file`     | env file(s); merged into `environment` **client-side** before apply (see [§ `env_file` resolution](#env_file-resolution)) |
-| `volumes`      | named volumes and host bind mounts                             |
+| `volumes`      | named volumes and host bind mounts. Named volumes are scoped per-deployment as `jaco_<deployment>_<key>`; top-level `volumes.<key>.name:` (or `external: true`) is the compose-portable escape hatch for sharing storage across stacks. See [Migration → How JACO names volumes](../operations/migration.md#how-jaco-names-volumes) |
 | `ports`        | declares cluster-wide TCP listeners (see below)                |
 | `depends_on`   | **ordering only**; runtime starts in topological order. Closed condition enum: `service_started` (compose default) and `service_healthy`. `service_completed_successfully` is rejected — JACO does not model run-to-completion services. Self-deps and cross-deployment refs are rejected. Dependencies are evaluated **cluster-wide** (any replica of the dep service in the satisfying state unblocks the dependent, even on a different host). See [§ `depends_on` semantics](#depends_on-semantics) |
 | `healthcheck`  | docker built-in healthcheck; drives JACO replica state         |

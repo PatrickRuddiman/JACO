@@ -30,7 +30,7 @@ func ToContainerSpec(svc types.ServiceConfig, opts SpecOptions) ContainerSpec {
 
 	spec.Env = envFromCompose(svc.Environment)
 	spec.Labels = labelsWithJACO(svc.Labels, opts)
-	spec.Mounts = mountsFromCompose(svc.Volumes)
+	spec.Mounts = mountsFromCompose(svc.Volumes, opts.Deployment, opts.VolumeNameOverrides)
 	spec.Tmpfs = cloneStringList(svc.Tmpfs)
 	spec.CapAdd = cloneStringList(svc.CapAdd)
 	spec.CapDrop = cloneStringList(svc.CapDrop)
@@ -232,20 +232,48 @@ func labelsWithJACO(user types.Labels, opts SpecOptions) map[string]string {
 	return out
 }
 
-func mountsFromCompose(vols []types.ServiceVolumeConfig) []Mount {
+// mountsFromCompose projects compose's service-level `volumes:` entries into
+// the spec's []Mount shape. Named volumes are scoped per deployment:
+// `volumes: [pgdata:/data]` becomes Source `jaco_<deployment>_pgdata` so
+// two deployments on the same node never collide on a bare key like
+// `pgdata`, `data`, or `cache`. The operator opts out by setting
+// `volumes.<key>.name: <literal>` at the compose top level — mirroring
+// docker-compose, the literal is used unprefixed and the override travels
+// in via nameOverrides. Bind mounts (Type "bind") and anonymous volumes
+// (Type "volume" with empty Source) are pass-through; only declared named
+// volumes are rewritten.
+func mountsFromCompose(vols []types.ServiceVolumeConfig, deployment string, nameOverrides map[string]string) []Mount {
 	if len(vols) == 0 {
 		return nil
 	}
 	out := make([]Mount, 0, len(vols))
 	for _, v := range vols {
+		source := v.Source
+		if v.Type == types.VolumeTypeVolume && source != "" {
+			source = volumeName(deployment, source, nameOverrides)
+		}
 		out = append(out, Mount{
 			Type:     v.Type,
-			Source:   v.Source,
+			Source:   source,
 			Target:   v.Target,
 			ReadOnly: v.ReadOnly,
 		})
 	}
 	return out
+}
+
+// volumeName scopes a compose-declared named volume to its deployment.
+// Returns the literal opt-out name when the operator set one in the
+// top-level volumes block (`volumes.<key>.name: <literal>`); otherwise
+// prefixes the bare key with `jaco_<deployment>_`, matching the
+// convention used for networks and container names. Caller only invokes
+// this for named volumes with a non-empty source — bind mounts and
+// anonymous volumes bypass it entirely.
+func volumeName(deployment, key string, overrides map[string]string) string {
+	if literal, ok := overrides[key]; ok && literal != "" {
+		return literal
+	}
+	return "jaco_" + deployment + "_" + key
 }
 
 func mapStringToMap(m types.Mapping) map[string]string {

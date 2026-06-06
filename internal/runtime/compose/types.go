@@ -253,6 +253,13 @@ type SpecOptions struct {
 	ReplicaID    string
 	ReplicaIndex int
 	RaftIndex    uint64
+	// VolumeNameOverrides maps the bare compose top-level volume key to the
+	// literal docker volume name the operator declared via
+	// `volumes.<key>.name:`. When the key is present, mountsFromCompose uses
+	// the literal verbatim (no `jaco_<deployment>_` prefix) — matching
+	// docker-compose's "name: is the explicit, unprefixed name" semantics.
+	// Nil / empty → every named volume gets the deployment prefix.
+	VolumeNameOverrides map[string]string
 }
 
 // ValidationError is the typed result Validate returns when the compose file

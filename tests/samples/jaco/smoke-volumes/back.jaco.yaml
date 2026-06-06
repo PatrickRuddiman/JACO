@@ -1,0 +1,9 @@
+deployment: vol-back
+# Same node as vol-front (see front.jaco.yaml) so the smoke probes the
+# same docker daemon for two deployments that name their volume `data`
+# identically.
+services:
+  - name: redis
+    replicas: 1
+    placement: hosts
+    hosts: [jaco-1]

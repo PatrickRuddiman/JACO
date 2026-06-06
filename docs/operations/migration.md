@@ -40,36 +40,54 @@ This has hard consequences:
   with each instance pinned to a different node. JACO supplies the
   cross-node network and DNS; the database does the replication.
 
-### How JACO names volumes (it differs from `docker compose`)
+### How JACO names volumes
 
 For a service mount like `pgdata:/var/lib/postgresql/data`:
 
 | | volume name actually used |
 |---|---|
 | `docker compose up` | `<project>_pgdata` (project defaults to the compose file's directory name) |
-| `jaco apply` | `pgdata` (the bare key, no prefix) |
+| `jaco apply` | `jaco_<deployment>_pgdata` (the deployment name from `jaco.yaml`) |
 
-JACO loads the compose file under a fixed project name and lets
-compose-go compute the prefixed name, but then **uses the bare
-service-level key as the docker volume name** and discards the prefix
-([`internal/runtime/compose/spec.go`](../../internal/runtime/compose/spec.go)
-→ [`internal/runtime/lifecycle/config.go`](../../internal/runtime/lifecycle/config.go)).
-When you copy data, the destination volume name is the bare key.
+JACO scopes every declared named volume to the deployment so two
+stacks that happen to use the same bare key (`pgdata`, `data`,
+`logs`, `cache`, …) cannot collide on a shared local docker volume
+([`internal/runtime/compose/spec.go`](../../internal/runtime/compose/spec.go)).
+The scheme matches the existing per-deployment convention used for
+networks (`jaco_<deployment>_<network>`) and container names
+(`<deployment>-<service>-<index>`). The prefix never appears inside
+the container — the service still reaches the volume at its declared
+mount path.
 
-### The top-level `volumes:` block is ignored
+### Sharing a volume across stacks
 
-JACO reads only each service's mount list, never the top-level
-`volumes:` map. Everything you configure there is silently inert:
+When you _want_ two deployments to share storage (or you're migrating
+from a stack whose volume is already named `myproject_pgdata` and you
+want to keep using it in place), set the top-level `volumes.<key>.name:`
+to the literal docker volume name. JACO honors it verbatim — no
+deployment prefix is applied:
 
-- `name:` — ignored; JACO uses the short key.
-- `external: true` — the "must pre-exist, don't create" contract is
-  **not** honored; JACO auto-creates the volume anyway.
-- `driver:` / `driver_opts:` — **dropped**. A volume backed by an NFS
-  or cloud driver becomes a plain `local`-driver volume on each node.
+```yaml
+services:
+  db:
+    image: postgres:16
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:
+    name: ops-shared-pgdata        # used as-is, unprefixed
+```
 
-If your current stack gets shared storage through a volume **driver**,
-that does not carry over — flatten it to a plain named volume plus an
-explicit data copy, or front it with application-level replication.
+The same escape hatch covers `external: true` — compose's "this volume
+already exists, don't manage it" contract — which JACO recognises and
+also leaves unprefixed.
+
+`driver:` and `driver_opts:` on the top-level entry are still
+**silently dropped**. A volume backed by an NFS or cloud driver becomes
+a plain `local`-driver volume on each node. If your current stack gets
+shared storage through a volume **driver**, that does not carry over —
+flatten it to a plain named volume plus an explicit data copy, or
+front it with application-level replication.
 
 ### Bind mounts are not preflighted
 
@@ -252,10 +270,16 @@ docker exec <old-db-container> pg_dumpall -U postgres > dump.sql
 psql "postgres://postgres@<node-2-host>:5432/" < dump.sql
 ```
 
-### Or copy the raw volume into the bare-named volume
+### Or copy the raw volume into the destination volume
 
-Remember the name change: the source is `<project>_pgdata`, the
-destination is the bare `pgdata`.
+The source volume on the old host is `<project>_pgdata`. The
+destination depends on whether you let JACO scope the volume to its
+deployment (default — recommended) or pin the literal name via the
+`volumes.<key>.name:` escape hatch.
+
+Default (deployment-scoped): the destination volume on the cluster
+node is `jaco_<deployment>_pgdata`. Substitute the deployment name
+from your `jaco.yaml` (e.g. `myapp` → `jaco_myapp_pgdata`).
 
 ```sh
 # On the OLD host — confirm the real name, then export the live volume.
@@ -266,11 +290,17 @@ docker run --rm -v <project>_pgdata:/from:ro -v "$PWD":/backup \
 # Copy to the node you pinned the service to.
 scp pgdata.tgz node-2:/tmp/
 
-# On node-2 — create the bare-named volume JACO will mount, then load it.
-docker volume create pgdata
-docker run --rm -v pgdata:/to -v /tmp:/backup:ro \
+# On node-2 — create the deployment-scoped volume JACO will mount, then load it.
+docker volume create jaco_myapp_pgdata
+docker run --rm -v jaco_myapp_pgdata:/to -v /tmp:/backup:ro \
   alpine sh -c 'cd /to && tar xzf /backup/pgdata.tgz'
 ```
+
+If you'd rather keep using the volume name your old stack created
+(e.g. you've already taken a snapshot named `myproject_pgdata` and
+want JACO to mount it in place), set
+`volumes: { pgdata: { name: myproject_pgdata } }` in the compose file.
+JACO uses that literal verbatim and skips the deployment prefix.
 
 ### Bind mounts
 
@@ -333,8 +363,9 @@ the replication and failover policy.
 
 | compose feature | behavior under JACO |
 |---|---|
-| Volume name prefix | none — JACO uses the bare key (`pgdata`, not `<project>_pgdata`) |
-| Top-level `volumes:` `name:` / `external:` / `driver:` / `driver_opts:` | ignored; plain `local` volume named by the short key |
+| Volume name prefix | replaced — JACO uses `jaco_<deployment>_<key>` (not `<project>_<key>`) |
+| Top-level `volumes:` `name:` / `external:` | honored as the unprefixed opt-out (compose-portable escape hatch) |
+| Top-level `volumes:` `driver:` / `driver_opts:` | dropped; every volume becomes a plain `local`-driver volume on each node |
 | Volume data across nodes | not replicated; pin stateful services, move data manually |
 | Bind mount to a missing host path | not rejected; an empty directory is auto-created |
 | `build:` | ignored — JACO pulls images, never builds |

@@ -1,0 +1,13 @@
+# Opt-out probe: paired with either front.jaco.yaml or back.jaco.yaml,
+# this compose declares an explicit `volumes.data.name:` literal. The
+# smoke expects the resulting docker volume to be the literal
+# `smoke-shared-data` — NOT `jaco_<deployment>_data` — proving the
+# compose-portable escape hatch survives JACO's per-deployment scoping.
+services:
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - data:/data
+volumes:
+  data:
+    name: smoke-shared-data

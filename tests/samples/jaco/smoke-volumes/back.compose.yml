@@ -1,0 +1,11 @@
+# Identical mount shape to front.compose.yml — same service name, same
+# volume key, same target path. The deployment-prefix change is what
+# keeps the resulting docker volumes distinct (`jaco_vol-back_data`
+# vs `jaco_vol-front_data`).
+services:
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - data:/data
+volumes:
+  data: {}

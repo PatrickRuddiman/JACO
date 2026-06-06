@@ -306,13 +306,22 @@ func (r *Reconciler) runStart(workCtx, watchCtx context.Context, rep *pb.Replica
 	if rep.GetImage() != "" {
 		svcCfg.Image = rep.GetImage()
 	}
+	volumeOverrides, err := compose.TopLevelVolumeNames(dep.GetComposeYaml())
+	if err != nil {
+		// LoadBytes above already parsed the same bytes, so a yaml.Unmarshal
+		// failure here is a runtime invariant violation — propagate so the
+		// dispatcher surfaces it rather than silently falling back to the
+		// (incorrect) default-scoped names.
+		return fmt.Errorf("compose top-level volumes: %w", err)
+	}
 	spec := compose.ToContainerSpec(svcCfg, compose.SpecOptions{
-		ClusterID:    clusterID,
-		Deployment:   rep.GetDeployment(),
-		Service:      rep.GetService(),
-		ReplicaID:    rep.GetId(),
-		ReplicaIndex: int(rep.GetIndex()),
-		RaftIndex:    rep.GetRaftIndex(),
+		ClusterID:           clusterID,
+		Deployment:          rep.GetDeployment(),
+		Service:             rep.GetService(),
+		ReplicaID:           rep.GetId(),
+		ReplicaIndex:        int(rep.GetIndex()),
+		RaftIndex:           rep.GetRaftIndex(),
+		VolumeNameOverrides: volumeOverrides,
 	})
 	// Start-ordering gate (issue #130). Evaluated before subnet alloc,
 	// image pull, and lifecycle.Start so a stuck dep doesn't waste pulls

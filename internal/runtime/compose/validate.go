@@ -603,6 +603,102 @@ type rawCompose struct {
 	Volumes  map[string]any            `yaml:"volumes"`
 }
 
+// TopLevelVolumeNames returns the operator-explicit docker volume names
+// declared under the top-level `volumes:` block, keyed by the bare compose
+// volume key. An entry appears in the result only when the operator either
+//   - set `volumes.<key>.name: <literal>` explicitly, or
+//   - set `volumes.<key>.external: true` (with or without an explicit
+//     `name:`) — `external: true` is docker-compose's "use this exact
+//     volume, don't add a project prefix" switch, so JACO honors the
+//     unprefixed name to match.
+//
+// Keys whose body is empty / nil / `{}` are NOT in the result: those are
+// the default-scoped named volumes that mountsFromCompose rewrites to
+// `jaco_<deployment>_<key>`.
+//
+// We re-parse the raw YAML rather than reading `project.Volumes[k].Name`
+// because compose-go defaults Name to `<projectName>_<key>` when the
+// operator left it blank, erasing the "did the operator set it?" signal.
+func TopLevelVolumeNames(rawYAML []byte) (map[string]string, error) {
+	if len(rawYAML) == 0 {
+		return nil, nil
+	}
+	var doc rawCompose
+	if err := yaml.Unmarshal(rawYAML, &doc); err != nil {
+		return nil, fmt.Errorf("parse compose yaml: %w", err)
+	}
+	if len(doc.Volumes) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(doc.Volumes))
+	for key, body := range doc.Volumes {
+		name, ok := topLevelVolumeName(key, body)
+		if !ok {
+			continue
+		}
+		out[key] = name
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// topLevelVolumeName inspects one top-level `volumes.<key>:` body and
+// returns the operator-explicit docker volume name plus ok=true when the
+// operator opted out of JACO's per-deployment scoping. Returns ok=false
+// for empty / `{}` bodies — those default-scoped entries take the
+// `jaco_<deployment>_<key>` prefix in mountsFromCompose.
+func topLevelVolumeName(key string, body any) (string, bool) {
+	m, ok := body.(map[string]any)
+	if !ok {
+		// `volumes: { data: null }` or list form — no override signal.
+		return "", false
+	}
+	literal, _ := stringField(m, "name")
+	external := externalFlag(m, "external")
+	switch {
+	case literal != "":
+		// Explicit `name:` always wins, with or without external.
+		return literal, true
+	case external:
+		// `external: true` without `name:` → docker volume name == key.
+		return key, true
+	}
+	return "", false
+}
+
+// stringField returns the string value of m[key], or "" when absent /
+// non-string. Mirrors how compose's loader coerces YAML scalars.
+func stringField(m map[string]any, key string) (string, bool) {
+	v, ok := m[key]
+	if !ok {
+		return "", false
+	}
+	s, ok := v.(string)
+	return s, ok && s != ""
+}
+
+// externalFlag reads compose's `external:` field, which docker-compose
+// accepts as either a bare bool (`external: true`) or a long-form map
+// (`external: { name: foo }` — the legacy form whose `name:` we ignore
+// because the modern `external: true` + top-level `name:` shape is
+// what compose-go promotes).
+func externalFlag(m map[string]any, key string) bool {
+	v, ok := m[key]
+	if !ok {
+		return false
+	}
+	switch t := v.(type) {
+	case bool:
+		return t
+	case map[string]any:
+		// Long-form `external: { name: ... }` implies external: true.
+		return true
+	}
+	return false
+}
+
 // networkNames extracts the names from a compose service's `networks:` field,
 // which may be either a list (`[frontend, backend]`) or a map
 // (`{frontend: {...}, backend: {...}}`).
