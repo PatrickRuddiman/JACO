@@ -47,9 +47,16 @@ invariant.
 The full sequence lives in the PR introducing per-deployment volume
 scoping (look for the "Phase C — Azure live smoke test" section). In
 brief, on a 3-node testbed brought up by
-`tests/testbed/scripts/deploy.sh` plus `tests/samples/jaco/bootstrap/bootstrap.sh`:
+`tests/testbed/scripts/deploy.sh` plus
+`tests/samples/jaco/bootstrap/bootstrap.sh`. Capture the leader
+address and operator token from cluster init — `jaco delete` is
+admin-only and dials `--server` directly (no local-socket
+shortcut), so the runbook needs both:
 
 ```sh
+LEADER=<node-1 private IP>:7000     # e.g. 172.16.0.6:7000
+TOKEN=<operator_token printed by `jaco cluster init`>
+
 # Ship and apply both probe deployments to node-1.
 scp tests/samples/jaco/smoke-volumes/*.{yaml,yml} \
     azureuser@<n1>:/home/azureuser/smoke/
@@ -58,12 +65,21 @@ ssh azureuser@<n1> 'sudo jaco apply ~/smoke/front.jaco.yaml \
 ssh azureuser@<n1> 'sudo jaco apply ~/smoke/back.jaco.yaml \
                           --compose ~/smoke/back.compose.yml'
 
-# After both reach RUNNING, observe invariants (1) and (2):
+# Probe containers start fast (~5s) but `jaco status` reports PENDING
+# indefinitely because redis:7-alpine has no compose `healthcheck:`
+# and the daemon needs one to transition to RUNNING. Skip `jaco
+# status` — go straight to the docker layer:
+ssh azureuser@<n1> 'sudo docker ps --format "{{.Names}}\t{{.Status}}" | grep vol-'
+#   expected (both Up):  jaco_vol-front-redis-0   Up …
+#                        jaco_vol-back-redis-0    Up …
+
+# Invariant (1) — distinct, deployment-scoped docker volumes:
 ssh azureuser@<n1> 'sudo docker volume ls --format "{{.Name}}" | grep _data'
 #   expected: jaco_vol-front_data
 #             jaco_vol-back_data
 #   (NO bare `data` line)
 
+# Invariant (2) — disjoint backing storage:
 ssh azureuser@<n1> 'sudo docker run --rm \
   -v jaco_vol-front_data:/d busybox sh -c "echo front > /d/who"'
 ssh azureuser@<n1> 'sudo docker run --rm \
@@ -71,15 +87,33 @@ ssh azureuser@<n1> 'sudo docker run --rm \
       && echo COLLISION || echo isolated"'
 #   expected: isolated     (COLLISION = hard fail)
 
-# Re-apply one deployment using shared.compose.yml to prove invariant (3):
+# Invariant (3) — top-level `name:` opt-out. Re-applying with a
+# different compose does NOT trigger a container roll on its own
+# (the volume rename isn't part of the rollout key), so DELETE the
+# probe first, then re-apply with shared.compose.yml.
+ssh azureuser@<n1> "sudo jaco delete vol-front --server $LEADER --token $TOKEN"
 ssh azureuser@<n1> 'sudo jaco apply ~/smoke/front.jaco.yaml \
                           --compose ~/smoke/shared.compose.yml'
-ssh azureuser@<n1> 'sudo docker volume ls --format "{{.Name}}" | grep smoke-shared-data'
+# Wait ~5s for the new replica to come up:
+ssh azureuser@<n1> 'sudo docker inspect jaco_vol-front-redis-0 \
+                          --format "{{(index .Mounts 0).Name}}"'
 #   expected: smoke-shared-data   (no jaco_ prefix)
+ssh azureuser@<n1> 'sudo docker volume ls --format "{{.Name}}" | grep smoke-shared-data'
+#   expected: smoke-shared-data
 ```
 
-Tear-down is `sudo jaco delete vol-front` + `sudo jaco delete vol-back`
-on node-1; the bed and the bench workload alongside are left in place
+Tear-down (admin endpoint, both flags required):
+
+```sh
+ssh azureuser@<n1> "sudo jaco delete vol-front --server $LEADER --token $TOKEN"
+ssh azureuser@<n1> "sudo jaco delete vol-back  --server $LEADER --token $TOKEN"
+# Container removal does NOT cascade-delete its volume (docker
+# semantics). Prune the probe volumes for a clean bed:
+ssh azureuser@<n1> 'sudo docker volume rm \
+  jaco_vol-front_data jaco_vol-back_data smoke-shared-data'
+```
+
+The bed itself and the bench workload alongside are left in place
 for the next smoke.
 
 ## Relation to the network-isolation rig
