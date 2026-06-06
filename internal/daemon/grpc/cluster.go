@@ -18,6 +18,8 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
+	hraft "github.com/hashicorp/raft"
+
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/bootstrap"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/ca"
 	"github.com/PatrickRuddiman/jaco/internal/daemon/admission"
@@ -265,19 +267,53 @@ func persistJoin(dataDir, hostname, advertise string, keyPEM []byte, resp *pb.No
 
 // Status reports the daemon's initialized flag. Always callable, even pre-
 // init — the InitGate's AllowedPreInit list lets it through. Post-Init the
-// response carries the raft leader + last index + the cluster's node list.
+// response carries the raft leader + last index + the cluster's node list,
+// plus the per-node raft suffrage (voter / nonvoter) when this jacod is
+// the leader (issue #143). On followers the suffrages field is empty —
+// raft.GetConfiguration can still be called, but the values would be
+// stale across an election, so we refuse to mislead operators.
 func (c *clusterServer) Status(_ context.Context, _ *pb.ClusterStatusRequest) (*pb.ClusterStatusResponse, error) {
 	resp := &pb.ClusterStatusResponse{
 		Initialized: c.gate.IsInitialized(),
 	}
-	if raftNode := c.server.Raft(); raftNode != nil {
+	raftNode := c.server.Raft()
+	if raftNode != nil {
 		resp.Leader = string(raftNode.Raft.Leader())
 		resp.RaftIndex = raftNode.Raft.LastIndex()
 	}
 	if st := c.server.State(); st != nil {
 		resp.Nodes = st.Nodes.List()
 	}
+	if raftNode != nil && raftNode.IsLeader() {
+		f := raftNode.GetConfiguration()
+		if f.Error() == nil {
+			servers := f.Configuration().Servers
+			resp.Suffrages = make([]*pb.NodeSuffrage, 0, len(servers))
+			for _, s := range servers {
+				resp.Suffrages = append(resp.Suffrages, &pb.NodeSuffrage{
+					Hostname: string(s.ID),
+					Kind:     suffrageKind(s.Suffrage),
+				})
+			}
+		}
+	}
 	return resp, nil
+}
+
+// suffrageKind maps the raft library's ServerSuffrage onto our wire
+// enum. Staging (legacy) collapses to NONVOTER — it's "nonvoter that
+// can be promoted" in the lib, but the lib itself recommends using
+// Nonvoter instead, and operator-facing output should treat them the
+// same.
+func suffrageKind(s hraft.ServerSuffrage) pb.NodeSuffrage_Kind {
+	switch s {
+	case hraft.Voter:
+		return pb.NodeSuffrage_KIND_VOTER
+	case hraft.Nonvoter, hraft.Staging:
+		return pb.NodeSuffrage_KIND_NONVOTER
+	default:
+		return pb.NodeSuffrage_KIND_UNSPECIFIED
+	}
 }
 
 // raftExists reports whether $dataDir/raft/log.db exists. bootstrap.Run does

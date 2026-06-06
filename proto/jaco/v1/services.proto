@@ -109,6 +109,29 @@ message ClusterStatusResponse {
   // disk yet — only Cluster.{Init, Join, Status} are accepted in that
   // mode. CLI `jaco status` checks this to choose its display.
   bool initialized = 4;
+  // suffrages reports each known node's raft voter/nonvoter status,
+  // derived from raft.GetConfiguration() at request time on the leader
+  // (issue #143). Empty when this jacod isn't the leader or raft
+  // hasn't yet committed a configuration entry. CLI `jaco cluster
+  // status` joins this against `nodes` by hostname so operators can
+  // see at a glance whether the cluster's voter set is shaped the
+  // way they think it is.
+  repeated NodeSuffrage suffrages = 5;
+}
+
+message NodeSuffrage {
+  // hostname matches Node.hostname; used as the join key.
+  string hostname = 1;
+  // suffrage is the raft suffrage as a wire-stable enum. Mirrors the
+  // hashicorp/raft constants (Voter=0, Nonvoter=1, Staging=2 [legacy]),
+  // but kept as a JACO-owned enum so we can rename / extend without
+  // a breaking change to the wire.
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_VOTER = 1;
+    KIND_NONVOTER = 2;
+  }
+  Kind kind = 2;
 }
 
 // ----- Deploy service -----

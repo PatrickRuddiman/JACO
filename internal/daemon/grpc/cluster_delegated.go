@@ -44,7 +44,21 @@ func (c *clusterServer) NodeRemove(ctx context.Context, req *pb.NodeRemoveReques
 	if err != nil {
 		return nil, err
 	}
-	return d.NodeRemove(ctx, req)
+	resp, err := d.NodeRemove(ctx, req)
+	if err == nil {
+		// Kick the voter-set reconciler so any post-remove demotion
+		// (or backfill promotion of a nonvoter that should now be a
+		// voter) lands without waiting for the next tick. The
+		// controlplane handler already performs pre-removal demotion
+		// where necessary (issue #143); the kick covers the case
+		// where the leaver was a nonvoter and a backfill is needed
+		// (e.g. 8 → 7 with a nonvoter leaver leaves voters_target=7
+		// satisfied by an existing nonvoter promotion).
+		if m := c.server.Membership(); m != nil {
+			m.Kick()
+		}
+	}
+	return resp, err
 }
 
 // IssueJoinToken mints a single-use 24h join token (operator-authenticated).

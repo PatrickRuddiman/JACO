@@ -128,6 +128,52 @@ func TestRunClusterStatus_NoLeaderShowsPlaceholder(t *testing.T) {
 	}
 }
 
+// TestRunClusterStatus_RendersSuffrages — when the daemon (leader)
+// returns per-node suffrages, the CLI joins them onto Nodes by
+// hostname and renders them inside the status bracket. A node missing
+// from the suffrages map gets the "?" placeholder so operators can't
+// confuse "follower-derived" with "VOTER".
+func TestRunClusterStatus_RendersSuffrages(t *testing.T) {
+	var out bytes.Buffer
+	client := &fakeClusterClient{
+		statusFn: func(context.Context, *pb.ClusterStatusRequest) (*pb.ClusterStatusResponse, error) {
+			return &pb.ClusterStatusResponse{
+				Initialized: true,
+				Leader:      "node-a",
+				RaftIndex:   42,
+				Nodes: []*pb.Node{
+					{Hostname: "node-a", Address: "10.0.0.1:7001", Status: pb.NodeStatus_NODE_STATUS_READY},
+					{Hostname: "node-b", Address: "10.0.0.2:7001", Status: pb.NodeStatus_NODE_STATUS_READY},
+					{Hostname: "node-c", Address: "10.0.0.3:7001", Status: pb.NodeStatus_NODE_STATUS_READY},
+					// node-d is in Nodes but absent from Suffrages
+					// (e.g. just joined; raft config doesn't have it
+					// yet) — render should fall back to "?".
+					{Hostname: "node-d", Address: "10.0.0.4:7001", Status: pb.NodeStatus_NODE_STATUS_JOINING},
+				},
+				Suffrages: []*pb.NodeSuffrage{
+					{Hostname: "node-a", Kind: pb.NodeSuffrage_KIND_VOTER},
+					{Hostname: "node-b", Kind: pb.NodeSuffrage_KIND_VOTER},
+					{Hostname: "node-c", Kind: pb.NodeSuffrage_KIND_NONVOTER},
+				},
+			}, nil
+		},
+	}
+	if err := runClusterStatus(context.Background(), client, &out); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"node-a @ 10.0.0.1:7001 [READY, VOTER]",
+		"node-b @ 10.0.0.2:7001 [READY, VOTER]",
+		"node-c @ 10.0.0.3:7001 [READY, NONVOTER]",
+		"node-d @ 10.0.0.4:7001 [JOINING, ?]",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestRunNodeJoin_SuccessPrintsConfirmation(t *testing.T) {
 	var out bytes.Buffer
 	var captured *pb.ClusterJoinRequest

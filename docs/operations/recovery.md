@@ -169,13 +169,20 @@ payload includes a diff summary in `details`.
 ## Quorum loss after multiple node failures
 
 Symptoms: `jaco apply` from anywhere returns `quorum_lost`. Fewer than
-`⌊N/2⌋ + 1` voters are alive.
+`⌊V/2⌋ + 1` voters are alive, where `V` is the cluster's current
+voter count — see the
+[voter-set policy](../concepts/cluster-lifecycle.md#voter-set-policy)
+for how V maps to member count. Nonvoter failures don't trip this
+condition.
 
 Action:
 
 1. Recover any of the lost voters if you can — bring them back up and
    they rejoin automatically. Even one returning voter restores
-   majority for a 3-node cluster.
+   majority for a 3-voter cluster. If the cluster has live nonvoters,
+   the leader's voter-set reconciler will promote one to voter once
+   the lost voter is removed via `jaco node remove`, restoring the
+   target voter count.
 2. If recovery is not possible, treat it as
    [Total cluster loss](#total-cluster-loss) and restore from a
    backup.
