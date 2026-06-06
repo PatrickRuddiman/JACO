@@ -32,7 +32,7 @@ Each has its own package doc under [`internal/`](../../internal).
 
 | vertical          | responsibility                                                                                       |
 |-------------------|------------------------------------------------------------------------------------------------------|
-| **control-plane** | raft group, replicated state machine, command admission, watch fan-out, audit log, cluster CA       |
+| **control-plane** | raft group, replicated state machine, command admission, watch fan-out, audit log, cluster CA, **leader-only voter-set reconciler** ([Cluster lifecycle → Voter-set policy](cluster-lifecycle.md#voter-set-policy)) |
 | **scheduler**     | leader-only desired-state reconciler; placement, rolling updates, drain, restart-after-3, **pressure-based rebalancer** ([ADR 0002](../adr/0002-pressure-based-scheduling.md)) |
 | **runtime**       | per-node docker engine driver; image pull, container lifecycle, healthcheck observation, log tail, cgroup v2 pressure collector |
 | **discovery**     | per-node bridges, /24 IPAM, WireGuard mesh, nftables isolation, per-bridge DNS                      |
@@ -103,7 +103,7 @@ freshness-gated `StateBackedSource`. See
 
 ## Project status
 
-Tagged releases through `v0.1.2`, functional for single-host and
+Tagged releases through `v0.2.1`, functional for single-host and
 multi-host clusters via the two-binary path described above. The earlier
 open gaps are now implemented:
 

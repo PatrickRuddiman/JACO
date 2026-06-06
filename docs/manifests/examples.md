@@ -136,6 +136,12 @@ volumes:
 cannot satisfy host placement: storage-1 unreachable` and no replica is
 scheduled elsewhere.
 
+The `pgdata` volume lands on `storage-1` as the literal docker volume
+`jaco_data_pgdata` — the `jaco_<deployment>_<key>` prefix prevents
+collisions with any other deployment that also declares a `pgdata`
+key. See [Supported compose fields → `volumes`](compose.md#honored-service-fields)
+and [Migration → How JACO names volumes](../operations/migration.md#how-jaco-names-volumes).
+
 ## 4. Two networks inside one deployment
 
 Same pattern as `testdata/isolation/dep-front.jaco.yaml` (used by the

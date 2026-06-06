@@ -128,7 +128,8 @@ jaco cluster status
 
 A 4-node cluster — the 4th node stays NONVOTER because
 [the voter-set policy](../concepts/cluster-lifecycle.md#voter-set-policy)
-caps voters at the next odd number below the member count:
+keeps the voter count odd (and caps it at 7), so a 4-member cluster
+runs with 3 voters and a single nonvoter:
 
 ```sh
 jaco cluster status

@@ -137,6 +137,28 @@ benchmarking on the Azure substrate provisioned by
 Today only the JACO path is implemented end-to-end; the other three
 are stubs waiting for their bootstrap + manifests + bench adapter.
 
+## Behavior-pinning fixtures
+
+Standalone fixture trees that pin a single invariant for live
+verification on a real cluster — not CI-gated, intended for the
+manual smoke run the relevant PR documents:
+
+- [`tests/samples/jaco/smoke-volumes/`](../../tests/samples/jaco/smoke-volumes/README.md)
+  — two co-located deployments that prove JACO scopes named compose
+  volumes per deployment (`jaco_<deployment>_<key>`), plus an opt-out
+  probe for the `volumes.<key>.name:` escape hatch. Companion unit
+  test `internal/runtime/compose/smoke_fixtures_test.go` pins the
+  fixture against `ToContainerSpec` so a refactor surfaces locally
+  before the live smoke. Cross-linked from
+  [`tests/isolation/README.md`](../../tests/isolation/README.md);
+  promotion into the privileged 3-node isolation rig is the
+  follow-up.
+- [`internal/controlplane/raft/membership/integration_test.go`](../../internal/controlplane/raft/membership/integration_test.go)
+  — exercises the voter-set reconciler across a `1→2→3→4→5→4→3→2→1`
+  membership sequence against real raft nodes, asserting voter
+  counts match the [voter-set policy](../concepts/cluster-lifecycle.md#voter-set-policy)
+  at every step. Runs as a normal `go test`; no privileged surface.
+
 ## Test policy
 
 - **No mocking the FSM.** Cross-vertical integration tests run a real

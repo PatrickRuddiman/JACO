@@ -2,8 +2,8 @@
 sources:
   - internal/discovery/firewall/
   - internal/daemon/grpc/apply_or_forward.go
-  - internal/daemon/grpc/server.go:applyOrForward
-  - internal/runtime/compose/validate.go:allowedServiceFields
+  - internal/daemon/grpc/server.go
+  - internal/runtime/compose/validate.go
 ---
 
 # Isolation

@@ -24,7 +24,7 @@ What lives where. Use this as the map when you're about to grep.
 │   │   ├── backup/      # snapshot export / import
 │   │   ├── bootstrap/   # `Cluster.Init` daemon-side library
 │   │   ├── grpc/        # server-side handlers for Cluster/Deploy/Audit/Token/Watch
-│   │   ├── raft/        # hashicorp/raft wiring
+│   │   ├── raft/        # hashicorp/raft wiring; membership/ runs leader-only voter-set reconciler (see concepts/cluster-lifecycle.md)
 │   │   ├── state/       # typed entity stores
 │   │   └── watch/       # per-entity pub/sub broker
 │   ├── daemon/          # jacod-only: config + netdetect + admission gate
@@ -69,6 +69,7 @@ What lives where. Use this as the map when you're about to grep.
 │   └── jaco/v1/         # entities, services, commands, errors, events, fsm
 ├── docs/                # operator + developer documentation tree
 ├── tests/               # end-to-end tests
+│   ├── isolation/       # 3-node network-isolation rig (canonical privileged E2E)
 │   ├── samples/         # comparative bench: JACO vs k8s/k3s/swarm
 │   └── testbed/         # Azure provisioning template for benchmarking
 ├── testdata/            # repo-root testdata

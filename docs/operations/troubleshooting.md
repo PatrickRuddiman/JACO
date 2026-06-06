@@ -268,6 +268,55 @@ From `jaco self-upgrade`:
 See [`jaco self-upgrade`](../cli/self-upgrade.md) and
 [Upgrades](upgrades.md).
 
+## Node shows `NONVOTER`
+
+Not an error. `jaco cluster status` rendering a node as `[READY,
+NONVOTER]` is the steady state for at least one peer in any cluster
+whose member count is even or whose member count exceeds 7. The
+leader-only voter-set reconciler holds the cluster at an odd voter
+count and caps it at 7 — a 4-member cluster runs with 3 voters and 1
+nonvoter; an 8-member cluster runs with 7 voters and 1 nonvoter. See
+[Cluster lifecycle → Voter-set policy](../concepts/cluster-lifecycle.md#voter-set-policy)
+for the full table.
+
+It is **also** the transient state for every freshly-joined node
+during the reconciler's `PromoteAfter` window (3 s by default). If a
+nonvoter persists past that window in a cluster whose target voter
+count exceeds the current voter count, the reconciler is either not
+running or self-gated as a follower — check:
+
+- `jaco cluster status` from each node: only the one whose
+  `Leader:` line points at itself runs the reconciler.
+- Leader's journal: `journalctl -u jaco | grep "membership reconciler"`
+  should show `membership reconciler started` at boot and `promoting
+  nonvoter to voter` lines as nodes join.
+- Follower suffrage shows as `?` (not `NONVOTER`) — that's normal,
+  the CLI refuses to render a suffrage from a follower's stale view
+  of raft configuration.
+
+## Unexpected `jaco_<deployment>_<key>` volume names on disk
+
+Not an error. As of v0.2.0, every named volume declared in a compose
+file lands on each docker host as `jaco_<deployment>_<key>` (e.g.
+`jaco_app_pgdata`) instead of the bare `<key>` it would carry under
+`docker compose up`. This stops two unrelated JACO deployments that
+happen to declare the same bare key (`data`, `pgdata`, `logs`, …) on
+the same host from silently mounting the same backing storage.
+
+- The path inside the container is unchanged — the service still
+  reaches its volume at the mount path it declared.
+- Bind mounts (`/host/path:/in/container`) and anonymous volumes
+  (`/in/container`) are untouched.
+- The compose-portable escape hatch is `volumes.<key>.name:
+  <literal>` (or `external: true`) at the top level of the compose
+  file — JACO uses the literal docker volume name verbatim,
+  unprefixed, so the storage can be shared across stacks or pre-seeded
+  outside JACO.
+
+See [Migration → How JACO names volumes](migration.md#how-jaco-names-volumes)
+for the full mechanics and the migration path for a stack that
+previously assumed bare names.
+
 ## Spurious follower log lines (silenced)
 
 Two startup-window log patterns from older builds are now silenced —
