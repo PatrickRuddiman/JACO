@@ -33,13 +33,28 @@ var cliRoot = logging.NewCLI(os.Stderr, slog.LevelWarn)
 // work. cliclient derives its own subsystem from the bare root via WithLogger.
 func Logger() *slog.Logger { return logging.Subsystem(cliRoot, "jaco") }
 
+// annotationHonorsOutput marks a subcommand as one that actually renders in
+// the formats listed in --output. The root PersistentPreRunE skips the
+// "unsupported format" guard for those commands and lets them deal with the
+// flag themselves. Untagged commands get a loud error on -o json/-o yaml so
+// CI pipelines that pipe through jq fail at the source instead of silently
+// receiving table output (issue #156).
+const annotationHonorsOutput = "jaco.honorsOutput"
+
 var rootCmd = &cobra.Command{
 	Use:           "jaco",
 	Version:       version,
 	Short:         "JACO — multi-node container orchestrator",
 	SilenceUsage:  true,
 	SilenceErrors: true,
-	PersistentPreRun: func(_ *cobra.Command, _ []string) {
+	PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+		// Reject unsupported output formats up front for any command that
+		// hasn't opted in via annotationHonorsOutput. Quick-fix variant of
+		// #156 — full JSON/YAML rendering is a follow-up.
+		out, _ := cmd.Flags().GetString("output")
+		if out != "" && out != "table" && cmd.Annotations[annotationHonorsOutput] != "true" {
+			return fmt.Errorf("output format %q not implemented yet; only \"table\" is supported (#156)", out)
+		}
 		// Level precedence: --log-level > --verbose > JACO_LOG > WARN.
 		level := logging.LevelFromEnv(slog.LevelWarn)
 		if flagVerbose {
@@ -49,6 +64,7 @@ var rootCmd = &cobra.Command{
 			level = logging.ParseLevel(flagLogLevel, level)
 		}
 		cliRoot = logging.NewCLI(os.Stderr, level)
+		return nil
 	},
 	Run: func(cmd *cobra.Command, _ []string) {
 		_ = cmd.Help()
