@@ -19,6 +19,11 @@ var (
 	flagLogLevel string
 )
 
+// version is the CLI release string baked in at build time via
+// `-ldflags '-X main.version=…'` (see build/release.sh). Mirrors
+// cmd/jacod/main.go so a single ldflag covers both binaries.
+var version = "dev"
+
 // cliRoot is the CLI's bare root logger (no subsystem attr). Configured once
 // in PersistentPreRun from --log-level / --verbose / JACO_LOG; defaults to
 // WARN so normal operator output (rendered via cliclient) stays uncluttered.
@@ -30,6 +35,7 @@ func Logger() *slog.Logger { return logging.Subsystem(cliRoot, "jaco") }
 
 var rootCmd = &cobra.Command{
 	Use:           "jaco",
+	Version:       version,
 	Short:         "JACO — multi-node container orchestrator",
 	SilenceUsage:  true,
 	SilenceErrors: true,
