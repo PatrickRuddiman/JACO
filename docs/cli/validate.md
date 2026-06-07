@@ -60,6 +60,14 @@ None — fully local; no cluster contact.
 - Cross-check failures (jaco service name not in compose) fail with
   `validation_failed: jaco service "X" is not defined in the compose
   file`.
+- **`environment:` interpolation is NOT run by `validate`.** The
+  top-level [`environment: <path>`](../manifests/jaco-yaml.md#environment)
+  field is parsed (a malformed path string would still surface here),
+  but `validate` does not read the env file or substitute `${VAR}` in
+  the compose document. A compose file whose only schema issue is an
+  unresolved `${VAR}` reference will validate clean here and may
+  still be rejected by `jaco apply` if the variable is missing from
+  the env file (`${VAR:?msg}`) or the env file itself is absent.
 
 Errors render as `Error: <code>: <message>` on stderr.
 

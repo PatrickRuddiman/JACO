@@ -4,6 +4,7 @@ sources:
   - internal/controlplane/grpc/jaco_spec.go
   - internal/controlplane/admission/
   - internal/runtime/compose/validate.go
+  - internal/runtime/compose/interpolate.go
 ---
 
 # `jaco apply`
@@ -42,8 +43,25 @@ Operator token (TCP) or unix-socket trust (local).
 
 ## Behavior
 
-1. The CLI reads both files from disk and sends their raw bytes to the
-   daemon via `Deploy.Apply`.
+1. The CLI reads both files from disk.
+   1. If `jaco.yaml` declares a top-level
+      [`environment: <path>`](../manifests/jaco-yaml.md#environment),
+      the CLI loads the named env file (path resolved relative to
+      the jaco.yaml's directory) and substitutes every `${VAR}` in
+      the compose document — `$VAR`, `${VAR}`, `${VAR:-default}`,
+      `${VAR:?msg}`, `$$` escape. The interpolation source is the
+      env file only; the operator's process environment is NOT
+      consulted. A missing env file fails the apply with
+      `load environment file <path>: …`; a required `${VAR:?msg}`
+      reference whose variable is absent fails with
+      `interpolate ${VAR} at line N col M: required variable …`.
+   2. The CLI folds every service-level `env_file:` into the
+      service's `environment:` map (compose-spec precedence: the
+      explicit `environment:` value wins for matching keys; see
+      [Supported compose fields → `env_file` resolution](../manifests/compose.md#env_file-resolution)).
+   3. The fully-resolved compose bytes plus the original jaco.yaml
+      bytes go to the daemon via `Deploy.Apply`. The daemon never
+      reads the operator's filesystem.
 2. The daemon validates the jaco.yaml against the closed schema
    (`deployment`, `services`, `routes`; see
    [manifests/jaco-yaml.md](../manifests/jaco-yaml.md)) and the compose
