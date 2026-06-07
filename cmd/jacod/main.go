@@ -112,6 +112,8 @@ func run(ctx context.Context, configPath string, root *slog.Logger) error {
 		ACMEEnabled:          cfg.ACMEEnabledOrDefault(),
 		ACMESkipStaging:      cfg.ACMESkipStaging,
 		NodeStatusInterval:   cfg.NodeStatusIntervalOrDefault(),
+		DNSForwarders:        cfg.DNS.Forwarders,
+		DNSForwarderTimeout:  cfg.DNSForwarderTimeoutOrDefault(),
 	})
 	if err != nil {
 		return fmt.Errorf("gRPC server: %w", err)

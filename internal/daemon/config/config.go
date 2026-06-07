@@ -10,8 +10,9 @@ import (
 	"os"
 	"strings"
 	"time"
-
 	"gopkg.in/yaml.v3"
+
+	dnspkg "github.com/PatrickRuddiman/jaco/internal/discovery/dns"
 )
 
 // Defaults match slices/daemon.md §4.
@@ -52,6 +53,14 @@ const (
 	// effectively dormant.
 	MinNodeStatusInterval = 5 * time.Second
 	MaxNodeStatusInterval = 5 * time.Minute
+	// DefaultDNSForwarderTimeout is the per-upstream query deadline the
+	// per-bridge DNS forwarder uses when the operator hasn't set
+	// dns.forwarder_timeout. 2 s is short enough that even a full chain
+	// of two failed upstreams completes well inside libc's 5 s
+	// nameserver timeout — so a downstream resolver retries us rather
+	// than timing out and silently breaking container outbound DNS
+	// (issue #165).
+	DefaultDNSForwarderTimeout = 2 * time.Second
 
 	// DefaultACMECA is the Let's Encrypt production ACME directory — the CA
 	// JACO issues against unless the operator pins acme_ca to staging (or any
@@ -104,6 +113,34 @@ type Config struct {
 	// MaxNodeStatusInterval]. Parsed as a Go duration string
 	// (e.g. "30s", "1m"). Zero (key absent) → DefaultNodeStatusInterval.
 	NodeStatusInterval time.Duration `yaml:"node_status_interval"`
+	// DNS configures the per-bridge resolver's external-name forwarding
+	// chain (issue #165). Optional — when omitted, the daemon parses
+	// /etc/resolv.conf at startup and uses every nameserver entry it
+	// finds (Docker's embedded resolver `127.0.0.11` and JACO's own
+	// bridge gateways `10.244.*.1` are filtered to avoid forwarding
+	// loops). Set `dns.forwarders` explicitly to pin a deterministic
+	// chain that doesn't depend on the host's resolver configuration.
+	DNS DNSConfig `yaml:"dns"`
+}
+
+// DNSConfig is the typed view of jacod.yaml's `dns:` block. Every key is
+// optional; an absent block leaves the daemon to default `Forwarders`
+// from /etc/resolv.conf and `ForwarderTimeout` to the package default.
+type DNSConfig struct {
+	// Forwarders is the ordered upstream resolver chain used by every
+	// per-bridge Responder for external names. host[:port] each; the
+	// daemon appends `:53` when no port is given. Empty (key absent or
+	// explicit `forwarders: []`) → fall back to the host's
+	// /etc/resolv.conf. Validator rejects bridge gateways
+	// (`10.244.*.1`) and Docker's embedded resolver (`127.0.0.11`)
+	// because either as an upstream creates a forwarding loop.
+	Forwarders []string `yaml:"forwarders"`
+	// ForwarderTimeout is the per-upstream query deadline. Default
+	// (DefaultDNSForwarderTimeout) is short enough that walking a
+	// two-entry chain still finishes well under libc's 5 s nameserver
+	// timeout, so a slow upstream doesn't hide a degraded chain
+	// behind silent retries.
+	ForwarderTimeout time.Duration `yaml:"forwarder_timeout"`
 }
 
 // ACMEEnabledOrDefault returns the effective cluster-wide ACME switch. The
@@ -136,6 +173,17 @@ func (c Config) NodeStatusIntervalOrDefault() time.Duration {
 	return c.NodeStatusInterval
 }
 
+// DNSForwarderTimeoutOrDefault returns the per-upstream DNS query
+// deadline. Zero (key absent, explicit `forwarder_timeout: 0`, or
+// dns block absent entirely) maps to the package default — callers
+// should never use the raw field. Issue #165.
+func (c Config) DNSForwarderTimeoutOrDefault() time.Duration {
+	if c.DNS.ForwarderTimeout <= 0 {
+		return DefaultDNSForwarderTimeout
+	}
+	return c.DNS.ForwarderTimeout
+}
+
 // Defaults returns a Config populated with the documented defaults.
 func Defaults() Config {
 	return Config{
@@ -147,6 +195,7 @@ func Defaults() Config {
 		LogLevel:    DefaultLogLevel,
 		IPAMPool:           DefaultIPAMPool,
 		NodeStatusInterval: DefaultNodeStatusInterval,
+		DNS:                DNSConfig{ForwarderTimeout: DefaultDNSForwarderTimeout},
 	}
 }
 
@@ -236,6 +285,18 @@ func (c Config) Validate() error {
 			return fmt.Errorf("node_status_interval %s must be between %s and %s",
 				c.NodeStatusInterval, MinNodeStatusInterval, MaxNodeStatusInterval)
 		}
+	}
+	// DNS forwarders: each address MUST parse and MUST NOT be a known
+	// loop source (Docker's embedded resolver, JACO bridge gateways).
+	// Issue #165. Empty list is fine — the daemon falls back to host
+	// /etc/resolv.conf at startup.
+	if len(c.DNS.Forwarders) > 0 {
+		if err := dnspkg.ValidateUpstreams(c.DNS.Forwarders); err != nil {
+			return err
+		}
+	}
+	if c.DNS.ForwarderTimeout < 0 {
+		return fmt.Errorf("dns.forwarder_timeout %s must be >= 0", c.DNS.ForwarderTimeout)
 	}
 	return nil
 }

@@ -132,6 +132,13 @@ type Server struct {
 	// goroutine's use site. Set from Options.NodeStatusInterval.
 	nodeStatusInterval time.Duration
 
+	// dnsForwarders + dnsForwarderTimeout mirror jacod.yaml.dns.* —
+	// the external-name upstream chain every per-bridge DNS Responder
+	// consults (issue #165). startSubsystems consults them when
+	// constructing dns.NewForwarder.
+	dnsForwarders       []string
+	dnsForwarderTimeout time.Duration
+
 	// tlsDyn holds the live server cert for the cross-host TCP listener.
 	// Nil when no TCP listener was opened. RebindTLS swaps the cert in
 	// after OpenRaft persists the cluster-CA-signed node cert.
@@ -221,6 +228,17 @@ type Options struct {
 	// from jacod.yaml.node_status_interval; zero falls back to
 	// config.DefaultNodeStatusInterval at use site.
 	NodeStatusInterval time.Duration
+
+	// DNSForwarders is the ordered upstream resolver chain used by every
+	// per-bridge DNS Responder for external names (issue #165). Plumbed
+	// from jacod.yaml.dns.forwarders. Empty list → daemon falls back to
+	// /etc/resolv.conf at startup; if THAT is also empty the responder
+	// SERVFAILs every external query (with a one-line startup warning).
+	DNSForwarders []string
+
+	// DNSForwarderTimeout is the per-upstream query deadline. Zero →
+	// config.DefaultDNSForwarderTimeout at use site. Issue #165.
+	DNSForwarderTimeout time.Duration
 }
 
 // New builds a Server. Doesn't start anything yet — call Serve.
@@ -366,8 +384,10 @@ func New(opts Options) (*Server, error) {
 			CA:      acmeCA,
 			Enabled: opts.ACMEEnabled,
 		},
-		acmeSkipStaging:    opts.ACMESkipStaging,
-		nodeStatusInterval: opts.NodeStatusInterval,
+		acmeSkipStaging:     opts.ACMESkipStaging,
+		nodeStatusInterval:  opts.NodeStatusInterval,
+		dnsForwarders:       opts.DNSForwarders,
+		dnsForwarderTimeout: opts.DNSForwarderTimeout,
 	}
 	cluster := &clusterServer{
 		gate:          gate,
@@ -753,7 +773,38 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 	// (deployment, network) subnet on the bridge gateway IP. Skips
 	// gracefully when listeners can't bind (no docker bridge yet, or
 	// missing CAP_NET_BIND_SERVICE).
-	dnsMgr := &dnsmgr.Manager{State: st, Brokers: brokers, Logger: logging.Subsystem(s.logger, "dns").With(logging.KeyNode, hostname), Hostname: hostname}
+	//
+	// The Manager.Forwarder field receives the external-name upstream
+	// chain (issue #165). Operator-supplied dns.forwarders win; absent
+	// that, /etc/resolv.conf is parsed at startup. If neither source
+	// yields any usable upstream, we log once at startup and the
+	// responder returns SERVFAIL for every external name (downstream
+	// resolvers retry, instead of negative-caching the failure).
+	dnsLog := logging.Subsystem(s.logger, "dns").With(logging.KeyNode, hostname)
+	dnsUpstreams := s.dnsForwarders
+	if len(dnsUpstreams) == 0 {
+		discovered, err := dnsmgr.ReadHostResolvers("/etc/resolv.conf")
+		switch {
+		case err != nil:
+			s.srvLog.Warn("dns: failed to read /etc/resolv.conf; container external DNS will SERVFAIL until dns.forwarders is set",
+				"error", err)
+		case len(discovered) == 0:
+			s.srvLog.Warn("dns: no upstream resolvers configured and host /etc/resolv.conf has none; container external DNS will SERVFAIL until dns.forwarders is set")
+		default:
+			dnsUpstreams = discovered
+		}
+	}
+	dnsFwd := dnsmgr.NewForwarder(dnsUpstreams, s.dnsForwarderTimeout,
+		logging.Subsystem(s.logger, "dns.forwarder").With(logging.KeyNode, hostname))
+	s.srvLog.Info("dns: forwarder configured",
+		"upstreams", dnsFwd.Upstreams(), "timeout", s.dnsForwarderTimeout)
+	dnsMgr := &dnsmgr.Manager{
+		State:     st,
+		Brokers:   brokers,
+		Logger:    dnsLog,
+		Hostname:  hostname,
+		Forwarder: dnsFwd.Lookup,
+	}
 	s.subsystemsWG.Add(1)
 	go func() {
 		defer s.subsystemsWG.Done()

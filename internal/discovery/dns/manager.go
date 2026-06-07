@@ -35,6 +35,13 @@ type Manager struct {
 	Brokers  *watch.Registry
 	Logger   *slog.Logger
 	Hostname string
+	// Forwarder is the upstream resolver every per-bridge Responder uses
+	// for external names. Nil falls back to LookupHost (net.LookupHost
+	// wrapper) — preserved for test scaffolding and pre-#165 callers;
+	// production wiring at internal/daemon/grpc/server.go injects a
+	// Forwarder built from jacod.yaml's dns.forwarders + the host
+	// /etc/resolv.conf fallback.
+	Forwarder LookupHostFn
 
 	mu        sync.Mutex
 	listeners map[string]*listenerEntry // keyed by scopeKey(deployment, network)
@@ -131,7 +138,11 @@ func (m *Manager) ensure(ctx context.Context, sn *pb.Subnet) {
 		return
 	}
 	scope := Scope{Deployment: sn.GetDeployment(), Network: sn.GetNetwork()}
-	resp := New(scope, ServiceMap{}, LookupHost)
+	forwarder := m.Forwarder
+	if forwarder == nil {
+		forwarder = LookupHost
+	}
+	resp := New(scope, ServiceMap{}, forwarder)
 	resp.Logger = m.Logger
 
 	addr := fmt.Sprintf("%s:%d", gw, ListenPort)
