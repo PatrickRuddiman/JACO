@@ -2,6 +2,7 @@
 sources:
   - internal/controlplane/grpc/
   - internal/runtime/compose/
+  - internal/runtime/health/
   - proto/jaco/v1/entities.proto
 ---
 
@@ -75,7 +76,7 @@ backoff).
 |-------------|-----------------------------------------------------------------------------------------------|
 | `pending`   | `ReplicaDesired` received; image not yet pulled. A failing pull stays here with `code: image_pull_failed` (and the error in `details.reason`) while it retries |
 | `pulling`   | image pull in progress (reported on the first attempt)                                        |
-| `running`   | container up; first `healthy` healthcheck observed (or `running + no healthcheck` for 5 s)   |
+| `running`   | container up; first `healthy` healthcheck observed. For a service with no compose `healthcheck:` block (or `healthcheck: { disable: true }`, which v0.3.2 treats as "no healthcheck"), the fallback path requires the container's `docker inspect .State.Status` to be `running` for `HealthyConsecutiveCount = 5` consecutive ~1 s polls before flipping. The poll counter survives reconciler re-dispatches for the same `(replica_id, container_id)` pair (issue #152) — pre-v0.3.2 every re-dispatch reset the counter to 0, so healthcheck-less replicas in a stack with `depends_on` cascades got stuck in `pending` forever and blocked their dependents |
 | `degraded`  | `State.Health.Status = unhealthy` observed                                                    |
 | `updating`  | set by the scheduler during a rolling update; runtime reads but doesn't write                 |
 | `failed`    | terminal error: `image_pull_failed`, `docker_error`, `restart_exhausted` (scheduler-driven)   |

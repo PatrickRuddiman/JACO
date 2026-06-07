@@ -18,21 +18,44 @@ Issue: [#101](https://github.com/PatrickRuddiman/jaco/issues/101).
 Background: [Auth and tokens — Registry
 credentials](../concepts/auth-and-tokens.md#registry-credentials).
 
-## Canonical host keys
+## Canonical credential keys
 
-A credential is keyed by the registry's canonical host. Both `jaco
-registry login` and the reconciler's per-pull lookup normalize the host
-the same way, so a credential added under one alias is found by every
-pull whose image points at any other alias.
+A credential is keyed by its canonical `host[:port][/namespace]`. Both
+`jaco registry login` and the reconciler's per-pull lookup normalize the
+input the same way, so a credential added under one alias is found by
+every pull whose image points at any other alias for the same key.
 
-| input                          | canonical key                    |
-|--------------------------------|----------------------------------|
-| `docker.io`, `index.docker.io` | `docker.io`                      |
-| `ghcr.io`                      | `ghcr.io`                        |
-| `registry.example.com:5000`    | `registry.example.com:5000`      |
-| `https://registry.example.com/v2/` | `registry.example.com`       |
+| input                                | canonical key             |
+|--------------------------------------|---------------------------|
+| `docker.io`, `index.docker.io`       | `docker.io`               |
+| `ghcr.io`                            | `ghcr.io`                 |
+| `ghcr.io/Owner/`, `GHCR.IO/owner`    | `ghcr.io/owner`           |
+| `registry.example.com:5000`          | `registry.example.com:5000` |
+| `https://ghcr.io/owner?ref=main`     | `ghcr.io/owner`           |
 
-Hosts are lower-cased. Non-default ports are preserved verbatim.
+Hosts are lower-cased; non-default ports are preserved verbatim. Any
+`scheme://`, query, or fragment is stripped, and path segments are
+lower-cased and trim-of-trailing-slash.
+
+### Per-namespace credentials
+
+The optional `/namespace` suffix lets a single host carry distinct
+credentials per registry namespace — e.g. `ghcr.io/personal` for a
+developer account and `ghcr.io/company` for a CI service principal,
+stored alongside a bare `ghcr.io` fallback if you want one.
+
+At pull time the resolver picks the **longest-prefix match** against
+the image's `host[:port]/<repository-path>`:
+
+- `ghcr.io/personal/repo:tag` → uses `ghcr.io/personal` if present;
+  otherwise falls back to `ghcr.io` if that's stored; otherwise pulls
+  anonymously.
+- `ghcr.io/company/app:tag` → uses `ghcr.io/company`.
+- `ghcr.io/orphan/x:tag` → uses bare `ghcr.io` only (no namespace
+  match).
+
+More-specific keys always win over the bare-host key, so it is safe to
+keep a fallback `ghcr.io` credential alongside namespace-scoped ones.
 
 ## `jaco registry login`
 
@@ -92,6 +115,13 @@ echo "$GHCR_PAT" | jaco registry login ghcr.io --username ci-bot --password-stdi
 # From a remote operator workstation
 jaco registry login docker.io --username alice --password-stdin \
   --server $LEADER --token $JACO_TOKEN < ~/secrets/dockerhub
+
+# Per-namespace credentials on the same host — these coexist; pulls of
+# ghcr.io/personal/* and ghcr.io/company/* each see their own creds, and
+# anything under ghcr.io/<other-namespace>/* picks up the bare-host one.
+echo "$PERSONAL_PAT" | jaco registry login ghcr.io/personal --username alice    --password-stdin
+echo "$COMPANY_PAT"  | jaco registry login ghcr.io/company  --username ci-bot   --password-stdin
+echo "$FALLBACK_PAT" | jaco registry login ghcr.io          --username fallback --password-stdin
 ```
 
 ## `jaco registry logout`

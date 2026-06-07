@@ -182,6 +182,126 @@ The CLI's interpolation step rejected a malformed `${…}` reference
 — the line/column point at the offending site. Fix the reference
 and re-apply. CLI-side only.
 
+## `staging self-check passed; promoting to prod` (every 10 s, forever)
+
+Pre-v0.3.3 symptom. The stage-first controller's tick decision was
+"domain not in staging AND no prod cert in raft → stage it", which
+fired on the same 10 s tick that promoted the staging cert — Caddy's
+prod ACME order never had time to complete before the controller
+re-staged the domain and flipped the policy back. `journalctl -u
+jaco | grep -c 'promoting to prod'` grew without bound; raft state
+stayed `staging` forever; browsers kept seeing `(STAGING) …`
+issuers. v0.3.3 added a 5-minute `PendingProdWindow` that holds the
+domain out of re-stage until Caddy either completes the prod order
+or the window expires (issue #154). If you see this on v0.3.2 or
+earlier, upgrade to v0.3.3+ via `jaco self-upgrade`.
+
+## `staging` cert still served after promote (v0.3.3 / v0.3.4)
+
+The promote log fired exactly once but the browser still sees a
+staging cert. Pre-v0.3.5 there were two reasons the prod ACME order
+never actually fired:
+
+- **v0.3.3 and earlier** — promote only flipped the automation
+  policy's CA URL; the staging cert blob in raft and on-disk + the
+  in-process certmagic cache all remained valid, and certmagic's
+  maintainer treats valid-for-90-days leaves as "do not re-obtain".
+  Workaround: `sudo systemctl stop jaco && sudo rm -rf
+  /var/lib/jaco/ingress/cache /var/lib/jaco/.config/caddy/autosave.json
+  && sudo systemctl start jaco`.
+- **v0.3.4** — promote wipes the raft + on-disk blobs (issue #158,
+  PR #162) so a daemon restart now lands a prod cert without manual
+  rm. But certmagic's in-process cache still held the staging leaf,
+  so without restart the served cert stayed staging. Workaround:
+  `sudo systemctl restart jaco` after the promote log fires.
+
+v0.3.5 closes both gaps: the promote path also calls
+`cachepoke.EvictManaged(domain)` which drops the cached leaf from
+caddy's `caddytls.certCache` via `go:linkname`, so the next
+handshake after promote misses cache, misses storage under the
+prod-CA key, and triggers obtain (issue #163). End-to-end on a
+fresh cluster the cert flips from `(STAGING) …` to a real LE prod
+intermediate within seconds of the first post-promote handshake.
+No workaround needed; `jaco self-upgrade` to v0.3.5+ and let the
+next stagefirst tick run.
+
+## `cert audit emit skipped: cachepoke: caddytls cert cache not yet provisioned`
+
+v0.3.5+ log line. `cachepoke.EvictManaged` ran before Caddy's TLS
+app finished provisioning its in-process cert cache (the
+`go:linkname`'d singleton is still nil). In practice this means a
+promote fired before the first rebuild completed — extremely
+unlikely outside a stagefirst race during cold start. The log line
+is a warning, not an error; the storage wipe still happened and a
+daemon restart will land the prod cert. If you see it persistently,
+file an issue with the full journal around the promote event.
+
+## Replicas stuck in `pending` despite the container being healthy (pre-v0.3.2)
+
+A `tls: auto` route's domain comes up but the replicas behind it
+sit in `pending` indefinitely; `docker inspect` shows the container
+with `State.Status: running` and a passing image-built-in
+`State.Health.Status: healthy`. `jaco status` keeps reporting
+`pending` for those replicas, and any service with a `depends_on`
+reference to them gets deferred forever.
+
+Pre-v0.3.2 the health watcher's per-replica `consecutiveRunning`
+counter was reset on every reconciler re-dispatch (and the
+reconciler re-dispatches on every safety tick, every
+`ReplicaDesired` event, every sibling state change). The counter
+never reached `HealthyConsecutiveCount = 5`, so the fallback path
+for healthcheck-less containers never fired. v0.3.2 made the
+`Watcher.Start` call idempotent for the same
+`(replica_id, container_id)` pair, so the counter accumulates
+across re-dispatches and reaches 5 in ~5 seconds (issue #152).
+
+`healthcheck: { disable: true }` was also affected because pre-v0.3.2
+the daemon's projection layer treated `disable` as "registered
+healthcheck" and waited for a `State.Health.Status` Docker would
+never produce. v0.3.2 returns nil from
+`healthcheckFromCompose` when `Disable=true`, so the fallback path
+owns these the same as truly healthcheck-less services.
+
+If you see this on v0.3.1 or earlier, `jaco self-upgrade` to v0.3.2+.
+
+## Container reused with stale env values after `.env` rotation (pre-v0.3.1)
+
+Operator rotates a value in their `.env` (top-level
+`environment: .env` in `jaco.yaml`), re-applies, gets `Applied
+revision: N+1`, but `docker exec <container> env` still shows the
+previous values. Restart, no change. The replica is pinned to the
+container created from revision `N`.
+
+Pre-v0.3.1 the scheduler's upsert gate compared only `(Host,
+Image)`. Any other compose change — env values, healthcheck
+command, mounts, labels — yielded `continue` → no
+`ReplicaDesiredUpsert` → `RaftIndex` never bumped → `lifecycle.Start`'s
+`matchesRaftIndex` returned true → container kept as-is with the
+stale env baked in at create time (container env is immutable for
+the life of a container). The only escape was `docker rm -f` per
+stuck replica.
+
+v0.3.1 added `ReplicaDesired.spec_hash`: a SHA-256 of the canonical
+per-service slice of the resolved compose YAML. The upsert gate now
+includes the hash, so env-value rotation flips it, the upsert
+fires, `RaftIndex` bumps, and the runtime reconciler recreates the
+container with the new env (issue #148). If you see stuck env on
+v0.3.0, `jaco self-upgrade` to v0.3.1+ and re-apply once; the
+next reconcile recreates every replica with the current resolved
+spec.
+
+## `output format "<fmt>" not implemented yet; only "table" is supported (#156)`
+
+v0.3.4+ CLI explicitly rejects `-o json` / `-o yaml` on every
+subcommand except `jaco audit` (the only one that actually
+implements non-table output). Pre-v0.3.4 the flag was silently
+ignored — CI pipelines piping `jaco status -o json | jq .` got a
+`parse error` from jq because the actual output was the table
+format. The hard rejection makes the breakage visible. Use `jaco
+audit -o json` for any structured-output need; for `status` /
+`logs` / etc., either parse the table or watch for v0.4.0 which
+may extend `-o json` coverage.
+
 ## `port_conflict`
 
 Apply rejected because two compose services in the deployment publish

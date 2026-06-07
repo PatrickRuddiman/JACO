@@ -2,8 +2,10 @@
 sources:
   - internal/ingress/
   - internal/daemon/grpc/ingress.go
+  - internal/daemon/grpc/server.go
   - internal/daemon/grpc/apply_or_forward.go
   - internal/controlplane/grpc/jaco_spec.go
+  - internal/controlplane/grpc/status.go
   - proto/jaco/v1/entities.proto
 ---
 
@@ -97,11 +99,99 @@ Per-domain flow (single-flight cluster-wide):
 
 ### Stage-first dry run
 
-By default, new domains issue against Let's Encrypt staging first,
-then flip to the production directory on success. Staging has much
-looser rate limits, so a DNS or firewall misconfiguration burns a
-cheap staging failure instead of a prod rate-limit hit. Disable with
+New domains issue against Let's Encrypt **staging** first; the daemon
+runs a cheap self-check on the issued chain (parse + SAN match,
+`internal/ingress/stagefirst/stagefirst.go:SelfCheck`); on success it
+flips the automation policy to production and Caddy obtains a real
+leaf. A DNS or firewall misconfiguration burns a cheap staging
+failure instead of a prod rate-limit hit. Disable end-to-end with
 [`acme_skip_staging: true`](../configuration.md) in `jacod.yaml`.
+
+The controller lives at `internal/ingress/stagefirst/controller.go`
+and is owned by the leader's daemon (followers neither stage nor
+promote; on leader change the new leader picks up via raft state).
+On every ~10 s tick the controller walks each `tls: auto` domain:
+
+1. **Not yet staged, no prod cert in raft** → add to the `staging`
+   set. Next rebuild renders the domain's automation policy with the
+   staging CA URL. Caddy obtains a staging leaf and stores it via
+   the custom CertMagic storage (raft + on-disk fallback).
+2. **Already staged, staging chain visible in storage** → run
+   `SelfCheck`. On pass, log `staging self-check passed; promoting
+   to prod`, fire the `ClearStagingCert` hook (see below), call
+   `OnPromote`, mark the domain as **pending prod** with a
+   `PendingProdWindow = 5 * time.Minute` deadline, drop it from
+   the staging set so the next rebuild flips its policy to prod.
+3. **Pending prod** → if `prodCertIssued(domain)` returns true the
+   marker clears (Caddy landed the prod cert; `OnProdIssued` fires
+   to record a `CERTIFICATE_ISSUED(prod)` audit event). If the
+   deadline expires without prod landing, the marker clears and the
+   controller is allowed to re-stage from scratch on the next pass.
+
+The pending-prod window (issue #154) was added in v0.3.3 to break a
+10 s flip-flop loop: pre-fix, the same-tick decision "domain not in
+staging AND no prod cert in raft → stage it" fired the moment after
+a promote, before Caddy could complete its prod ACME order, which
+re-staged the domain, flipped the policy back to staging-CA, and
+forced Caddy to abandon the in-flight prod issuance — repeating
+indefinitely. The window holds the domain out of the re-stage
+decision long enough for a real prod issuance to complete.
+
+### Forcing fresh prod issuance on promote
+
+Flipping the automation policy's CA URL is by itself insufficient to
+make Caddy obtain a fresh prod cert: the staging leaf remains valid
+for ~90 days, certmagic's maintainer treats it as fine, and Caddy
+keeps serving it. JACO's promote path explicitly clears both the
+staging cert's persistence AND its in-process cache so the next TLS
+handshake misses every layer and triggers obtain:
+
+- **`ClearStagingCert` hook** (issue #158, v0.3.4) — wired in
+  `internal/daemon/grpc/server.go` to call
+  `clearStagingCertBlobs`, which deletes every staging-keyed
+  `.crt` / `.key` / `.json` blob for the domain from the custom
+  CertMagic storage. This catches both the raft state and the
+  on-disk fallback cache, so a daemon restart-after-promote also
+  lands a prod cert.
+- **`cachepoke.EvictManaged`** (issue #163, v0.3.5,
+  `internal/ingress/cachepoke/cachepoke.go`) — same closure also
+  drops the matching managed cert from caddy v2's package-private
+  `caddytls.certCache` singleton. The package uses `go:linkname` to
+  reach the symbol; bumping `caddy/v2` in `go.mod` MUST sanity-check
+  `internal/ingress/cachepoke` still compiles. The eviction calls
+  `certmagic.Cache.RemoveManaged([]SubjectIssuer{{Subject: domain}})`
+  with an empty `IssuerKey`, which per
+  `certmagic@v0.25.3/cache.go:411` matches all managed certs for
+  the subject regardless of issuer.
+
+With both layers cleared, Caddy's next handshake for the domain
+misses the cache, looks at storage under the now-prod-CA-namespaced
+key, finds nothing, and CertMagic's manager starts the prod ACME
+order. End-to-end test on a fresh 3-node cluster shows the served
+cert flipping from `(STAGING) …` to a real LE prod intermediate
+within seconds of the first post-promote handshake.
+
+### Per-domain audit events
+
+The controller emits typed audit events via the `storageApply` shim
+(NOT the raw `apply` Applier — issue #146 — so a follower's emit
+forwards to the leader and lands once cluster-wide):
+
+- `CERTIFICATE_ISSUED(env: staging)` on `OnPromote` — "the staging
+  dry-run passed for this domain."
+- `CERTIFICATE_ISSUED(env: prod)` on `OnProdIssued` — "Caddy
+  successfully obtained a prod cert against the now-prod policy"
+  (issue #147; before v0.3.4 the env was hardcoded to `staging`
+  and `jaco status` reported `staging` forever even after a real
+  prod cert landed).
+- `CERTIFICATE_FAILED{stage_failed_at: staging}` on `OnStageFail`
+  — the staging chain landed but failed `SelfCheck`. The controller
+  records a 1 h backoff before re-staging the same domain.
+
+`jaco status` reads `ENVIRONMENT` directly from the cert blob key
+(`internal/controlplane/grpc/status.go`): the key path embeds the
+CA directory URL, so a blob under `acme-v02.api.letsencrypt.org-directory`
+renders as `prod` regardless of the audit-event sequence.
 
 ### Renewal
 

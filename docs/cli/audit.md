@@ -63,8 +63,13 @@ stream stays open and new events print as they're committed.
 `TYPE  TS  IDENTITY  PAYLOAD` where payload is `key=value …`.
 
 `-o json` collects events into a JSON array (non-follow) or emits NDJSON
-(one object per line, follow mode). `-o yaml` is **not implemented**;
-the call returns `-o yaml not implemented yet` if requested.
+(one object per line, follow mode). `jaco audit` is currently the **only**
+subcommand that honors `-o`; the root command's persistent guard
+(`cmd/jaco/root.go`) lets `audit` through via a cobra annotation and
+rejects any non-`table` value on every other subcommand with `output
+format "<fmt>" not implemented yet; only "table" is supported (#156)`.
+`-o yaml` is not implemented; requesting it from `jaco audit` returns
+`-o yaml not implemented yet`.
 
 ## Exit codes
 

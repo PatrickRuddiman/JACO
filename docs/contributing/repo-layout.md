@@ -40,16 +40,17 @@ What lives where. Use this as the map when you're about to grep.
 │   │   ├── runtime_attach/  # helper for runtime's container-create path
 │   │   └── wgmesh/      # wireguard interface management
 │   ├── ingress/         # embedded Caddy + custom certmagic.Storage
+│   │   ├── cachepoke/   # go:linkname into caddytls.certCache for promote eviction (#163)
 │   │   ├── challenge/   # HTTP-01 token coordination via raft
 │   │   ├── config/      # state → Caddy JSON
 │   │   ├── rebuild/     # debounced rebuild loop
-│   │   ├── stagefirst/  # LE staging dry-run controller (issue #41)
+│   │   ├── stagefirst/  # LE staging dry-run controller (issue #41) + pending-prod window (#154)
 │   │   └── storage/     # certmagic.Storage backed by raft
 │   ├── logging/         # log/slog convention; journal + JSON + text handlers
 │   ├── packaging/       # tarball signature/checksum verify for self-upgrade
 │   ├── runtime/         # docker engine driver
 │   │   ├── cgroupv2/    # per-node CPU + memory pressure collector (Linux)
-│   │   ├── compose/     # compose parser + closed-field validator
+│   │   ├── compose/     # compose parser + closed-field validator + per-service spec_hash for drift detection (#148)
 │   │   ├── dockerx/     # docker client glue
 │   │   ├── health/      # per-replica healthcheck poller
 │   │   ├── lifecycle/   # create / start / stop / remove

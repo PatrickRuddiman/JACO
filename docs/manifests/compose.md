@@ -31,7 +31,7 @@ create:
 | `volumes`      | named volumes and host bind mounts. Named volumes are scoped per-deployment as `jaco_<deployment>_<key>`; top-level `volumes.<key>.name:` (or `external: true`) is the compose-portable escape hatch for sharing storage across stacks. See [Migration → How JACO names volumes](../operations/migration.md#how-jaco-names-volumes) |
 | `ports`        | declares cluster-wide TCP listeners (see below)                |
 | `depends_on`   | **ordering only**; runtime starts in topological order. Closed condition enum: `service_started` (compose default) and `service_healthy`. `service_completed_successfully` is rejected — JACO does not model run-to-completion services. Self-deps and cross-deployment refs are rejected. Dependencies are evaluated **cluster-wide** (any replica of the dep service in the satisfying state unblocks the dependent, even on a different host). See [§ `depends_on` semantics](#depends_on-semantics) |
-| `healthcheck`  | docker built-in healthcheck; drives JACO replica state         |
+| `healthcheck`  | docker built-in healthcheck; drives JACO replica state. `healthcheck: { disable: true }` is treated as "no healthcheck" by the daemon's projection layer (`internal/runtime/compose/spec.go:healthcheckFromCompose` returns nil for `Disable=true`) — the runtime falls through to its container-running poll counter rather than waiting for a `State.Health.Status` Docker will never produce. Issue #152 |
 | `labels`       | merged with JACO-managed labels (see "Labels JACO adds")       |
 | `user`         | UID/GID for the container process                              |
 | `working_dir`  | container CWD                                                  |
@@ -138,6 +138,18 @@ Two practical consequences:
   directory for relative paths.
 - `jaco apply --dry-run` runs the resolver before computing the diff,
   so the diff reflects the values the daemon would actually see.
+
+The daemon's compose loader sets `SkipInterpolation: true` so the
+bytes it parses are treated as authoritative — the CLI is the sole
+interpolation site. This matters for `$VAR` shell escapes inside
+healthcheck `test:` lines and command vectors: a value like
+`mysqladmin -p$$MYSQL_ROOT_PASSWORD ping` collapses CLI-side per
+compose-spec to `mysqladmin -p$MYSQL_ROOT_PASSWORD ping`, and the
+daemon then preserves that `$VAR` byte-for-byte for the container
+shell to expand at runtime. Pre-v0.3.1 the daemon re-ran the
+compose-go interpolator against an always-empty env map, which
+resolved `$MYSQL_ROOT_PASSWORD` to `""` and silently broke the
+healthcheck. Issue #149.
 
 ### Top-level `environment:` (from jaco.yaml)
 

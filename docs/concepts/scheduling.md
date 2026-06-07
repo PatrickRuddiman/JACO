@@ -190,6 +190,48 @@ aborts with `pending: drain_timeout`.
 3. Submit all required mutations as one batched raft `Apply` so the
    apply-to-steady-state stays under the 15 s bar.
 
+## Per-service spec hash (drift detection)
+
+`ReplicaDesired.spec_hash` carries a SHA-256 of the canonical
+per-service slice of the resolved compose YAML (the `services.<name>`
+subtree, decoded then JSON-marshalled with sorted keys via
+[`compose.ServiceSpecHash`](../../internal/runtime/compose/spec_hash.go)).
+The scheduler computes it on every pass and includes it in the upsert
+gate:
+
+```go
+// internal/scheduler/scheduler.go
+if cur.GetHost() == host &&
+   cur.GetImage() == image &&
+   bytes.Equal(cur.GetSpecHash(), specHash) {
+    continue   // no upsert; container stays as-is
+}
+```
+
+A change in env values, healthcheck command, mounts, labels, or any
+other compose field flips the hash and fires a
+`ReplicaDesiredUpsert`. The FSM bumps `RaftIndex`, the runtime
+reconciler observes the mismatch via `lifecycle.Start`'s
+`matchesRaftIndex` check, and the container is stop+removed+created
+with the new spec baked in at create time.
+
+Pre-v0.3.1 the upsert gate compared only `(Host, Image)`. Any other
+compose change — most painfully a `.env` rotation that changed env
+VALUES under the same env-var KEYS — yielded `continue` → no upsert
+→ container reused with the stale env baked at the previous create
+(container env is immutable for the life of a container). The only
+escape was `docker rm -f` per stuck replica. Issue #148.
+
+The canonical form deliberately strips comments and reformatting:
+adding a `# explain this` comment to your compose file does **not**
+flip the hash, while semantic edits (env-value, healthcheck, mount
+path) do. The cosmetic-stability is pinned by `TestServiceSpecHash_StableUnderCosmeticEdits`.
+
+First post-upgrade scheduler pass on a cluster running pre-v0.3.1
+replicas computes the hash and finds it empty on every desired
+replica → emits upsert → recreates each container once. Acceptable
+rolling-deploy churn; the alternative was silent drift.
+
 ## Quotas
 
 Per-replica CPU/memory limits are enforced by the runtime (compose

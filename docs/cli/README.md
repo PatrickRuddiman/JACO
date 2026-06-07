@@ -57,6 +57,7 @@ remainder (`apply`, `status`, `logs`, `audit`, `backup`,
 | [`jaco restore`](backup-restore.md)          | restore a backup into this node's data dir |
 | [`jaco self-upgrade`](self-upgrade.md)       | verify + atomically swap both binaries     |
 | [`jaco validate`](validate.md)               | lint jaco.yaml / compose.yml locally       |
+| `jaco version` / `jaco --version`            | print the CLI version (and `--version` flag) |
 
 ## Global flags
 
@@ -65,7 +66,7 @@ Registered on the root command in `cmd/jaco/root.go`:
 | flag                  | env                | default | meaning                                                        |
 |-----------------------|--------------------|---------|----------------------------------------------------------------|
 | `--context <name>`    | —                  | —       | named cluster context (clusters-config support is in progress) |
-| `-o, --output <fmt>`  | —                  | `table` | output format: `table`, `json`, `yaml`                         |
+| `-o, --output <fmt>`  | —                  | `table` | output format. Currently honored only by `jaco audit` (`table` / `json`); every other subcommand rejects non-default values with `output format "<fmt>" not implemented yet; only "table" is supported (#156)` to fail loudly on CI scripts that parse the wrong shape |
 | `--server <addr>`     | —                  | —       | single-shot server override; bypasses context                  |
 | `-q, --quiet`         | —                  | `false` | suppress non-essential output                                  |
 | `-v, --verbose`       | —                  | `false` | debug-level logs to stderr                                     |
