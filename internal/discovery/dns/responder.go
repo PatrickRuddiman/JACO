@@ -118,17 +118,32 @@ func (r *Responder) Handle(req *dns.Msg) *dns.Msg {
 	// makes dual-stack getaddrinfo (Node/musl, glibc, Go) treat the name as
 	// nonexistent and fail with ENOTFOUND even though A resolves — silently
 	// breaking cross-host service discovery for real apps (issue #28).
-	nameExists := false
+	//
+	// forwarderFailed signals that an external lookup hit a transport / SERVFAIL
+	// chain across every upstream. We emit SERVFAIL (not NXDOMAIN) so downstream
+	// resolvers retry instead of negative-caching the name (issue #165).
+	var (
+		nameExists      bool
+		forwarderFailed bool
+	)
 	for _, q := range req.Question {
 		name := strings.ToLower(strings.TrimSuffix(q.Name, "."))
 		switch q.Qtype {
 		case dns.TypeA:
-			if r.answerA(resp, name, q.Name) {
+			exists, failed := r.answerA(resp, name, q.Name)
+			if exists {
 				nameExists = true
 			}
+			if failed {
+				forwarderFailed = true
+			}
 		case dns.TypeAAAA:
-			if r.answerAAAA(resp, name, q.Name) {
+			exists, failed := r.answerAAAA(resp, name, q.Name)
+			if exists {
 				nameExists = true
+			}
+			if failed {
+				forwarderFailed = true
 			}
 		default:
 			// Other types (MX, TXT, …): NODATA for existing names, NXDOMAIN
@@ -139,10 +154,16 @@ func (r *Responder) Handle(req *dns.Msg) *dns.Msg {
 		}
 	}
 	if len(resp.Answer) == 0 && resp.Rcode == dns.RcodeSuccess && !nameExists {
-		// Nothing answered, no upstream takeover happened, and the name does
-		// not exist → NXDOMAIN. (An existing name with no record of the queried
-		// type stays NOERROR-empty, i.e. NODATA — see nameExists above.)
-		resp.Rcode = dns.RcodeNameError
+		if forwarderFailed {
+			// Upstream chain failed — SERVFAIL so the downstream resolver
+			// retries instead of negative-caching this name (issue #165).
+			resp.Rcode = dns.RcodeServerFailure
+		} else {
+			// Nothing answered and the name does not exist → NXDOMAIN.
+			// (An existing name with no record of the queried type stays
+			// NOERROR-empty, i.e. NODATA — see nameExists above.)
+			resp.Rcode = dns.RcodeNameError
+		}
 	}
 	return resp
 }
@@ -151,12 +172,12 @@ func (r *Responder) Handle(req *dns.Msg) *dns.Msg {
 // the upstream when the name is clearly external (contains a dot). It returns
 // whether the name exists (resolves) — so an existing name with no A answer
 // becomes NODATA rather than NXDOMAIN.
-func (r *Responder) answerA(resp *dns.Msg, name, originalName string) (exists bool) {
+func (r *Responder) answerA(resp *dns.Msg, name, originalName string) (exists, forwarderFailed bool) {
 	service, inScope := r.parseInScopeName(name)
 	if inScope {
 		ips := r.lookup(service)
 		if len(ips) == 0 {
-			return false // in-scope but unknown service → NXDOMAIN
+			return false, false // in-scope but unknown service → NXDOMAIN
 		}
 		// Randomize order for poor-man's load balancing.
 		shuffled := append([]net.IP(nil), ips...)
@@ -169,16 +190,22 @@ func (r *Responder) answerA(resp *dns.Msg, name, originalName string) (exists bo
 				A:   ip.To4(),
 			})
 		}
-		return true
+		return true, false
 	}
 	// External name — forward.
 	if r.forwarder == nil {
-		return false
+		// No forwarder wired (test scaffolding); treat as NXDOMAIN, not
+		// SERVFAIL — there is nothing transiently failing to retry against.
+		return false, false
 	}
 	ips, err := r.forwarder(name)
 	if err != nil {
 		r.log().Warn("upstream resolver fallback failed", "name", name, "error", err)
-		return false
+		// Upstream chain failed (every configured upstream returned a
+		// transport/SERVFAIL error). Surface as SERVFAIL via Handle's
+		// forwarderFailed flag so downstream resolvers retry instead of
+		// negative-caching the name. Issue #165.
+		return false, true
 	}
 	for _, ip := range ips {
 		if v4 := ip.To4(); v4 != nil {
@@ -188,7 +215,9 @@ func (r *Responder) answerA(resp *dns.Msg, name, originalName string) (exists bo
 			})
 		}
 	}
-	return len(ips) > 0 // name resolved upstream, even if it had no IPv4
+	// name resolved upstream, even if it had no IPv4 → exists=true, NODATA
+	// for AAAA-only names.
+	return len(ips) > 0, false
 }
 
 // answerAAAA handles AAAA queries. In-scope names are IPv4-only, so an existing
@@ -197,18 +226,18 @@ func (r *Responder) answerA(resp *dns.Msg, name, originalName string) (exists bo
 // reports exists even when it has no AAAA. Returning existence here is what
 // keeps dual-stack getaddrinfo working: the AAAA leg becomes NODATA, not the
 // NXDOMAIN that would otherwise sink the whole lookup (issue #28).
-func (r *Responder) answerAAAA(resp *dns.Msg, name, originalName string) (exists bool) {
+func (r *Responder) answerAAAA(resp *dns.Msg, name, originalName string) (exists, forwarderFailed bool) {
 	if _, inScope := r.parseInScopeName(name); inScope {
 		// IPv4-only overlay: the name exists iff it has A records; it never has
 		// AAAA, so report existence (→ NODATA) without adding answers.
-		return r.nameResolvable(name)
+		return r.nameResolvable(name), false
 	}
 	if r.forwarder == nil {
-		return false
+		return false, false
 	}
 	ips, err := r.forwarder(name)
 	if err != nil {
-		return false
+		return false, true
 	}
 	for _, ip := range ips {
 		if ip.To4() == nil { // an IPv6 address
@@ -218,7 +247,7 @@ func (r *Responder) answerAAAA(resp *dns.Msg, name, originalName string) (exists
 			})
 		}
 	}
-	return len(ips) > 0
+	return len(ips) > 0, false
 }
 
 // nameResolvable reports whether name resolves at all (in-scope service with

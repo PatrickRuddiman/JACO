@@ -142,11 +142,28 @@ func TestHandle_ExternalNameForwardedToUpstream(t *testing.T) {
 	}
 }
 
-func TestHandle_ExternalNameForwarderErrorReturnsNXDOMAIN(t *testing.T) {
+func TestHandle_ExternalNameForwarderErrorReturnsSERVFAIL(t *testing.T) {
+	// Issue #165: when every configured upstream fails (transport or
+	// SERVFAIL across the chain), the responder MUST surface SERVFAIL —
+	// NOT NXDOMAIN. Downstream resolvers negative-cache NXDOMAIN, which
+	// burns the operator's external name for the TTL window even if the
+	// upstream chain recovers; SERVFAIL gets retried.
 	fw := jdns.LookupHostFn(func(string) ([]net.IP, error) {
-		return nil, errors.New("upstream nope")
+		return nil, errors.New("upstream chain failed")
 	})
 	r := jdns.New(jdns.Scope{Deployment: "x", Network: "y"}, jdns.ServiceMap{}, fw)
+	resp := r.Handle(aQuery("missing.example.com"))
+	if resp.Rcode != mdns.RcodeServerFailure {
+		t.Errorf("rcode = %v, want SERVFAIL (#165)", mdns.RcodeToString[resp.Rcode])
+	}
+}
+
+func TestHandle_ExternalNameNoForwarderReturnsNXDOMAIN(t *testing.T) {
+	// Test scaffolding can construct a Responder with forwarder=nil —
+	// every dotted out-of-scope name then resolves to NXDOMAIN (not
+	// SERVFAIL): there is no upstream chain to retry, the name truly
+	// doesn't resolve in this responder's view of the world.
+	r := jdns.New(jdns.Scope{Deployment: "x", Network: "y"}, jdns.ServiceMap{}, nil)
 	resp := r.Handle(aQuery("missing.example.com"))
 	if resp.Rcode != mdns.RcodeNameError {
 		t.Errorf("rcode = %v, want NXDOMAIN", mdns.RcodeToString[resp.Rcode])
