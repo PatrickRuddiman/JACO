@@ -823,14 +823,24 @@ func (x *Deployment) GetAcmeEmail() string {
 }
 
 type ReplicaDesired struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Deployment    string                 `protobuf:"bytes,2,opt,name=deployment,proto3" json:"deployment,omitempty"`
-	Service       string                 `protobuf:"bytes,3,opt,name=service,proto3" json:"service,omitempty"`
-	Index         int32                  `protobuf:"varint,4,opt,name=index,proto3" json:"index,omitempty"`
-	Host          string                 `protobuf:"bytes,5,opt,name=host,proto3" json:"host,omitempty"`
-	Image         string                 `protobuf:"bytes,6,opt,name=image,proto3" json:"image,omitempty"`
-	RaftIndex     uint64                 `protobuf:"varint,7,opt,name=raft_index,json=raftIndex,proto3" json:"raft_index,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Id         string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Deployment string                 `protobuf:"bytes,2,opt,name=deployment,proto3" json:"deployment,omitempty"`
+	Service    string                 `protobuf:"bytes,3,opt,name=service,proto3" json:"service,omitempty"`
+	Index      int32                  `protobuf:"varint,4,opt,name=index,proto3" json:"index,omitempty"`
+	Host       string                 `protobuf:"bytes,5,opt,name=host,proto3" json:"host,omitempty"`
+	Image      string                 `protobuf:"bytes,6,opt,name=image,proto3" json:"image,omitempty"`
+	RaftIndex  uint64                 `protobuf:"varint,7,opt,name=raft_index,json=raftIndex,proto3" json:"raft_index,omitempty"`
+	// spec_hash is the SHA-256 of the canonical, per-service slice of the
+	// resolved compose YAML this replica was scheduled from (issue #148). The
+	// scheduler computes it on each pass and includes it in the upsert gate:
+	// a change in env values, healthcheck command, labels, mounts, or any
+	// other compose field bumps the hash, causes a ReplicaDesiredUpsert, and
+	// the runtime reconciler picks up the new RaftIndex and recreates the
+	// container. Empty for replicas scheduled by pre-v0.3.1 daemons; the
+	// first post-upgrade scheduler pass populates it and may recreate every
+	// replica once (the rolling-deploy mechanics that already exist apply).
+	SpecHash      []byte `protobuf:"bytes,8,opt,name=spec_hash,json=specHash,proto3" json:"spec_hash,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -912,6 +922,13 @@ func (x *ReplicaDesired) GetRaftIndex() uint64 {
 		return x.RaftIndex
 	}
 	return 0
+}
+
+func (x *ReplicaDesired) GetSpecHash() []byte {
+	if x != nil {
+		return x.SpecHash
+	}
+	return nil
 }
 
 type ReplicaObserved struct {
@@ -2080,7 +2097,7 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	" \x01(\tR\tacmeEmail\x1a@\n" +
 	"\x12StatusDetailsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb9\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd6\x01\n" +
 	"\x0eReplicaDesired\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1e\n" +
 	"\n" +
@@ -2091,7 +2108,8 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\x04host\x18\x05 \x01(\tR\x04host\x12\x14\n" +
 	"\x05image\x18\x06 \x01(\tR\x05image\x12\x1d\n" +
 	"\n" +
-	"raft_index\x18\a \x01(\x04R\traftIndex\"\xad\x03\n" +
+	"raft_index\x18\a \x01(\x04R\traftIndex\x12\x1b\n" +
+	"\tspec_hash\x18\b \x01(\fR\bspecHash\"\xad\x03\n" +
 	"\x0fReplicaObserved\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12+\n" +
 	"\x05state\x18\x02 \x01(\x0e2\x15.jaco.v1.ReplicaStateR\x05state\x12\x12\n" +

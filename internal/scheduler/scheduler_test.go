@@ -1,6 +1,7 @@
 package scheduler_test
 
 import (
+	"bytes"
 	"context"
 	"sync/atomic"
 	"testing"
@@ -634,4 +635,69 @@ func sameReplicas(a, b map[string]struct{ host, image string }) bool {
 		}
 	}
 	return true
+}
+
+// TestReconcile_EnvValueChangeForcesUpsert pins the fix for issue #148:
+// when the resolved compose YAML changes a service's env VALUE (image and
+// host stay the same), the scheduler MUST emit a ReplicaDesiredUpsert so
+// the FSM bumps RaftIndex and the runtime reconciler recreates the
+// container with the new env baked in. Pre-fix the upsert gate only
+// compared (Host, Image) and silently skipped — leaving the container
+// pinned to its first env values across every subsequent apply.
+func TestReconcile_EnvValueChangeForcesUpsert(t *testing.T) {
+	s, st, f, _ := newScheduler(t, true)
+	var raftIdx uint64
+
+	seedNode(t, f, "node-a", &raftIdx)
+	before := `services:
+  web:
+    image: nginx:1.27
+    environment:
+      DB_PASS: hunter2
+`
+	seedDeployment(t, f, "sample", 1, before, &raftIdx)
+	s.Reconcile(context.Background())
+
+	pre := st.ReplicasDesired.List()
+	if len(pre) != 1 {
+		t.Fatalf("after seed: ReplicasDesired = %d, want 1", len(pre))
+	}
+	preIdx := pre[0].GetRaftIndex()
+	preHash := pre[0].GetSpecHash()
+	if len(preHash) == 0 {
+		t.Errorf("spec_hash should be populated on the initial upsert")
+	}
+
+	// Re-apply with the SAME compose: scheduler should NOT bump RaftIndex
+	// (no drift). Pre-fix this was the only path that wouldn't churn.
+	seedDeployment(t, f, "sample", 1, before, &raftIdx)
+	s.Reconcile(context.Background())
+	if got := st.ReplicasDesired.List()[0].GetRaftIndex(); got != preIdx {
+		t.Errorf("idempotent re-apply bumped RaftIndex from %d to %d", preIdx, got)
+	}
+
+	// Change the env VALUE only. Image, host, services unchanged. Pre-fix:
+	// scheduler short-circuited at the (Host, Image) gate, no upsert
+	// emitted, container stays pinned to hunter2 forever. Post-fix: hash
+	// flips, upsert fires, RaftIndex bumps.
+	after := `services:
+  web:
+    image: nginx:1.27
+    environment:
+      DB_PASS: hunter3
+`
+	seedDeployment(t, f, "sample", 1, after, &raftIdx)
+	s.Reconcile(context.Background())
+
+	post := st.ReplicasDesired.List()
+	if len(post) != 1 {
+		t.Fatalf("after env edit: ReplicasDesired = %d, want 1", len(post))
+	}
+	if post[0].GetRaftIndex() <= preIdx {
+		t.Errorf("env-value change did not bump RaftIndex: pre=%d post=%d (drift went undetected — #148 regression)",
+			preIdx, post[0].GetRaftIndex())
+	}
+	if bytes.Equal(post[0].GetSpecHash(), preHash) {
+		t.Errorf("env-value change did not flip spec_hash: hash=%x", preHash)
+	}
 }

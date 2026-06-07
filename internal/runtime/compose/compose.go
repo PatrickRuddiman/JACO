@@ -75,6 +75,17 @@ func loadBytes(workingDir, filename string, body []byte, rejectEnvFiles bool) (*
 		// We do our own field-level validation; let compose-go normalize but
 		// skip its consistency check which can reject otherwise-valid graphs.
 		opts.SkipConsistencyCheck = true
+		// Bytes have already been fully interpolated CLI-side (jaco apply
+		// runs compose.SubstituteEnvVars before Apply, with the operator's
+		// top-level `environment:` file as the source). The daemon must NOT
+		// re-interpolate against its always-empty Environment map (issue
+		// #149): (a) it would emit "variable not set" warnings on every
+		// reconcile tick for legitimate `$VAR` shell-escapes in healthcheck
+		// commands etc., and (b) it would corrupt those escapes — the CLI
+		// already collapsed `$$VAR` to `$VAR` per compose-spec; re-running
+		// the substitution treats `$VAR` as a reference and resolves it
+		// to "".
+		opts.SkipInterpolation = true
 	})
 	if err != nil {
 		if verr := translateLegacyComposeError(err); verr != nil {
