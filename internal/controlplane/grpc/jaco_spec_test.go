@@ -970,3 +970,48 @@ func TestValidateJacoYAML_AcmeEmail(t *testing.T) {
 		})
 	}
 }
+
+// TestParseJacoYAML_EnvironmentRoundtrip — the top-level `environment:`
+// field round-trips as a path string verbatim on JacoYAML.Environment.
+// The daemon parses jaco.yaml too (validate path + ApplyRequest), so it
+// must accept manifests that carry this field without acting on it —
+// resolution is CLI-side; the daemon never reads the operator's
+// filesystem. Omitting the field yields the empty string.
+func TestParseJacoYAML_EnvironmentRoundtrip(t *testing.T) {
+	yaml := `
+deployment: myapp
+environment: .env
+routes:
+  - {domain: a.example.com, service: web, port: 80}
+`
+	j, err := ParseJacoYAML([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if j.Environment != ".env" {
+		t.Errorf("Environment = %q, want .env", j.Environment)
+	}
+	// Validation must accept it — no rule rejects environment at the
+	// daemon (the value is opaque from the daemon's perspective).
+	if code, msg, ok := validateJacoYAML(j); !ok {
+		t.Fatalf("validate rejected manifest with environment field: code=%q msg=%q", code, msg)
+	}
+}
+
+// TestParseJacoYAML_EnvironmentOmittedIsEmpty — omitting the field
+// pins the no-op default: Environment == "" → CLI skips env loading,
+// SubstituteEnvVars takes its fast path, no manifest byte changes.
+func TestParseJacoYAML_EnvironmentOmittedIsEmpty(t *testing.T) {
+	yaml := `
+deployment: myapp
+routes:
+  - {domain: a.example.com, service: web, port: 80}
+`
+	j, err := ParseJacoYAML([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if j.Environment != "" {
+		t.Errorf("Environment = %q, want empty string when field omitted", j.Environment)
+	}
+}

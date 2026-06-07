@@ -2,6 +2,7 @@
 sources:
   - internal/runtime/compose/
   - internal/controlplane/grpc/jaco_spec.go
+  - tests/samples/jaco/env-interpolation/
 ---
 
 # Manifest examples
@@ -281,6 +282,63 @@ mechanism as HTTP — within the route-removal window after the
 unhealthy replica is observed.
 
 Publishing 80 or 443 is rejected — those belong to the Caddy ingress.
+
+## 7. Stack-scoped `.env` for compose-style `${VAR}` interpolation
+
+Move registry URLs, database credentials, and any other per-stack
+value out of the committed compose file and into a sibling `.env`
+the CLI loads at apply time. The `jaco.yaml` top-level
+[`environment: <path>`](jaco-yaml.md#environment) is the entry point;
+every `${VAR}` in the compose document interpolates from there.
+Real-world bench shape under
+[`tests/samples/jaco/env-interpolation/`](../../tests/samples/jaco/env-interpolation/README.md).
+
+`jaco.yaml`:
+
+```yaml
+deployment: env-demo
+environment: .env            # path relative to this jaco.yaml
+routes:
+  - domain: env-demo.example.com
+    service: api
+    port: 8080
+    tls: off
+```
+
+`compose.yml`:
+
+```yaml
+services:
+  api:
+    image: ${REGISTRY:-docker.io}/myorg/api:1
+    environment:
+      DB_URL: ${DB_URL}
+      REGION: ${AWS_REGION:-us-east-1}
+```
+
+`.env` (sibling of `jaco.yaml`; keep out of git):
+
+```
+REGISTRY=ghcr.io
+DB_URL=postgres://db.internal/env-demo
+# AWS_REGION not set; the ${AWS_REGION:-us-east-1} default applies.
+```
+
+What the daemon receives, after CLI-side interpolation:
+
+```yaml
+services:
+  api:
+    image: ghcr.io/myorg/api:1
+    environment:
+      DB_URL: postgres://db.internal/env-demo
+      REGION: us-east-1
+```
+
+The interpolation source is the env file only — the operator's
+process environment does not participate. Service-level `env_file:`
+keeps working alongside the new field; the precedence rules are in
+[Supported compose fields → `env_file` resolution](compose.md#env_file-resolution).
 
 ## See also
 

@@ -147,6 +147,41 @@ a new daemon, or the document was synthesized by a tool that bypassed
 the CLI's resolver. Upgrade the CLI (`jaco self-upgrade`) or run the
 resolution step yourself.
 
+## `load environment file <path>: …`
+
+`jaco apply` failed before talking to the daemon: the
+[`environment: <path>`](../manifests/jaco-yaml.md#environment) on the
+jaco.yaml resolved to a path the CLI could not read. The path is
+resolved **relative to the jaco.yaml's directory** (or honored
+verbatim if absolute). The most common shape is a missing file —
+stage the `.env` next to `jaco.yaml` before re-applying. The error
+is CLI-side only; the cluster state is untouched.
+
+## `interpolate <path>: ... required variable <NAME> is missing a value`
+
+The compose document referenced `${NAME:?msg}` (the required-variable
+form), and `NAME` is absent from the `environment:` file the CLI
+loaded. The full chain reads
+`interpolate <compose-path>: interpolate ${VAR} at line N col M: required variable <NAME> is missing a value: <msg>`
+— the line/column point at the offending site in the original
+compose file. Either:
+
+- add `NAME=…` to the env file the jaco.yaml points at, or
+- relax the reference to `${NAME:-<default>}` if the variable is
+  genuinely optional.
+
+Process-environment passthrough is NOT honored — only the env file
+from jaco.yaml's `environment:` participates in the interpolation
+map. CLI-side only; the cluster state is untouched.
+
+## `interpolate <path>: ... invalid template`
+
+The CLI's interpolation step rejected a malformed `${…}` reference
+(e.g. an unclosed brace). The full chain reads
+`interpolate <compose-path>: interpolate ${VAR} at line N col M: invalid template …`
+— the line/column point at the offending site. Fix the reference
+and re-apply. CLI-side only.
+
 ## `port_conflict`
 
 Apply rejected because two compose services in the deployment publish

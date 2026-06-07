@@ -112,7 +112,11 @@ For every `volumes:` entry, decide:
   (Step 5) and the service pinned (Step 4).
 - **Config / source bind mounts** (`./nginx.conf:/etc/nginx/...`,
   `./src:/app`) → these host paths won't exist on cluster nodes. Bake
-  config into the image, or deliver it via `environment` / `env_file`.
+  config into the image, deliver it via `environment` / `env_file`, or
+  hoist per-stack values into a top-level
+  [`environment: <path>`](../manifests/jaco-yaml.md#environment) on
+  `jaco.yaml` and reference them via `${VAR}` in the compose file —
+  see Step 4 below for the migration shape.
 
 ## Step 2 — Stand up the cluster
 
@@ -242,6 +246,49 @@ routes:
 
 Service names in `jaco.yaml` must match compose service keys exactly, or
 the apply rejects with `unknown_service`.
+
+### Hoist per-stack values into `environment:` (optional)
+
+Compose `.env` files at the project root are not honored by JACO
+(the daemon never reads operator-side files). The equivalent shape
+is the top-level [`environment: <path>`](../manifests/jaco-yaml.md#environment)
+on `jaco.yaml`, loaded CLI-side and used as the `${VAR}`
+interpolation source for the whole compose document.
+
+If your single-host stack relied on a project `.env`:
+
+```sh
+# single-host today
+REGISTRY=ghcr.io DB_URL=postgres://… docker compose up
+# or implicitly via ./.env
+```
+
+rename the file and point `jaco.yaml` at it explicitly:
+
+```yaml
+# jaco.yaml
+deployment: myapp
+environment: .env            # path relative to this jaco.yaml
+routes: ...
+services: ...
+```
+
+```yaml
+# docker-compose.yml
+services:
+  api:
+    image: ${REGISTRY}/myorg/api:1
+    environment:
+      DB_URL: ${DB_URL}
+```
+
+`${VAR}` references resolve from the env file the CLI loads —
+process-environment passthrough is deliberately NOT honored
+(manifests stay explicit and reproducible across operators / hosts).
+Service-level `env_file:` keeps working in parallel; per
+compose-spec precedence, the explicit `environment:` value on a
+service wins over a service-level `env_file:` entry for matching
+keys.
 
 ### Validate offline
 

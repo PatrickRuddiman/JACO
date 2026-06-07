@@ -10,6 +10,10 @@ coverage.*
 tests/testbed/.env.local
 tests/testbed/.ssh/
 
+# Per-stack secrets baked into ${VAR} interpolation by jaco.yaml's top-level
+# `environment:` field — written by the stack's bootstrap, never committed.
+tests/samples/jaco/.env
+
 # Benchmark run output (summaries, scraped metrics, bundles).
 tests/samples/bench/results/
 
