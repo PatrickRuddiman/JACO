@@ -38,9 +38,23 @@ type Controller struct {
 	// promoted to prod. The daemon emits the CERTIFICATE_ISSUED(staging) audit
 	// event + triggers a rebuild here.
 	OnPromote func(domain string)
+	// OnProdIssued is called exactly once per promotion, the moment the
+	// controller observes a prod cert landing in raft for a previously
+	// promoted domain (pendingProd → cleared because IssuedProd flipped
+	// true). The daemon emits CERTIFICATE_ISSUED(prod) here so `jaco status`
+	// reports the right environment as soon as the prod cert is real.
+	// See issue #147.
+	OnProdIssued func(domain string)
 	// OnStageFail is called when a staging chain is present but fails the
 	// self-check. The daemon emits CERTIFICATE_FAILED{stage_failed_at:staging}.
 	OnStageFail func(domain string, err error)
+	// ClearStagingCert is called on each promotion BEFORE OnPromote fires.
+	// The daemon wipes the staging-issued cert blobs for the domain from
+	// raft (and the on-disk fallback cache) so the next config reload does
+	// not see a staging key under the prod-CA's storage namespace and the
+	// stale leaf cannot be served forever. See issue #158. nil → no-op,
+	// which preserves pre-#158 behavior for callers that don't wire it.
+	ClearStagingCert func(domain string)
 	// Logger receives structured progress lines. nil → a discard logger.
 	Logger *slog.Logger
 	// Now is the clock (tests pin it). nil → time.Now.
@@ -166,6 +180,18 @@ func (c *Controller) Reconcile(_ context.Context, domains []string) (changed boo
 			// ShouldStage=true) and the flip-flop would never let prod
 			// issuance complete. Issue #154.
 			c.pendingProd[domain] = now.Add(PendingProdWindow)
+			// Wipe the staging cert blobs from storage BEFORE the rebuild
+			// fires. Without this, certmagic's in-process cache + the prod
+			// automation policy keep serving the cached staging leaf for its
+			// full 90-day validity and the prod ACME order is never
+			// attempted — the operator sees the "(STAGING) Let's Encrypt"
+			// issuer indefinitely. See issue #158. We fire this BEFORE
+			// OnPromote so the rebuild OnPromote schedules sees an empty
+			// staging-namespaced storage prefix and any peer's raft-driven
+			// reseed cannot resurrect it.
+			if c.ClearStagingCert != nil {
+				c.ClearStagingCert(domain)
+			}
 			if c.OnPromote != nil {
 				c.OnPromote(domain)
 			}
@@ -184,7 +210,15 @@ func (c *Controller) Reconcile(_ context.Context, domains []string) (changed boo
 				// Prod cert landed in raft — promotion stuck. Clear the
 				// marker. ShouldStage's "already issued" rule (#3) keeps
 				// this domain out of staging permanently from here on.
+				// Fire OnProdIssued exactly once for this promotion so the
+				// daemon can emit CERTIFICATE_ISSUED(prod) at the precise
+				// moment the prod cert becomes real (issue #147 — without
+				// this `jaco status` reports `staging` forever because the
+				// only ISSUED audit event ever emitted was the staging one).
 				delete(c.pendingProd, domain)
+				if c.OnProdIssued != nil {
+					c.OnProdIssued(domain)
+				}
 			case now.Before(until):
 				// Prod ACME order is still in flight; do NOT re-stage.
 				continue

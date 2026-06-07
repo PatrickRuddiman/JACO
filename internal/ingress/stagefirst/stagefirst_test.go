@@ -292,3 +292,167 @@ func TestController_PendingWindowExpiresWithoutProdCertReStages(t *testing.T) {
 		t.Errorf("after expired window: expected re-stage, but domain not in staging set")
 	}
 }
+
+// TestController_PromoteFiresClearStagingCert pins issue #158: when a
+// domain is promoted from staging→prod, the controller MUST invoke the
+// ClearStagingCert callback exactly once for that domain BEFORE OnPromote
+// fires (so the storage wipe happens before the rebuild that would
+// otherwise let certmagic keep serving the cached staging leaf). Pre-fix
+// no such callback existed and the staging cert blob sat in raft for its
+// full 90-day validity, blocking prod issuance and forcing the operator
+// to `rm -rf /var/lib/jaco/ingress/cache` by hand.
+func TestController_PromoteFiresClearStagingCert(t *testing.T) {
+	stagingChain := makeLeaf(t, "new.example.com")
+	var clearedOrder []string
+	var promotedOrder []string
+	var seq []string
+	ctrl := &stagefirst.Controller{
+		LoadStagingChain: func(string) ([]byte, bool) { return stagingChain, true },
+		IssuedProd:       func(string) bool { return false },
+		ClearStagingCert: func(d string) {
+			clearedOrder = append(clearedOrder, d)
+			seq = append(seq, "clear:"+d)
+		},
+		OnPromote: func(d string) {
+			promotedOrder = append(promotedOrder, d)
+			seq = append(seq, "promote:"+d)
+		},
+		OnStageFail: func(string, error) { t.Errorf("unexpected stage fail") },
+		Now:         time.Now,
+	}
+	ctx := context.Background()
+	domains := []string{"new.example.com"}
+
+	// Tick 1: stage.
+	ctrl.Reconcile(ctx, domains)
+	// Tick 2: promote → ClearStagingCert + OnPromote in that order.
+	ctrl.Reconcile(ctx, domains)
+
+	if got, want := clearedOrder, []string{"new.example.com"}; len(got) != 1 || got[0] != want[0] {
+		t.Errorf("ClearStagingCert calls = %v, want %v (#158 regression)", got, want)
+	}
+	if got, want := promotedOrder, []string{"new.example.com"}; len(got) != 1 || got[0] != want[0] {
+		t.Errorf("OnPromote calls = %v, want %v", got, want)
+	}
+	if len(seq) != 2 || seq[0] != "clear:new.example.com" || seq[1] != "promote:new.example.com" {
+		t.Errorf("ClearStagingCert must fire BEFORE OnPromote; got %v (#158)", seq)
+	}
+
+	// Re-issue is a one-shot per promotion: extra reconcile ticks during the
+	// pending-prod window MUST NOT re-fire ClearStagingCert (otherwise we'd
+	// thrash storage every tick).
+	for i := 0; i < 5; i++ {
+		ctrl.Reconcile(ctx, domains)
+	}
+	if len(clearedOrder) != 1 {
+		t.Errorf("ClearStagingCert fired %d times across pending window; want exactly 1 (#158)", len(clearedOrder))
+	}
+}
+
+// TestController_PromoteWithoutClearStagingCertSafe pins back-compat for
+// callers that don't wire ClearStagingCert: OnPromote still fires and the
+// promote path doesn't panic when the callback is nil. Without this nil
+// guard the daemon would crash the first time any tls:auto domain promoted.
+func TestController_PromoteWithoutClearStagingCertSafe(t *testing.T) {
+	stagingChain := makeLeaf(t, "new.example.com")
+	var promoted int
+	ctrl := &stagefirst.Controller{
+		LoadStagingChain: func(string) ([]byte, bool) { return stagingChain, true },
+		IssuedProd:       func(string) bool { return false },
+		OnPromote:        func(string) { promoted++ },
+		Now:              time.Now,
+		// ClearStagingCert deliberately left nil.
+	}
+	ctx := context.Background()
+	ctrl.Reconcile(ctx, []string{"new.example.com"}) // stage
+	ctrl.Reconcile(ctx, []string{"new.example.com"}) // promote
+	if promoted != 1 {
+		t.Errorf("OnPromote fired %d times; want 1", promoted)
+	}
+}
+
+// TestController_OnProdIssuedFiresOnceWhenProdLands pins issue #147: when
+// the controller observes a prod cert landing in raft for a previously
+// promoted (pending-prod) domain, it MUST fire OnProdIssued exactly once.
+// The daemon hooks this to emit CERTIFICATE_ISSUED(prod), without which
+// `jaco status` reports `ENVIRONMENT staging` forever because the only
+// CERTIFICATE_ISSUED audit event ever emitted is the staging one fired
+// from OnPromote.
+func TestController_OnProdIssuedFiresOnceWhenProdLands(t *testing.T) {
+	now := time.Now()
+	clock := func() time.Time { return now }
+	prodIssued := false
+	stagingChain := makeLeaf(t, "new.example.com")
+	var prodHookCalls []string
+	ctrl := &stagefirst.Controller{
+		LoadStagingChain: func(string) ([]byte, bool) { return stagingChain, true },
+		IssuedProd:       func(string) bool { return prodIssued },
+		OnPromote:        func(string) {},
+		OnProdIssued:     func(d string) { prodHookCalls = append(prodHookCalls, d) },
+		Now:              clock,
+	}
+	ctx := context.Background()
+	domains := []string{"new.example.com"}
+
+	ctrl.Reconcile(ctx, domains) // stage
+	ctrl.Reconcile(ctx, domains) // promote (pending)
+
+	// Inside the pending window, prod hasn't landed yet — OnProdIssued
+	// MUST stay silent.
+	for i := 0; i < 3; i++ {
+		now = now.Add(10 * time.Second)
+		ctrl.Reconcile(ctx, domains)
+	}
+	if len(prodHookCalls) != 0 {
+		t.Fatalf("OnProdIssued fired %d times before prod cert landed; want 0", len(prodHookCalls))
+	}
+
+	// Prod cert lands → next Reconcile flips pendingProd → fires OnProdIssued
+	// exactly once with the right domain.
+	prodIssued = true
+	now = now.Add(10 * time.Second)
+	ctrl.Reconcile(ctx, domains)
+	if got, want := prodHookCalls, []string{"new.example.com"}; len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("OnProdIssued calls = %v, want %v (#147)", got, want)
+	}
+
+	// And NEVER fires again — subsequent ticks see IssuedProd=true but the
+	// pendingProd marker was already cleared, so the switch arm doesn't run.
+	for i := 0; i < 5; i++ {
+		now = now.Add(10 * time.Second)
+		ctrl.Reconcile(ctx, domains)
+	}
+	if len(prodHookCalls) != 1 {
+		t.Errorf("OnProdIssued re-fired across later ticks (%d total); want exactly 1 per promotion (#147)", len(prodHookCalls))
+	}
+}
+
+// TestController_PendingWindowExpiryDoesNotFireOnProdIssued pins the
+// negative of #147: if the prod ACME order genuinely fails (window
+// expires without prodCertIssued flipping true), OnProdIssued MUST NOT
+// fire. Otherwise the audit trail would falsely claim a prod cert was
+// issued.
+func TestController_PendingWindowExpiryDoesNotFireOnProdIssued(t *testing.T) {
+	now := time.Now()
+	clock := func() time.Time { return now }
+	stagingChain := makeLeaf(t, "expired.example.com")
+	var prodHookCalls int
+	ctrl := &stagefirst.Controller{
+		LoadStagingChain: func(string) ([]byte, bool) { return stagingChain, true },
+		IssuedProd:       func(string) bool { return false }, // prod never lands
+		OnPromote:        func(string) {},
+		OnProdIssued:     func(string) { prodHookCalls++ },
+		Now:              clock,
+	}
+	ctx := context.Background()
+	domains := []string{"expired.example.com"}
+
+	ctrl.Reconcile(ctx, domains) // stage
+	ctrl.Reconcile(ctx, domains) // promote
+	now = now.Add(stagefirst.PendingProdWindow + time.Minute)
+	ctrl.Reconcile(ctx, domains) // window expires
+
+	if prodHookCalls != 0 {
+		t.Errorf("OnProdIssued fired %d times after window expiry; want 0 (#147)", prodHookCalls)
+	}
+}

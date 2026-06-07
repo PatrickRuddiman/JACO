@@ -30,6 +30,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/ingress/config"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/rebuild"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/stagefirst"
+	"github.com/PatrickRuddiman/jaco/internal/ingress/storage"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -169,6 +170,65 @@ func prodCertIssued(st *state.State, domain string) bool {
 		}
 	}
 	return false
+}
+
+// clearStagingCertBlobs deletes every staging-issued cert blob for domain
+// from the JacoStorage (raft + on-disk fallback cache) and returns the
+// count actually removed.
+//
+// Issue #158: after a staging→prod promotion the rebuild swaps the
+// automation policy's Issuer.CA, but certmagic's in-process cert cache +
+// the raft-replicated staging blob keep the cached staging leaf serving
+// forever — the prod ACME order is never attempted. Wiping the staging
+// blobs here removes the on-disk fallback resurrection path and makes a
+// subsequent daemon restart land the prod cert without manual
+// `rm -rf /var/lib/jaco/ingress/cache`. Eviction of certmagic's in-process
+// cache requires a caddy API JACO doesn't yet expose; that's tracked as a
+// follow-up in the PR body.
+//
+// Iteration is by full key (not a prefix delete) because certmagic stores
+// multiple resources per cert (`.crt`, `.key`, `.json`) under the same
+// CA-and-domain prefix, and JacoStorage exposes only single-key Delete;
+// adding a bulk DeletePrefix helper isn't worth the FSM surface for the
+// 2–3 keys a single domain ever has.
+func clearStagingCertBlobs(ctx context.Context, store *storage.JacoStorage, st *state.State, domain string, logger *slog.Logger) int {
+	if store == nil {
+		return 0
+	}
+	// Snapshot the matching keys first — Delete raft-Applies asynchronously
+	// and we don't want to iterate the live CertBlobs view while it may
+	// shift under us.
+	var keys []string
+	needle := "/" + domain + "/"
+	for _, b := range st.CertBlobs.List() {
+		k := b.GetKey()
+		if !strings.Contains(k, "staging") {
+			continue
+		}
+		if !strings.Contains(k, needle) {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	removed := 0
+	for _, k := range keys {
+		if err := store.Delete(ctx, k); err != nil {
+			// Best-effort: a single Delete failure (e.g., follower → leader
+			// forward racing a leader change) should not block the
+			// promotion. Log + continue so the remaining keys get cleared.
+			if logger != nil {
+				logger.Warn("clear staging cert blob failed",
+					"domain", domain, "key", k, "error", err)
+			}
+			continue
+		}
+		removed++
+	}
+	if logger != nil {
+		logger.Info("cleared staging cert blobs on promotion",
+			"domain", domain, "removed", removed, "candidates", len(keys))
+	}
+	return removed
 }
 
 // ingressBuilder is the rebuild.Builder concrete impl. Reads state.Routes
