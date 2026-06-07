@@ -32,6 +32,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/discovery/firewall"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/ipam"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/wgmesh"
+	"github.com/PatrickRuddiman/jaco/internal/ingress/cachepoke"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/challenge"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/rebuild"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/stagefirst"
@@ -818,12 +819,30 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 				IssuedProd: func(domain string) bool {
 					return prodCertIssued(st, domain)
 				},
-				// ClearStagingCert wipes the staging cert blobs for the
-				// promoted domain so the post-promote rebuild can't keep
-				// serving the cached staging leaf via certmagic's storage
-				// fallback. Issue #158.
+				// ClearStagingCert wipes every trace of the staging cert
+				// for the promoted domain so the post-promote rebuild
+				// actually triggers a fresh prod ACME order:
+				//   1) raft + on-disk blob delete (issue #158 part 1) —
+				//      drops the persisted entity so a daemon restart
+				//      lands clean.
+				//   2) certmagic in-process cache eviction (issue #163) —
+				//      drops the cached staging leaf so the next
+				//      handshake misses cache, misses storage (now empty
+				//      under the prod-CA key), and certmagic's manager
+				//      issues against the now-prod policy. Without (2)
+				//      Caddy would serve the cached staging leaf
+				//      indefinitely because the cert is still valid for
+				//      ~90 days and the maintainer has no trigger to
+				//      re-obtain on an issuer change.
 				ClearStagingCert: func(domain string) {
 					clearStagingCertBlobs(context.Background(), jacoStorage, st, domain, ingressLog)
+					if err := cachepoke.EvictManaged(domain); err != nil {
+						// ErrCacheUninitialized at this point would mean
+						// promote fired before Caddy's TLS app was ever
+						// provisioned — extremely unlikely, log + continue.
+						ingressLog.Warn("certmagic cache evict skipped",
+							"domain", domain, "error", err)
+					}
 				},
 				// Audit emits MUST use the storageApply shim, not the raw
 				// raft.Apply: on followers raw Apply returns "not leader"
