@@ -29,6 +29,7 @@ field you leave unset falls back to the compose default. See
 
 ```yaml
 deployment: <name>           # required, string
+environment: <path>          # optional; path to a KEY=value env file
 routes:                      # required, list — the point of the file
   - domain: <fqdn>
     service: <service>
@@ -46,8 +47,8 @@ acme: on | off               # optional; on by default
 acme_email: ops@example.com  # optional; per-stack ACME contact (#102)
 ```
 
-Only `deployment`, `routes`, `services`, `acme`, and `acme_email` are
-accepted at the top level. Anything else is rejected.
+Only `deployment`, `environment`, `routes`, `services`, `acme`, and
+`acme_email` are accepted at the top level. Anything else is rejected.
 
 ## `deployment`
 
@@ -187,6 +188,112 @@ stack's owner instead of one global ops inbox.
 - **Changing a stack's `acme_email`** creates a fresh ACME account
   registration on the next issuance / renewal; existing valid certs
   keep serving until renewal.
+
+## `environment`
+
+Optional path to an env-style file that fills the **compose-spec
+`${VAR}` interpolation environment** for the adjacent compose file.
+Resolved CLIENT-SIDE by `jaco apply`: the file is read, parsed, and
+its values are substituted into every scalar of the compose document
+before the bytes cross the wire to the daemon.
+
+```yaml
+# jaco.yaml
+deployment: myapp
+environment: .env
+routes: ...
+services: ...
+```
+
+> **Naming clash callout.** Compose has a per-service `environment:`
+> key whose value is a **map** of `KEY: value` pairs forwarded into a
+> single container. The jaco.yaml top-level `environment:` is a
+> different field: its value is a **path string** and it governs
+> `${VAR}` substitution across the whole compose document. The
+> namespaces never collide in a real manifest (one lives on the
+> jaco.yaml root, the other under each compose service), but the same
+> keyword in two adjacent files is intentional — operators
+> consistently asked for the top-level field to be called
+> `environment:`.
+
+### File format
+
+The referenced file is the standard docker-compose `.env` format
+(implemented by `compose-go/dotenv`):
+
+- One `KEY=value` per line. Whitespace around `=` is trimmed.
+- `#` starts a comment to end-of-line. Blank lines are ignored.
+- Quoted values (`KEY="value with spaces"`, `KEY='literal'`) honor
+  the usual unquote rules; unquoted values run to end-of-line.
+- Back-references resolve against earlier keys in the same file:
+  `BASE=foo` then `DERIVED=${BASE}.bar` produces
+  `DERIVED=foo.bar`. There is **no process-environment fallback** —
+  see [Semantics](#semantics) below.
+
+### Path resolution
+
+Relative paths resolve against the jaco.yaml file's directory (same
+convention compose's service-level `env_file:` uses against the
+compose file). An absolute path is honored as-is.
+
+A missing or unreadable file fails the apply with a clear CLI error
+naming the offending path — the operator's responsibility to have it
+present at apply time.
+
+### Semantics
+
+- **Interpolation only.** Values from the file are NOT auto-injected
+  into every service's compose `environment:` block. A container
+  sees a value only via an explicit `${VAR}` reference somewhere in
+  the compose document.
+- **No process-environment passthrough.** The interpolation map is
+  the env file contents, period. `os.Environ()` does not
+  participate, keeping manifests explicit and reproducible across
+  operators / hosts.
+- **Coexists with service `env_file:`.** Per-compose-spec precedence:
+  an explicit `environment:` value on a service (with `${VAR}`
+  resolved against the jaco.yaml file) wins over a service-level
+  `env_file:` entry, which in turn wins over a default supplied via
+  `${VAR:-default}` from the same source. See
+  [`compose.md` → env_file resolution](compose.md#env_file-resolution).
+- **At-rest posture.** Resolved values ride the wire baked into the
+  compose YAML stored on the per-deployment record raft already
+  replicates and snapshots — no separate "env" entity, no separate
+  rotation. See
+  [Auth & tokens → at-rest posture](../concepts/auth-and-tokens.md#registry-credentials)
+  for the trust boundary that already governs `compose_yaml`.
+- **Omitting the field** is the no-op default and preserves every
+  existing manifest byte-for-byte through the CLI.
+
+### Example
+
+```yaml
+# jaco.yaml
+deployment: myapp
+environment: .env
+routes:
+  - domain: api.example.com
+    service: api
+    port: 8080
+    tls: auto
+```
+
+```yaml
+# compose.yml — ${VAR} interpolates from jaco.yaml's .env file
+services:
+  api:
+    image: ${REGISTRY:-docker.io}/myorg/api:1
+    environment:
+      DB_URL: ${DB_URL}
+      REGION: ${AWS_REGION:-us-east-1}
+```
+
+```
+# .env (next to jaco.yaml)
+REGISTRY=ghcr.io
+DB_URL=postgres://db.internal/myapp
+# AWS_REGION not set; the ${AWS_REGION:-us-east-1} default applies
+```
 
 ## Precedence
 

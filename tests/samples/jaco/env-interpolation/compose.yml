@@ -1,0 +1,9 @@
+# Every ${VAR} below interpolates from the .env file referenced by the
+# top-level `environment:` field of jaco.yaml. AWS_REGION isn't defined in
+# .env so the `${AWS_REGION:-us-east-1}` default fires.
+services:
+  api:
+    image: ${REGISTRY:-docker.io}/myorg/api:1
+    environment:
+      DB_URL: ${DB_URL}
+      REGION: ${AWS_REGION:-us-east-1}

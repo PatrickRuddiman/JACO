@@ -1,0 +1,14 @@
+deployment: env-demo
+
+# Top-level environment file — its KEY=value entries fill the compose-spec
+# ${VAR} interpolation environment for the compose file in this directory.
+# Path is relative to this jaco.yaml; the file MUST exist at apply time.
+# Values are NOT auto-injected into every service — a container sees a value
+# only via an explicit ${VAR} reference in the compose document.
+environment: .env
+
+routes:
+  - domain: env-demo.example.com
+    service: api
+    port: 8080
+    tls: off

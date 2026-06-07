@@ -76,17 +76,32 @@ echo "[bootstrap] starting registry on node-1"
 # the jaco service user is), so every node-side docker call goes through sudo.
 ssh_node "${PUB[0]}" "sudo docker inspect registry >/dev/null 2>&1 || sudo docker run -d --restart=always --name registry -p 5000:5000 registry:2"
 
-echo "[bootstrap] shipping workload build contexts to node-1"
+# Stack-scoped env file lives next to jaco.yaml and feeds ${VAR}
+# interpolation across docker-compose.yml on the CLI side (the daemon never
+# reads operator-side files). REGISTRY is pinned to node-1's PRIVATE VNet IP
+# because Azure VNet doesn't resolve bare VM names across VMs — non-builder
+# nodes need a routable address to pull the custom images. Created here at
+# bootstrap time; gitignored so secrets never land in commits.
+PG_USER="${PG_USER:-bench}"
+PG_PASSWORD="${PG_PASSWORD:-bench}"
+PG_DB="${PG_DB:-bench}"
+
+echo "[bootstrap] shipping workload build contexts + manifest pair to node-1"
 ssh_node "${PUB[0]}" "rm -rf ~/bench && mkdir -p ~/bench"
 scp -r "${SSH_OPTS[@]}" "$SAMPLES_DIR/workload" "$SSH_USER@${PUB[0]}:~/bench/workload"
 scp -r "${SSH_OPTS[@]}" "$JACO_DIR/jaco.yaml" "$JACO_DIR/docker-compose.yml" "$SSH_USER@${PUB[0]}:~/bench/"
 
-# Pin the registry to node-1's PRIVATE IP in the shipped compose. The compose
-# default is the hostname jaco-1:5000, but Azure VNet doesn't resolve bare VM
-# names across VMs — so non-builder nodes can't pull the custom images and
-# those replicas silently never start (the deployment runs under-count). The
-# private IP always resolves and is already in each node's insecure-registries.
-ssh_node "${PUB[0]}" "sed -i 's|[\$]{REGISTRY:-jaco-1:5000}|$REGISTRY|g' ~/bench/docker-compose.yml"
+# Write .env on the node itself: keeps creds off the operator's disk and out
+# of any local scp log. jaco apply runs under sudo but reads .env from the
+# CWD relative to jaco.yaml, so file mode 0640 is fine (azureuser owns it,
+# root reads it).
+ssh_node "${PUB[0]}" "cat > ~/bench/.env <<EOF
+REGISTRY=$REGISTRY
+PG_USER=$PG_USER
+PG_PASSWORD=$PG_PASSWORD
+PG_DB=$PG_DB
+EOF
+chmod 0640 ~/bench/.env"
 
 echo "[bootstrap] building + pushing workload images on node-1 -> $REGISTRY"
 ssh_node "${PUB[0]}" "
@@ -117,8 +132,11 @@ echo "[bootstrap] cluster status:"
 ssh_node "${PUB[0]}" "sudo jaco cluster status" || true
 
 # --- 5. deploy the workload --------------------------------------------------
-echo "[bootstrap] applying the workload (REGISTRY=$REGISTRY)"
-ssh_node "${PUB[0]}" "cd ~/bench && sudo REGISTRY='$REGISTRY' jaco apply jaco.yaml --compose docker-compose.yml"
+# REGISTRY/PG_USER/etc. now come from the .env file the CLI loads via the
+# jaco.yaml top-level `environment:` field — no process-env passthrough
+# needed on the apply line.
+echo "[bootstrap] applying the workload (interpolating from ~/bench/.env)"
+ssh_node "${PUB[0]}" "cd ~/bench && sudo jaco apply jaco.yaml --compose docker-compose.yml"
 
 echo
 echo "[bootstrap] done. Ingress is served at the LB public IP (jaco.sh) on 80/443."

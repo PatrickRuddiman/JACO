@@ -41,6 +41,20 @@ type JacoYAML struct {
 	// notifications reach that stack's owner instead of one global ops
 	// inbox (issue #102).
 	ACMEEmail string `yaml:"acme_email"`
+	// Environment is an optional path to an env-style file whose KEY=value
+	// entries fill the compose-spec ${VAR} interpolation environment for the
+	// adjacent compose file (issue #?). Resolved CLIENT-SIDE before bytes
+	// cross the wire: the daemon never sees the env file or its values
+	// separately — the resolved values land baked into ComposeYaml.
+	//
+	// Path is interpreted relative to the jaco.yaml file's directory (the
+	// same convention compose's service-level `env_file:` uses).
+	//
+	// Distinct from the per-service compose `environment:` map. At the
+	// jaco.yaml top level this keyword means "this deployment's env file";
+	// the value is a path string, not a mapping. See
+	// docs/manifests/jaco-yaml.md for the full discussion.
+	Environment string `yaml:"environment,omitempty"`
 }
 
 // JacoServiceDecl is one service-override entry. Name must equal a service

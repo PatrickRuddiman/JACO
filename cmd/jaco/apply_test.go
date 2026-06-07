@@ -11,6 +11,7 @@ import (
 
 	"google.golang.org/grpc"
 
+	"github.com/PatrickRuddiman/jaco/internal/runtime/compose"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -273,4 +274,177 @@ func TestResolveComposeEnvFiles_StdinNoEnvFilePassesThrough(t *testing.T) {
 
 func writeFile(path, body string) error {
 	return os.WriteFile(path, []byte(body), 0o600)
+}
+
+// TestLoadStackEnv_AbsentFieldReturnsNil — the field is optional; no
+// `environment:` in jaco.yaml means "no interpolation source", and the
+// helper returns nil so the apply path's SubstituteEnvVars takes its
+// byte-identical fast path.
+func TestLoadStackEnv_AbsentFieldReturnsNil(t *testing.T) {
+	dir := t.TempDir()
+	jacoPath := filepath.Join(dir, "jaco.yaml")
+	body := "deployment: x\nroutes: []\n"
+	if err := writeFile(jacoPath, body); err != nil {
+		t.Fatal(err)
+	}
+	env, err := loadStackEnv(jacoPath, []byte(body))
+	if err != nil {
+		t.Fatalf("loadStackEnv: %v", err)
+	}
+	if env != nil {
+		t.Errorf("env = %v, want nil when environment field absent", env)
+	}
+}
+
+// TestLoadStackEnv_LoadsRelativeToJacoDir — `environment: .env` is
+// resolved against the directory of the jaco.yaml file, matching the
+// compose service-level env_file convention.
+func TestLoadStackEnv_LoadsRelativeToJacoDir(t *testing.T) {
+	dir := t.TempDir()
+	jacoPath := filepath.Join(dir, "jaco.yaml")
+	if err := writeFile(filepath.Join(dir, ".env"), "DB_URL=postgres://x\nREGION=eu-west-1\n"); err != nil {
+		t.Fatal(err)
+	}
+	body := "deployment: demo\nenvironment: .env\nroutes: []\n"
+	if err := writeFile(jacoPath, body); err != nil {
+		t.Fatal(err)
+	}
+	env, err := loadStackEnv(jacoPath, []byte(body))
+	if err != nil {
+		t.Fatalf("loadStackEnv: %v", err)
+	}
+	if got := env["DB_URL"]; got != "postgres://x" {
+		t.Errorf("DB_URL = %q, want postgres://x", got)
+	}
+	if got := env["REGION"]; got != "eu-west-1" {
+		t.Errorf("REGION = %q, want eu-west-1", got)
+	}
+}
+
+// TestLoadStackEnv_MissingFileLoudError — a non-existent path named by
+// `environment:` fails the apply with a clear error that names the
+// resolved path (operator-actionable diagnostic).
+func TestLoadStackEnv_MissingFileLoudError(t *testing.T) {
+	dir := t.TempDir()
+	jacoPath := filepath.Join(dir, "jaco.yaml")
+	body := "deployment: demo\nenvironment: missing.env\nroutes: []\n"
+	if err := writeFile(jacoPath, body); err != nil {
+		t.Fatal(err)
+	}
+	_, err := loadStackEnv(jacoPath, []byte(body))
+	if err == nil {
+		t.Fatalf("expected error for missing env file")
+	}
+	if !strings.Contains(err.Error(), "missing.env") {
+		t.Errorf("err = %v, want path %q in message", err, "missing.env")
+	}
+}
+
+// TestLoadStackEnv_AbsolutePathHonored — an absolute path is taken
+// literally, not re-joined under the jaco dir.
+func TestLoadStackEnv_AbsolutePathHonored(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "shared.env")
+	if err := writeFile(envPath, "K=v\n"); err != nil {
+		t.Fatal(err)
+	}
+	// jaco.yaml in a different directory; the absolute path must still resolve.
+	jacoDir := t.TempDir()
+	jacoPath := filepath.Join(jacoDir, "jaco.yaml")
+	body := "deployment: demo\nenvironment: " + envPath + "\nroutes: []\n"
+	if err := writeFile(jacoPath, body); err != nil {
+		t.Fatal(err)
+	}
+	env, err := loadStackEnv(jacoPath, []byte(body))
+	if err != nil {
+		t.Fatalf("loadStackEnv: %v", err)
+	}
+	if env["K"] != "v" {
+		t.Errorf("K = %q, want v", env["K"])
+	}
+}
+
+// TestApply_EndToEndEnvironmentPrecedence — full CLI pipeline test pinning
+// the documented precedence when ALL three sources participate on the same
+// service: top-level jaco.yaml `environment:` supplies an interpolation
+// value, the service declares an `env_file:`, and the service's own
+// `environment:` block sets a value that uses a `${VAR}` from the
+// top-level file. The bytes the daemon receives must carry:
+//
+//   - the explicit `environment:` value (with ${VAR} substituted) winning
+//     over the service env_file for matching keys,
+//   - the service env_file value preserved for keys the explicit
+//     `environment:` did not set,
+//   - no `env_file:` line surviving (resolved CLIENT-SIDE per issue #103),
+//   - no `${VAR}` placeholder surviving anywhere.
+func TestApply_EndToEndEnvironmentPrecedence(t *testing.T) {
+	dir := t.TempDir()
+	jacoPath := filepath.Join(dir, "jaco.yaml")
+	composePath := filepath.Join(dir, "compose.yml")
+
+	if err := writeFile(filepath.Join(dir, ".env"),
+		"DB_URL=postgres://from-jaco-env\nFROM_JACO=jaco-value\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFile(filepath.Join(dir, "web.env"),
+		"DB_URL=from-web-env\nONLY_IN_WEB_ENV=web-only-value\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFile(jacoPath,
+		"deployment: demo\nenvironment: .env\nroutes: []\n"); err != nil {
+		t.Fatal(err)
+	}
+	composeBody := "services:\n" +
+		"  web:\n" +
+		"    image: nginx:1.27\n" +
+		"    env_file:\n" +
+		"      - web.env\n" +
+		"    environment:\n" +
+		"      DB_URL: ${DB_URL}\n" +
+		"      EXTRA: ${FROM_JACO}\n"
+	if err := writeFile(composePath, composeBody); err != nil {
+		t.Fatal(err)
+	}
+
+	jacoBytes, composeBytes, resolvedComposePath, err := readManifestPair(jacoPath, "")
+	if err != nil {
+		t.Fatalf("readManifestPair: %v", err)
+	}
+	stackEnv, err := loadStackEnv(jacoPath, jacoBytes)
+	if err != nil {
+		t.Fatalf("loadStackEnv: %v", err)
+	}
+	interpolated, err := compose.SubstituteEnvVars(composeBytes, stackEnv)
+	if err != nil {
+		t.Fatalf("SubstituteEnvVars: %v", err)
+	}
+	out, err := resolveComposeEnvFiles(interpolated, resolvedComposePath)
+	if err != nil {
+		t.Fatalf("resolveComposeEnvFiles: %v", err)
+	}
+	s := string(out)
+
+	if strings.Contains(s, "env_file") {
+		t.Errorf("env_file: survived the CLI pipeline:\n%s", s)
+	}
+	if strings.Contains(s, "${") {
+		t.Errorf("unresolved interpolation placeholder remains:\n%s", s)
+	}
+	// Explicit `environment: { DB_URL: ${DB_URL} }` (with ${DB_URL} from
+	// .env) MUST win over web.env's DB_URL=from-web-env.
+	if !strings.Contains(s, "postgres://from-jaco-env") {
+		t.Errorf("explicit environment DID NOT win over env_file:\n%s", s)
+	}
+	if strings.Contains(s, "from-web-env") {
+		t.Errorf("env_file DB_URL leaked despite explicit environment:\n%s", s)
+	}
+	// EXTRA: ${FROM_JACO} → "jaco-value" from .env.
+	if !strings.Contains(s, "jaco-value") {
+		t.Errorf("interpolation from .env not applied to explicit environment:\n%s", s)
+	}
+	// Keys present ONLY in web.env should still be merged into environment.
+	if !strings.Contains(s, "web-only-value") {
+		t.Errorf("env_file key (no override) did not flow through:\n%s", s)
+	}
+
 }

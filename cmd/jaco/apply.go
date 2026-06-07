@@ -9,10 +9,12 @@ import (
 	"sort"
 	"time"
 
+	"github.com/compose-spec/compose-go/v2/dotenv"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
 	"github.com/PatrickRuddiman/jaco/internal/cliclient"
+	grpcsrv "github.com/PatrickRuddiman/jaco/internal/controlplane/grpc"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/compose"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
@@ -44,6 +46,20 @@ func applyCmd() *cobra.Command {
 		jacoBytes, composeBytes, resolvedComposePath, err := readManifestPair(jacoPath, composePath)
 		if err != nil {
 			return err
+		}
+		// Top-level jaco.yaml `environment:` (optional) loads an env-style
+		// file CLIENT-SIDE and feeds its KEY=value entries into compose-spec
+		// `${VAR}` interpolation across the WHOLE compose document. Runs
+		// BEFORE service-level env_file resolution so any `${VAR}` in
+		// env_file: paths or in service.environment entries is substituted
+		// once, consistently, against the same source.
+		stackEnv, err := loadStackEnv(jacoPath, jacoBytes)
+		if err != nil {
+			return err
+		}
+		composeBytes, err = compose.SubstituteEnvVars(composeBytes, stackEnv)
+		if err != nil {
+			return fmt.Errorf("interpolate %s: %w", resolvedComposePath, err)
 		}
 		// env_file is resolved CLIENT-SIDE — the daemon does not have the
 		// operator's .env files on disk. resolvedComposePath is always set
@@ -195,4 +211,41 @@ func composeHasEnvFile(body []byte) (string, bool) {
 	}
 	sort.Strings(names)
 	return names[0], true
+}
+
+// loadStackEnv resolves the optional top-level `environment:` field of
+// jaco.yaml into a KEY=value map suitable for compose-spec `${VAR}`
+// interpolation. Returns (nil, nil) when the field is absent — the apply
+// path treats nil identically to "no interpolation source", so the compose
+// document passes through SubstituteEnvVars on the fast path.
+//
+// The env file path is interpreted relative to the jaco.yaml file's
+// directory (matching the compose service-level `env_file:` convention).
+// A missing or unreadable file is a loud CLI error — the operator's
+// responsibility to have it present at apply time.
+//
+// jacoBytes is the raw manifest the caller already read for the apply RPC;
+// re-parsing it here keeps the helper self-contained and unit-testable
+// without needing the deploy client.
+func loadStackEnv(jacoPath string, jacoBytes []byte) (map[string]string, error) {
+	spec, err := grpcsrv.ParseJacoYAML(jacoBytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", jacoPath, err)
+	}
+	if spec.Environment == "" {
+		return nil, nil
+	}
+	envPath := spec.Environment
+	if !filepath.IsAbs(envPath) {
+		envPath = filepath.Join(filepath.Dir(jacoPath), envPath)
+	}
+	// nil currentEnv: no process-env passthrough into the interpolation map
+	// (matches the "manifests are explicit and reproducible" posture). The
+	// dotenv loader still threads earlier keys forward so back-refs like
+	// FOO=${BAR} inside the same file resolve against prior lines.
+	env, err := dotenv.GetEnvFromFile(nil, []string{envPath})
+	if err != nil {
+		return nil, fmt.Errorf("load environment file %s: %w", envPath, err)
+	}
+	return env, nil
 }

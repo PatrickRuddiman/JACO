@@ -139,6 +139,28 @@ Two practical consequences:
 - `jaco apply --dry-run` runs the resolver before computing the diff,
   so the diff reflects the values the daemon would actually see.
 
+### Top-level `environment:` (from jaco.yaml)
+
+When the adjacent `jaco.yaml` declares a top-level
+[`environment: <path>`](jaco-yaml.md#environment), the values from
+that file fill the compose-spec **`${VAR}` interpolation environment**
+for the WHOLE compose document. Service-level `env_file:` is an
+independent mechanism — both compose cleanly, per compose-spec
+precedence:
+
+1. an explicit `environment:` value on a service (with `${VAR}`
+   resolved against the jaco.yaml `environment:` file) wins;
+2. a service-level `env_file:` entry fills any keys the service's
+   `environment:` did not declare;
+3. a `${VAR:-default}` reference falls back to `default` when the
+   variable is absent from the jaco.yaml `environment:` file.
+
+Interpolation runs FIRST, before service-level `env_file:` merging,
+so a `${VAR}` reference inside an `env_file:` path or service
+`environment:` value resolves once, consistently. There is no
+process-environment passthrough — only the jaco.yaml `environment:`
+file participates.
+
 ## `depends_on` semantics
 
 The runtime defers a replica's `Start` until every required dep

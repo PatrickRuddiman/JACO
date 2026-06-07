@@ -93,12 +93,23 @@ via [`jaco registry login`](../cli/registry.md) and every node
 without per-node `~/.docker/config.json`.
 
 The entity is `RegistryCredential{registry, username, secret,
-updated_at}`, keyed by canonical host (Docker Hub variants fold to
-`docker.io`; non-default ports are preserved verbatim). At image-pull
-time the reconciler canonicalizes the image ref, looks up the
-credential in cluster state, and threads the base64-encoded
-`X-Registry-Auth` blob into `image.PullOptions.RegistryAuth`. A
-missing credential is not an error — the pull proceeds anonymously.
+updated_at}`, keyed by a canonical `host[:port][/namespace[/segment...]]`
+string. The host portion folds Docker Hub variants to `docker.io` and
+preserves non-default ports verbatim; any optional `/namespace` suffix is
+lower-cased and trim-of-trailing-slash. Two credentials under the same
+host but different namespace prefixes (`ghcr.io/personal` vs
+`ghcr.io/company`) coexist as independent entries; the prior collapse
+to bare-host stomped them, which this scheme fixes.
+
+At image-pull time the reconciler derives the full
+`host[:port]/<repository-path>` from the image ref and picks the stored
+credential whose key is the **longest path-aligned prefix** of that
+lookup key — so `ghcr.io/personal/repo:tag` selects `ghcr.io/personal`
+when present, falling back to a bare `ghcr.io` entry only when no
+namespace-scoped key matches. The chosen credential becomes the
+base64-encoded `X-Registry-Auth` blob threaded into
+`image.PullOptions.RegistryAuth`. A missing credential is not an
+error — the pull proceeds anonymously.
 
 **At-rest posture.** Registry secrets sit in raft unencrypted, behind
 the same filesystem-permission + WireGuard-transport trust boundary
@@ -109,6 +120,13 @@ envelope encryption is a possible follow-up that should arguably
 cover certs/CA in the same pass rather than singling out registry
 creds (issue [#101](https://github.com/PatrickRuddiman/jaco/issues/101)
 notes this explicitly).
+
+Values resolved from a jaco.yaml top-level
+[`environment:` file](../manifests/jaco-yaml.md#environment) are
+baked into the resolved compose bytes at apply time and ride raft as
+part of the per-deployment `compose_yaml` field — so they sit under
+the **same trust posture** as `compose_yaml` already does today, not
+a new secret category.
 
 **Replication semantics.** Add/Remove gate on the raft leader and
 propagate via a normal raft Apply, so the credential is on every

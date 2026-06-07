@@ -1,4 +1,11 @@
 deployment: bench
+
+# Stack-scoped env file: feeds ${VAR} interpolation across docker-compose.yml.
+# Written at bootstrap time by tests/samples/jaco/bootstrap/bootstrap.sh
+# (REGISTRY pinned to node-1's PRIVATE VNet IP, PG creds, etc.) and is
+# gitignored — the daemon never reads it, the values land baked into the
+# resolved compose bytes the CLI ships over raft.
+environment: .env
 services:
   - name: redis-primary
     replicas: 1
