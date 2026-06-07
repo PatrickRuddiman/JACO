@@ -34,7 +34,11 @@ What it does, in order:
    (the operator host can't reach the private registry — only 22/80/443 are
    public), pushing `bench-web` / `bench-api` to `<node-1-private-ip>:5000`.
 4. `jaco cluster init` on node-1, issues a join token, `jaco node join` on
-   node-2 and node-3 (peer = node-1 private IP `:7000`).
+   node-2 and node-3 (peer = node-1 private IP `:7000`). After each
+   init/join the bootstrap runs `systemctl enable jaco` so the unit
+   survives reboots — the `.deb` postinstall deliberately ships the unit
+   disabled (see `build/packaging/postinstall.sh`); the cluster-commit is
+   the right enable signal (#151).
 5. `jaco apply` the workload over node-1's local socket.
 
 Mesh traffic (gRPC `:7000`, raft `:7001`, WireGuard `:51820`) stays on the

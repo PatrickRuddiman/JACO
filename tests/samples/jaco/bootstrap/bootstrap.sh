@@ -117,6 +117,8 @@ ssh_node "${PUB[0]}" "
 # --- 4. form the cluster -----------------------------------------------------
 echo "[bootstrap] initializing cluster on node-1"
 ssh_node "${PUB[0]}" "sudo jaco cluster init || true"
+# Persist jacod across reboots — postinstall ships disabled by design (build/packaging/postinstall.sh); enabling here is the cluster-commit signal. Issue #151.
+ssh_node "${PUB[0]}" "sudo systemctl enable jaco"
 
 # Join tokens are single-use — issue a fresh one for each joining node.
 for i in "${!PUB[@]}"; do
@@ -126,6 +128,8 @@ for i in "${!PUB[@]}"; do
   [[ -n "$TOKEN" ]] || { echo "[bootstrap] failed to capture join token" >&2; exit 1; }
   echo "[bootstrap] joining node$((i+1)) -> ${NODE1_PRIV}:7000"
   ssh_node "${PUB[$i]}" "sudo jaco node join --peer='${NODE1_PRIV}:7000' --token='$TOKEN'"
+  # Persist jacod across reboots — postinstall ships disabled by design (build/packaging/postinstall.sh); enabling here is the cluster-commit signal. Issue #151.
+  ssh_node "${PUB[$i]}" "sudo systemctl enable jaco"
 done
 
 echo "[bootstrap] cluster status:"
