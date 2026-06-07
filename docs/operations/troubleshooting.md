@@ -5,6 +5,7 @@ sources:
   - internal/runtime/pull/
   - internal/discovery/firewall/
   - internal/ingress/
+  - internal/discovery/dns/
   - proto/jaco/v1/entities.proto
 ---
 
@@ -512,3 +513,69 @@ startup race:
 - [Recovery](recovery.md)
 - [`jaco audit`](../cli/audit.md)
 - [Observability](../concepts/observability.md)
+
+## External hostnames fail after exactly 5 s from inside containers (pre-v0.3.6)
+
+`getent ahosts api.github.com` (or any other external name) from
+inside any container exits 2 after exactly 5 seconds; internal
+service names (`redis`, `web`, `<service>.jaco.internal`) resolve
+sub-millisecond. The 5 s is libc's default per-nameserver timeout,
+not anything JACO chose.
+
+Pre-v0.3.6 the per-bridge DNS responder forwarded external names
+through Go's default `net.LookupHost`, which inside a daemon
+process binding multiple bridge gateway IPs had failure modes
+(slow `resolv.conf` scan, NSS quirks under CGO, IPv6 fallback to
+unreachable nameservers) that consistently exceeded the libc
+deadline. The forwarder was wired correctly — the implementation
+it called was the wrong tool.
+
+v0.3.6 replaces it with an explicit `miekg/dns` client driven
+against an ordered upstream chain
+([`internal/discovery/dns/forwarder.go`](../../internal/discovery/dns/forwarder.go))
+with a per-upstream deadline (default 2 s) and SERVFAIL semantics
+for downstream-resolver retry behavior (issue #165). Upstreams
+default to `/etc/resolv.conf` at startup; override with
+[`dns.forwarders`](../configuration.md#dns) in `jacod.yaml`.
+
+If you see this on v0.3.5 or earlier, `jaco self-upgrade` to
+v0.3.6+ and the next restart of the daemon binds the new
+forwarder. Verify with the canonical repro:
+
+```sh
+CID=$(sudo docker ps --format '{{.ID}}' --filter 'name=<any-bench>' | head -1)
+time sudo docker exec $CID getent ahosts api.github.com
+# pre-fix:  exits 2 after ~5.000 s
+# post-fix: exits 0 in < 0.1 s
+```
+
+## External hostnames SERVFAIL on v0.3.6+ with `dns: no upstream resolvers configured ...` in the journal
+
+v0.3.6+ logs a one-line WARN at daemon start when neither
+`dns.forwarders` is set NOR `/etc/resolv.conf` yields a usable
+nameserver (every entry was either malformed or filtered as a loop
+source — `127.0.0.11`, `10.244.*.1`). The responder then SERVFAILs
+every external query rather than NXDOMAIN'ing it (downstream
+resolvers retry SERVFAIL, negative-cache NXDOMAIN).
+
+Fix: set `dns.forwarders` explicitly in `jacod.yaml`:
+
+```yaml
+dns:
+  forwarders:
+    - 1.1.1.1
+    - 9.9.9.9
+```
+
+`sudo systemctl restart jaco` to pick up the change.
+
+## `dns.forwarders[…]: 127.0.0.11 is docker's embedded resolver; configuring it as an upstream would create a forwarding loop`
+
+Operator-supplied `dns.forwarders` entry contained Docker's
+embedded resolver address. Containers reach the bridge responder
+THROUGH `127.0.0.11`, so configuring it as our upstream would
+loop every query forever. Same error shape for any `10.244.*.1`
+(JACO bridge gateway). Remove the entry; the daemon parses
+`/etc/resolv.conf` at startup and uses every real upstream there
+automatically.
+

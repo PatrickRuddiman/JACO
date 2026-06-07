@@ -81,25 +81,73 @@ node-local-bridge → `wg-jaco` → peer's `wg-jaco` → peer's local-bridge
 
 ## DNS responder
 
-One responder per bridge, listening on the bridge gateway IP on UDP+TCP
-port 53. Each responder is authoritative for the services attached to
-its own (deployment, network) and forwards anything else to the node's
-`/etc/resolv.conf` nameservers.
+One responder per bridge, listening on the bridge gateway IP on
+UDP+TCP port 53. Each responder is authoritative for the services
+attached to its own (deployment, network) and forwards anything else
+to an upstream chain via the per-daemon **forwarder** (see below).
 
-Container `/etc/resolv.conf` is set by JACO at container create:
+Docker writes the container's `/etc/resolv.conf` to point at its
+embedded resolver `127.0.0.11`, which in turn forwards to the
+bridge gateway IP listed in `ExtServers`. So the path is:
 
-- `nameserver <gateway-ip-of-first-bridge>` first, then any
-  additional bridges' DNS in compose-declared attach order. First
-  match wins.
-- A query for `<service>` or `<service>.jaco.local` returns A records
-  for every healthy `ReplicaObserved` of that service on this
-  (deployment, network), in random order across the cluster.
-- A query for a service that isn't in this (deployment, network)
-  returns NXDOMAIN.
+```
+container → 127.0.0.11 (docker)
+         → 10.244.<n>.1 (bridge gateway = jacod responder)
+         → forwarder chain → external upstream
+```
+
+A query for `<service>`, `<service>.<deployment>`, or
+`<service>.jaco.internal` returns A records for every healthy
+`ReplicaObserved` of that service in the responder's scope, in
+random order. A query for a service that isn't in this
+(deployment, network) but IS a single bare label returns NXDOMAIN
+(in-scope but unknown). Anything else with a dot is treated as
+external and handed to the forwarder.
+
+## Forwarder
+
+External-name lookups go through
+[`internal/discovery/dns/forwarder.go`](../../internal/discovery/dns/forwarder.go),
+a `miekg/dns` client driven against an explicit upstream chain:
+
+- A and AAAA legs run in parallel.
+- Each upstream is tried with a per-upstream deadline (default 2 s
+  via `DefaultDNSForwarderTimeout`); transient errors (transport
+  failures, `SERVFAIL`, `REFUSED`, `NOTIMP`) fall through to the
+  next upstream.
+- The first authoritative answer (`NOERROR` or `NXDOMAIN`,
+  including empty) wins; the chain stops there.
+- The full upstream list is bounded; if every upstream fails the
+  call returns an error and the responder surfaces **`SERVFAIL`**
+  to the downstream resolver (NOT `NXDOMAIN` — downstreams
+  negative-cache the latter, breaking the name for the TTL window
+  even when the upstream recovers). Issue #165.
+
+The upstream list comes from `jacod.yaml`'s
+[`dns.forwarders`](../configuration.md#dns) when set, otherwise the
+daemon parses `/etc/resolv.conf` at startup and uses every
+`nameserver` entry it finds. Two addresses are filtered out of the
+host fallback to avoid forwarding loops:
+
+- `127.0.0.11` — Docker's embedded resolver. Container DNS reaches
+  the bridge responder THROUGH this address; configuring it as our
+  upstream would loop forever.
+- `10.244.*.1` — every JACO bridge gateway. Same loop risk.
+
+The same two are rejected at config-validate time when the operator
+specifies them under `dns.forwarders` (loud startup error rather
+than a silent loop). See
+[`ValidateUpstreams`](../../internal/discovery/dns/forwarder.go).
+
+When the operator hasn't set `dns.forwarders` AND
+`/etc/resolv.conf` yields no usable nameservers, the daemon logs a
+single startup warning and the responder `SERVFAIL`s every external
+query. The bridge resolver still answers internal names; only
+external lookups fail. Set `dns.forwarders` explicitly to fix.
 
 A multi-network service (gateway pattern) sees both DNS responders;
-the libc resolver tries them in attach order and the first to answer
-wins. This is the standard docker behavior.
+the libc resolver tries them in attach order and the first to
+answer wins. Standard docker behavior.
 
 ## Cross-node reachability (concrete example)
 

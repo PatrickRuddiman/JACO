@@ -34,7 +34,7 @@ What lives where. Use this as the map when you're about to grep.
 │   │   └── netdetect/   # private-LAN-first interface auto-detection
 │   ├── discovery/       # bridges, IPAM, WG mesh, nftables, DNS
 │   │   ├── bridge/      # docker bridge management
-│   │   ├── dns/         # per-bridge DNS responder
+│   │   ├── dns/         # per-bridge DNS responder + miekg/dns forwarder (#165) + /etc/resolv.conf parser
 │   │   ├── firewall/    # nftables ruleset render + reconcile + self-test
 │   │   ├── ipam/        # /24 allocator
 │   │   ├── runtime_attach/  # helper for runtime's container-create path

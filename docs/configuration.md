@@ -3,6 +3,8 @@ sources:
   - internal/daemon/config/
   - internal/daemon/netdetect/
   - internal/daemon/grpc/heartbeat.go
+  - internal/discovery/dns/forwarder.go
+  - internal/discovery/dns/resolvconf.go
   - internal/runtime/cgroupv2/
   - cmd/jacod/main.go
 ---
@@ -32,6 +34,9 @@ acme_email:           ""
 acme_ca:              "https://acme-v02.api.letsencrypt.org/directory"
 acme_enabled:         true
 acme_skip_staging:    false
+dns:
+  forwarders:         []          # default: parse /etc/resolv.conf at startup
+  forwarder_timeout:  2s
 ```
 
 All defaults live in `internal/daemon/config/config.go`. The same
@@ -121,6 +126,44 @@ URL — staging's much looser rate limits absorb DNS/firewall
 misconfigurations cheaply. Already-non-prod `acme_ca` values skip
 staging automatically regardless of this setting.
 
+### `dns` (object, optional)
+
+Configures the per-bridge DNS responder's external-name forwarding
+chain. The whole block is optional — when absent, the daemon
+parses `/etc/resolv.conf` at startup and forwards external names
+through every `nameserver` entry it finds (with `127.0.0.11` and
+`10.244.*.1` filtered to avoid forwarding loops). See
+[Networking → Forwarder](concepts/networking.md#forwarder).
+
+- `dns.forwarders` (list of strings, optional)
+
+  Ordered upstream resolver chain used for every external name. Each
+  entry is `host[:port]`; the daemon appends `:53` when no port is
+  given, brackets bare IPv6 literals. Empty list (or key absent) →
+  fall back to `/etc/resolv.conf`. Validator rejects
+  `127.0.0.11` and `10.244.*.1` because either as an upstream
+  creates a forwarding loop (Docker's embedded resolver, or a
+  JACO bridge gateway).
+
+- `dns.forwarder_timeout` (Go duration, optional, default `2s`)
+
+  Per-upstream query deadline. Two seconds is short enough that even
+  a full chain of two failed upstreams completes well inside libc's
+  5-second nameserver timeout — downstream resolvers retry instead
+  of timing out and silently breaking container outbound DNS
+  (issue #165). Set higher only if a single legitimate upstream
+  consistently exceeds 2 s.
+
+  Example:
+
+  ```yaml
+  dns:
+    forwarders:
+      - 1.1.1.1
+      - 9.9.9.9
+    forwarder_timeout: 3s
+  ```
+
 ### `log_level` (string, optional)
 
 One of `debug | info | warn | error`. Default `info`. Logs go to the
@@ -169,6 +212,13 @@ rebalancer is therefore safely dormant when no signal is available.
   MUST fall in `[5s, 5m]`. Zero / omitted maps to the default `30s`.
 - Any unknown top-level key fails the parse with the offending field
   name in the error message.
+- `dns.forwarders` entries each parse as `host[:port]`; literal IPs
+  MUST NOT be `127.0.0.11` (Docker's embedded resolver) nor any
+  `10.244.*.1` (JACO bridge gateway) — both cases would create a
+  forwarding loop. Empty list / key absent is fine (host
+  `/etc/resolv.conf` fallback). Hostname entries are allowed.
+- `dns.forwarder_timeout`, when set, MUST be `>= 0`. Zero / omitted
+  maps to the default `2s`.
 
 See `internal/daemon/config/config.go::Validate` for the canonical
 rule set.
