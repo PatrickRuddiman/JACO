@@ -818,13 +818,35 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 				IssuedProd: func(domain string) bool {
 					return prodCertIssued(st, domain)
 				},
+				// ClearStagingCert wipes the staging cert blobs for the
+				// promoted domain so the post-promote rebuild can't keep
+				// serving the cached staging leaf via certmagic's storage
+				// fallback. Issue #158.
+				ClearStagingCert: func(domain string) {
+					clearStagingCertBlobs(context.Background(), jacoStorage, st, domain, ingressLog)
+				},
+				// Audit emits MUST use the storageApply shim, not the raw
+				// raft.Apply: on followers raw Apply returns "not leader"
+				// and the reconcile loop logs `cert audit emit failed`
+				// every tick (issue #146). The shim forwards to the leader
+				// via Internal.Submit so the audit lands once.
 				OnPromote: func(domain string) {
-					iss := challenge.NewIssuerForEnv(apply, challenge.EnvStaging)
+					iss := challenge.NewIssuerForEnv(storageApply, challenge.EnvStaging)
 					iss.Logger = ingressLog
 					iss.EmitIssued(domain, challenge.EnvStaging)
 				},
+				// OnProdIssued fires the moment the controller observes
+				// the prod cert landing in raft (pendingProd → cleared).
+				// Emit the matching CERTIFICATE_ISSUED(prod) audit event
+				// so `jaco status` reports `ENVIRONMENT prod` instead of
+				// the previously stuck `staging`. Issue #147.
+				OnProdIssued: func(domain string) {
+					iss := challenge.NewIssuerForEnv(storageApply, challenge.EnvProd)
+					iss.Logger = ingressLog
+					iss.EmitIssued(domain, challenge.EnvProd)
+				},
 				OnStageFail: func(domain string, err error) {
-					iss := challenge.NewIssuer(apply)
+					iss := challenge.NewIssuerForEnv(storageApply, challenge.EnvStaging)
 					iss.Logger = ingressLog
 					iss.EmitStageFailure(domain, err)
 				},

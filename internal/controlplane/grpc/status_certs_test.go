@@ -134,3 +134,94 @@ func TestStatus_NoCertStateForTLSOffRoutes(t *testing.T) {
 		t.Errorf("certs = %d, want 0 for tls:off route", len(resp.GetCerts()))
 	}
 }
+
+// TestStatus_EnvFromCertBlob — issue #147: once a prod cert blob lands in
+// raft, status reports environment=prod even before the controller has
+// emitted a CERTIFICATE_ISSUED(prod) audit event. Pre-fix the env field
+// only ever reflected the latest audit event, which until v0.3.4 always
+// said `staging` because the controller hardcoded EnvStaging on promote.
+func TestStatus_EnvFromCertBlob(t *testing.T) {
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	f := fsm.New(st, brokers)
+	var idx uint64
+	apply := func(cmd *pb.Command) {
+		idx++
+		data, _ := proto.Marshal(cmd)
+		f.Apply(&hraft.Log{Index: idx, Data: data})
+	}
+
+	apply(&pb.Command{Payload: &pb.Command_DeploymentApply{DeploymentApply: &pb.DeploymentApply{
+		Deployment: "sample", Revision: 1,
+		Routes: []*pb.Route{{Domain: "web.example.com", Deployment: "sample", Service: "web", Port: 80, TlsAuto: true}},
+	}}})
+
+	notAfter := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	// Prod-keyed cert blob lands.
+	apply(&pb.Command{Payload: &pb.Command_CertBlobUpsert{CertBlobUpsert: &pb.CertBlobUpsert{
+		Blob: &pb.CertBlob{
+			Key:   "certificates/acme-v02.api.letsencrypt.org-directory/web.example.com/web.example.com.crt",
+			Value: leafPEM(t, "web.example.com", notAfter),
+		},
+	}}})
+	// And NO matching ISSUED audit event has fired yet.
+
+	srv := grpcsrv.NewDeployServer(st, nil)
+	resp, err := srv.Status(context.Background(), &pb.DeployStatusRequest{})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if len(resp.GetCerts()) != 1 {
+		t.Fatalf("certs = %d, want 1", len(resp.GetCerts()))
+	}
+	if got := resp.GetCerts()[0].GetEnvironment(); got != "prod" {
+		t.Errorf("environment = %q, want prod (env should be derived from cert blob key, #147)", got)
+	}
+}
+
+// TestStatus_EnvFromCertBlobPrefersProd — once both the staging and prod
+// blobs co-exist briefly (mid-promotion, before #158's eviction takes
+// effect on the staging blob), status MUST report prod. Otherwise the
+// operator sees `staging` while the prod cert is already serving.
+func TestStatus_EnvFromCertBlobPrefersProd(t *testing.T) {
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	f := fsm.New(st, brokers)
+	var idx uint64
+	apply := func(cmd *pb.Command) {
+		idx++
+		data, _ := proto.Marshal(cmd)
+		f.Apply(&hraft.Log{Index: idx, Data: data})
+	}
+	apply(&pb.Command{Payload: &pb.Command_DeploymentApply{DeploymentApply: &pb.DeploymentApply{
+		Deployment: "sample", Revision: 1,
+		Routes: []*pb.Route{{Domain: "web.example.com", Deployment: "sample", Service: "web", Port: 80, TlsAuto: true}},
+	}}})
+	notAfter := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	// Staging blob lands first.
+	apply(&pb.Command{Payload: &pb.Command_CertBlobUpsert{CertBlobUpsert: &pb.CertBlobUpsert{
+		Blob: &pb.CertBlob{
+			Key:   "certificates/acme-staging-v02.api.letsencrypt.org-directory/web.example.com/web.example.com.crt",
+			Value: leafPEM(t, "web.example.com", notAfter),
+		},
+	}}})
+	// Then prod.
+	apply(&pb.Command{Payload: &pb.Command_CertBlobUpsert{CertBlobUpsert: &pb.CertBlobUpsert{
+		Blob: &pb.CertBlob{
+			Key:   "certificates/acme-v02.api.letsencrypt.org-directory/web.example.com/web.example.com.crt",
+			Value: leafPEM(t, "web.example.com", notAfter),
+		},
+	}}})
+
+	srv := grpcsrv.NewDeployServer(st, nil)
+	resp, err := srv.Status(context.Background(), &pb.DeployStatusRequest{})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if len(resp.GetCerts()) != 1 {
+		t.Fatalf("certs = %d, want 1", len(resp.GetCerts()))
+	}
+	if got := resp.GetCerts()[0].GetEnvironment(); got != "prod" {
+		t.Errorf("environment = %q, want prod (mid-promotion overlap)", got)
+	}
+}

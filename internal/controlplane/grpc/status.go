@@ -118,9 +118,21 @@ func (d *deployServer) Status(_ context.Context, req *pb.DeployStatusRequest) (*
 			}
 		}
 
-		// not_after from the leaf cert blob. certmagic stores the leaf chain
-		// at a key ending in "/<domain>.crt"; the value is PEM.
-		notAfter := map[string]*timestamppb.Timestamp{}
+		// not_after AND env from the leaf cert blob. certmagic stores the
+		// leaf chain at a key ending in "/<domain>.crt"; the value is PEM.
+		// The key also contains the issuing CA host ("acme-staging-v02..."
+		// for LE staging, "acme-v02..." for prod), so it doubles as the
+		// authoritative environment signal — independent of whether an
+		// ISSUED audit event has fired yet. Closes the window in #147
+		// where a prod cert lands in raft but the controller hasn't yet
+		// ticked to emit CERTIFICATE_ISSUED(prod): status reports `prod`
+		// the moment the blob exists. The audit event still wins for the
+		// last_renewal_at timestamp.
+		type certInfo struct {
+			notAfter *timestamppb.Timestamp
+			env      string
+		}
+		fromBlob := map[string]certInfo{}
 		for _, b := range d.state.CertBlobs.List() {
 			key := b.GetKey()
 			if !strings.HasSuffix(key, ".crt") {
@@ -130,25 +142,58 @@ func (d *deployServer) Status(_ context.Context, req *pb.DeployStatusRequest) (*
 				if !strings.Contains(key, "/"+dom+"/") {
 					continue
 				}
-				if t := leafNotAfter(b.GetValue()); t != nil {
-					notAfter[dom] = t
+				t := leafNotAfter(b.GetValue())
+				if t == nil {
+					continue
 				}
+				env := envFromCertKey(key)
+				// Prefer the prod blob when both staging and prod blobs
+				// exist for the same domain (mid-promotion window).
+				if prev, ok := fromBlob[dom]; ok && prev.env == "prod" && env != "prod" {
+					continue
+				}
+				fromBlob[dom] = certInfo{notAfter: t, env: env}
 			}
 		}
 
 		for dom := range domains {
 			info, hasAudit := latest[dom]
-			na, hasCert := notAfter[dom]
+			blob, hasCert := fromBlob[dom]
 			if !hasAudit && !hasCert {
 				continue
 			}
-			cs := &pb.CertState{Domain: dom, NotAfter: na}
+			cs := &pb.CertState{Domain: dom}
+			if hasCert {
+				cs.NotAfter = blob.notAfter
+				cs.Environment = blob.env
+			}
 			if hasAudit {
-				cs.Environment = info.env
+				// Audit drives last_renewal_at always; environment only
+				// when the blob couldn't classify (e.g., an issued event
+				// landed before the blob did — unusual but possible
+				// across replication).
 				cs.LastRenewalAt = info.ts
+				if cs.Environment == "" {
+					cs.Environment = info.env
+				}
 			}
 			resp.Certs = append(resp.Certs, cs)
 		}
 	}
 	return resp, nil
+}
+
+// envFromCertKey classifies a certmagic blob key as "staging" or "prod"
+// by the issuing CA host embedded in the key
+// ("certificates/<ca-host>/<domain>/..."). Staging is the only LE
+// directory whose host substring is `staging`; everything else (LE prod,
+// ZeroSSL, custom prod ACMEs) is reported as `prod`. Matches the
+// loadStagingChain / prodCertIssued heuristics in
+// internal/daemon/grpc/ingress.go so status and the controller agree on
+// which blobs are staging.
+func envFromCertKey(key string) string {
+	if strings.Contains(key, "staging") {
+		return "staging"
+	}
+	return "prod"
 }
