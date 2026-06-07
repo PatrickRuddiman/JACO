@@ -51,12 +51,30 @@ type Controller struct {
 	// backoff tracks a per-domain window during which we won't re-stage after
 	// a rate-limit (issuing-node-local, not raft-replicated).
 	backoff map[string]time.Time
+	// pendingProd tracks domains that were just promoted from staging→prod
+	// and are now waiting for Caddy's prod ACME order to complete. Without
+	// this, the next Reconcile tick (10s later) would see prodCertIssued
+	// still false (Caddy isn't done yet) and re-add the domain to the
+	// staging set, flipping the policy back and forcing Caddy to abandon
+	// the in-flight prod issuance — the controller would flip-flop the
+	// domain forever and no prod cert would ever land. See issue #154.
+	// Cleared when (a) prodCertIssued returns true (prod cert landed,
+	// promotion stuck) or (b) the per-domain deadline passes (prod
+	// issuance evidently failed; let ShouldStage retry from scratch).
+	pendingProd map[string]time.Time
 }
 
 // BackoffWindow is how long a domain waits after a staging rate-limit before
 // JACO re-attempts the staging dry-run. Matches LE's failed-validation
 // rate-limit reset (~1h).
 const BackoffWindow = time.Hour
+
+// PendingProdWindow is how long the controller refuses to re-stage a domain
+// after promoting it. The window must be long enough for Caddy to complete
+// a prod ACME order (HTTP-01 with rate-limit retries can take a couple of
+// minutes worst case) but short enough that a genuinely failed prod
+// issuance retries the dry-run promptly. See issue #154.
+const PendingProdWindow = 5 * time.Minute
 
 func (c *Controller) now() time.Time {
 	if c.Now != nil {
@@ -103,6 +121,9 @@ func (c *Controller) Reconcile(_ context.Context, domains []string) (changed boo
 	if c.backoff == nil {
 		c.backoff = map[string]time.Time{}
 	}
+	if c.pendingProd == nil {
+		c.pendingProd = map[string]time.Time{}
+	}
 	now := c.now()
 
 	live := map[string]bool{}
@@ -137,11 +158,44 @@ func (c *Controller) Reconcile(_ context.Context, domains []string) (changed boo
 			}
 			c.logger().Info("staging self-check passed; promoting to prod", "domain", domain)
 			delete(c.staging, domain)
+			// Mark the domain as awaiting prod issuance. The "not staging
+			// yet" branch below will skip it until prodCertIssued returns
+			// true or PendingProdWindow elapses. Without this, the next
+			// tick would re-stage the domain (because Caddy hasn't finished
+			// the prod ACME order yet → prodCertIssued=false →
+			// ShouldStage=true) and the flip-flop would never let prod
+			// issuance complete. Issue #154.
+			c.pendingProd[domain] = now.Add(PendingProdWindow)
 			if c.OnPromote != nil {
 				c.OnPromote(domain)
 			}
 			changed = true
 			continue
+		}
+
+		// Skip domains awaiting prod issuance from a recent promotion
+		// (issue #154). Caddy's prod ACME order needs ~30s+ to complete
+		// HTTP-01/TLS-ALPN-01 challenges; without this guard the per-tick
+		// Reconcile would see prodCertIssued still false and re-stage the
+		// domain, abandoning the in-flight prod order.
+		if until, pending := c.pendingProd[domain]; pending {
+			switch {
+			case c.issuedProd(domain):
+				// Prod cert landed in raft — promotion stuck. Clear the
+				// marker. ShouldStage's "already issued" rule (#3) keeps
+				// this domain out of staging permanently from here on.
+				delete(c.pendingProd, domain)
+			case now.Before(until):
+				// Prod ACME order is still in flight; do NOT re-stage.
+				continue
+			default:
+				// Window expired without a prod cert landing. Treat as a
+				// failed promotion: clear the marker and let ShouldStage
+				// retry the dry-run from scratch on this same tick.
+				c.logger().Warn("prod ACME issuance window expired without a cert landing",
+					"domain", domain, "window", PendingProdWindow)
+				delete(c.pendingProd, domain)
+			}
 		}
 
 		// Not staging yet — decide whether this new domain should stage.
