@@ -120,10 +120,36 @@ func NewWatcher(d dockerx.Docker, submit SubmitFn, now func() time.Time, after f
 	}
 }
 
-// Start begins polling the container identified by containerID. If a watcher
-// for replicaID already exists, it is cancelled and replaced — useful when a
-// rolling update gives the replica a new container id.
+// Start begins polling the container identified by containerID. Idempotent
+// for the same (replicaID, containerID) pair: when a watcher is already
+// running for that pair, Start returns immediately and the existing
+// goroutine continues. When containerID differs from the live watcher's
+// (a recreate fired — e.g. the scheduler's spec_hash drift detector
+// caught an env change, see #148) the old watcher is cancelled and a
+// fresh one starts.
+//
+// The same-container idempotency is load-bearing for the fallback path
+// in classify: a healthcheck-less container must accumulate
+// HealthyConsecutiveCount consecutive "running" polls before flipping
+// to RUNNING (line 285-289). Pre-#152 the reconciler called Start at
+// the end of every runStart, which fires on every ReplicaDesired event,
+// resync, and safety tick. In a stack with stuck depends_on waiters
+// runStart re-dispatches faster than 5 polls, so unconditionally
+// recreating the replicaWatcher (with consecutiveRunning back at 0)
+// meant the counter could never reach HealthyConsecutiveCount and
+// healthcheck-less replicas stayed PENDING indefinitely. hasHealthcheck
+// is not part of the identity check because it is derived from the
+// compose spec baked into the container at create time — a transition
+// from "compose declares healthcheck" to "compose does not" is
+// impossible without a recreate, which would have changed containerID.
 func (w *Watcher) Start(parent context.Context, replicaID, containerID string, hasHealthcheck bool) {
+	w.mu.Lock()
+	if existing, ok := w.watchers[replicaID]; ok && existing.containerID == containerID {
+		w.mu.Unlock()
+		return
+	}
+	w.mu.Unlock()
+
 	w.Stop(replicaID)
 
 	ctx, cancel := context.WithCancel(parent)

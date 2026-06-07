@@ -305,6 +305,19 @@ func healthcheckFromCompose(hc *types.HealthCheckConfig) *Healthcheck {
 	if hc == nil {
 		return nil
 	}
+	// `healthcheck: { disable: true }` is the operator saying "do not probe
+	// this service" (issue #152). Compose-go represents this as a non-nil
+	// HealthCheckConfig with Disable=true, but for JACO's reconciler the
+	// semantic is identical to "no compose healthcheck declared" — the
+	// fallback path in health.classify takes over and the replica flips to
+	// RUNNING once its container has been in Docker's "running" lifecycle
+	// state for HealthyConsecutiveCount polls. Without this guard the
+	// reconciler would wait for a Docker State.Health.Status that Docker
+	// never produces (because the probe is disabled), and the replica would
+	// stay PENDING indefinitely.
+	if hc.Disable {
+		return nil
+	}
 	out := &Healthcheck{Test: cloneStringList([]string(hc.Test))}
 	if hc.Interval != nil {
 		out.Interval = time.Duration(*hc.Interval)

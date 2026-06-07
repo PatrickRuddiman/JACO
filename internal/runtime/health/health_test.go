@@ -476,3 +476,100 @@ func (c *fakeClock) peekFirstDelay() time.Duration {
 	}
 	return c.pending[0].d
 }
+
+// TestWatcher_StartIdempotentOnSameContainer_PreservesCounter pins the fix
+// for issue #152. Pre-fix, every reconciler.runStart call invoked
+// Watcher.Start unconditionally, and Start unconditionally Stop+recreated
+// the per-replica watcher with consecutiveRunning = 0. In a stack with
+// stuck depends_on waiters the reconciler re-dispatches faster than 5
+// polls, so the no-healthcheck fallback path (classify, line 285-289)
+// never accumulated HealthyConsecutiveCount and healthcheck-less replicas
+// stayed PENDING indefinitely.
+//
+// Post-fix: Start is a no-op when called with the same (replicaID,
+// containerID), so the existing goroutine keeps polling and the counter
+// reaches 5 across re-dispatches.
+func TestWatcher_StartIdempotentOnSameContainer_PreservesCounter(t *testing.T) {
+	d := &fakeDocker{state: &types.ContainerState{Status: "running"}}
+	sub := newRecordingSubmit()
+	clock := newFakeClock()
+	w := health.NewWatcher(d, sub.Submit, clock.Now, clock.After)
+	ctx := context.Background()
+	w.Start(ctx, "sample-web-0", "c-1", false /* no healthcheck */)
+	t.Cleanup(func() { w.Stop("sample-web-0") })
+
+	// 3 ramping polls; counter at 3, still PENDING.
+	for i := 0; i < 3; i++ {
+		clock.waitForPending(t, 1)
+		clock.Advance(health.FastPollInterval)
+		sub.waitForCalls(t, i+1)
+		if got := sub.snapshot()[i].GetState(); got != pb.ReplicaState_REPLICA_STATE_PENDING {
+			t.Fatalf("ramp tick %d state = %v, want PENDING", i+1, got)
+		}
+	}
+
+	// Reconciler re-dispatches the same replica (depends_on safety tick,
+	// sibling state change, broker resync — any of the dozens of paths
+	// that funnel through runStart). Container is unchanged. Pre-fix this
+	// would tear down the watcher and reset the counter to 0. Post-fix:
+	// no-op, counter stays at 3.
+	w.Start(ctx, "sample-web-0", "c-1", false)
+	w.Start(ctx, "sample-web-0", "c-1", false)
+	w.Start(ctx, "sample-web-0", "c-1", false)
+
+	// Two more polls finish the transition. If the counter had been reset,
+	// these two would put it at 2 and the replica would still be PENDING.
+	for i := 0; i < 2; i++ {
+		clock.waitForPending(t, 1)
+		clock.Advance(health.FastPollInterval)
+		sub.waitForCalls(t, 4+i)
+	}
+	final := sub.snapshot()[len(sub.snapshot())-1]
+	if final.GetState() != pb.ReplicaState_REPLICA_STATE_RUNNING {
+		t.Errorf("after 3 ramp + 3 redispatch + 2 final polls: state = %v, want RUNNING (#152 regression — counter was reset across re-dispatches)",
+			final.GetState())
+	}
+}
+
+// TestWatcher_StartOnNewContainer_ResetsCounter pins the other half of the
+// contract: when the containerID actually changes (a real recreate — e.g.
+// the scheduler's #148 spec_hash drift detector fired and lifecycle.Start
+// stop+removed+created a fresh container), the watcher MUST tear down and
+// start fresh. The old container's poll history is meaningless for the
+// new one.
+func TestWatcher_StartOnNewContainer_ResetsCounter(t *testing.T) {
+	d := &fakeDocker{state: &types.ContainerState{Status: "running"}}
+	sub := newRecordingSubmit()
+	clock := newFakeClock()
+	w := health.NewWatcher(d, sub.Submit, clock.Now, clock.After)
+	ctx := context.Background()
+	w.Start(ctx, "sample-web-0", "c-1", false)
+	t.Cleanup(func() { w.Stop("sample-web-0") })
+
+	// 4 ramping polls; counter at 4.
+	for i := 0; i < 4; i++ {
+		clock.waitForPending(t, 1)
+		clock.Advance(health.FastPollInterval)
+		sub.waitForCalls(t, i+1)
+	}
+	// Recreate: new container ID. Counter must reset for c-2.
+	w.Start(ctx, "sample-web-0", "c-2", false)
+
+	// Goroutine A's leftover After (queued before Stop cancelled it) plus
+	// Goroutine B's first After give pending=2. Drain both — A's send
+	// reaches a dead channel (no submit), B polls and submits the 5th
+	// observation.
+	clock.waitForPending(t, 2)
+	clock.Advance(health.FastPollInterval)
+	sub.waitForCalls(t, 5)
+
+	// The 5th observation is c-2's FIRST poll. If the counter had
+	// persisted across the recreate (the bug we're guarding against),
+	// this would already be RUNNING (counter would have been 4+1=5).
+	// Post-fix it's PENDING (counter reset to 0; needs 5 more polls
+	// under c-2 to flip).
+	got := sub.snapshot()[4].GetState()
+	if got != pb.ReplicaState_REPLICA_STATE_PENDING {
+		t.Errorf("first poll under new container: state = %v, want PENDING (counter must reset on container change)", got)
+	}
+}
