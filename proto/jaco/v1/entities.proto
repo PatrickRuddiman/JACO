@@ -165,6 +165,16 @@ message ReplicaDesired {
   string host = 5;
   string image = 6;
   uint64 raft_index = 7;
+  // spec_hash is the SHA-256 of the canonical, per-service slice of the
+  // resolved compose YAML this replica was scheduled from (issue #148). The
+  // scheduler computes it on each pass and includes it in the upsert gate:
+  // a change in env values, healthcheck command, labels, mounts, or any
+  // other compose field bumps the hash, causes a ReplicaDesiredUpsert, and
+  // the runtime reconciler picks up the new RaftIndex and recreates the
+  // container. Empty for replicas scheduled by pre-v0.3.1 daemons; the
+  // first post-upgrade scheduler pass populates it and may recreate every
+  // replica once (the rolling-deploy mechanics that already exist apply).
+  bytes spec_hash = 8;
 }
 
 message ReplicaObserved {

@@ -11,6 +11,7 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -167,7 +168,23 @@ func (s *Scheduler) Reconcile(_ context.Context) {
 			continue
 		}
 		for _, svc := range dep.GetServices() {
-			cmds := s.reconcileService(dep, svc, nodes, project)
+			// Per-service spec hash drives drift detection (issue #148): a
+			// change in env values, healthcheck command, mounts, labels, or
+			// any other compose field flips the hash and forces a
+			// ReplicaDesiredUpsert below — the FSM bumps RaftIndex and the
+			// runtime reconciler picks up the mismatch and recreates the
+			// container. Without this, the upsert gate's old (Host,Image)
+			// match would short-circuit and the stale container would live
+			// on. A hash-compute failure here is treated like a parse
+			// failure: mark Deployment pending and skip the service so a
+			// malformed compose never lands in raft with a zero hash.
+			specHash, err := compose.ServiceSpecHash(dep.GetComposeYaml(), svc.GetName())
+			if err != nil {
+				batch = append(batch, deploymentStatusPending(dep.GetName(),
+					fmt.Sprintf("service %q spec hash failed: %v", svc.GetName(), err)))
+				continue
+			}
+			cmds := s.reconcileService(dep, svc, nodes, project, specHash)
 			batch = append(batch, cmds...)
 		}
 	}
@@ -195,7 +212,7 @@ func (s *Scheduler) Reconcile(_ context.Context) {
 // reconcileService computes the diff between current and desired
 // ReplicaDesired for one service. Returns the Command list (may be empty
 // when current already matches desired).
-func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, nodes []*pb.Node, project *composeProject) []*pb.Command {
+func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, nodes []*pb.Node, project *composeProject, specHash []byte) []*pb.Command {
 	image := lookupImage(project, svc.GetName())
 	if image == "" {
 		return []*pb.Command{deploymentStatusPending(dep.GetName(),
@@ -323,9 +340,15 @@ func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, no
 			Index:      d.index,
 			Host:       host,
 			Image:      image,
+			SpecHash:   specHash,
 		}
 		if cur, ok := currentByID[d.id]; ok {
-			if cur.GetHost() == host && cur.GetImage() == image {
+			// Drift gate: Host/Image AND the per-service spec hash all
+			// match → no upsert (issue #148). The hash captures env values
+			// and every other compose field, so an env-only edit reliably
+			// trips this gate and the runtime reconciler recreates the
+			// container on the next tick.
+			if cur.GetHost() == host && cur.GetImage() == image && bytes.Equal(cur.GetSpecHash(), specHash) {
 				continue // already matches desired
 			}
 			// Image-only change while rolling — gate by either the

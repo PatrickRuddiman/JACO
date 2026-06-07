@@ -604,3 +604,40 @@ func equalStrings(a, b []string) bool {
 
 // silence unused
 var _ = strconv.Itoa
+
+// TestLoadBytes_PreservesShellEscapes_NoInterpolation pins the daemon-side
+// loader's SkipInterpolation invariant (issue #149). After PR #145, CLI-side
+// SubstituteEnvVars resolves every ${VAR} and collapses $$VAR → $VAR per
+// compose-spec. The bytes the daemon parses MUST be treated as authoritative:
+// re-running compose-go's interpolator against an always-empty Environment
+// map would (a) emit "variable not set" warnings on every reconcile tick,
+// and (b) corrupt the post-CLI $VAR shell-escape to "".
+//
+// Asserts the healthcheck and command preserve a bare $VAR scalar through
+// the daemon's LoadBytes — which only holds when SkipInterpolation is set.
+func TestLoadBytes_PreservesShellEscapes_NoInterpolation(t *testing.T) {
+	body := []byte(`services:
+  db:
+    image: mysql:8
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin -p$MYSQL_ROOT_PASSWORD ping"]
+    command: ["sh", "-c", "echo $SOME_RUNTIME_VAR"]
+`)
+	p, err := compose.LoadBytes(body, "test.yml")
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	svc, ok := lookupService(p, "db")
+	if !ok {
+		t.Fatalf("service db missing")
+	}
+	if svc.HealthCheck == nil || len(svc.HealthCheck.Test) < 2 {
+		t.Fatalf("HealthCheck.Test missing or malformed: %#v", svc.HealthCheck)
+	}
+	if got := svc.HealthCheck.Test[1]; got != "mysqladmin -p$MYSQL_ROOT_PASSWORD ping" {
+		t.Errorf("healthcheck shell escape corrupted: got %q, want literal $VAR preserved", got)
+	}
+	if len(svc.Command) < 3 || svc.Command[2] != "echo $SOME_RUNTIME_VAR" {
+		t.Errorf("command shell escape corrupted: got %#v, want literal $VAR preserved", svc.Command)
+	}
+}
