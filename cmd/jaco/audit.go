@@ -22,6 +22,8 @@ func init() {
 	c := &cobra.Command{
 		Use:   "audit",
 		Short: "Query the cluster audit log",
+		// Honors --output; renders -o json / -o yaml in its own RunE.
+		Annotations: map[string]string{annotationHonorsOutput: "true"},
 	}
 	var (
 		server, opToken, caCertPath, socket string
