@@ -34,7 +34,7 @@ func TestRoot_OutputFlag_RejectsUnsupported(t *testing.T) {
 // that now serialize json/yaml (status, cluster status, node list, audit) are
 // tagged so the root guard lets non-table formats through to their RunE.
 func TestRoot_OutputFlag_StatusHonorsAnnotation(t *testing.T) {
-	for _, c := range []*cobra.Command{statusCmd(), clusterStatusCmd(), nodeListCmd()} {
+	for _, c := range []*cobra.Command{statusCmd(), clusterStatusCmd(), nodeListCmd(), getRouteCmd()} {
 		if c.Annotations[annotationHonorsOutput] != "true" {
 			t.Errorf("command %q missing %s annotation", c.Name(), annotationHonorsOutput)
 		}

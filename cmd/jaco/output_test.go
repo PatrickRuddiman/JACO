@@ -46,7 +46,7 @@ func TestStatusToView_LowercaseEnumsAndTimes(t *testing.T) {
 			Id: "sample-web-0", State: pb.ReplicaState_REPLICA_STATE_RUNNING,
 			Host: "node-a", ContainerId: "c-1", LastHealthAt: timestamppb.New(last),
 		}},
-		Routes: []*pb.Route{{Domain: "web.example.com", Deployment: "sample", Service: "web", Port: 80, TlsAuto: true}},
+		Routes: []*pb.Route{{Domain: "web.example.com", Deployment: "sample", Service: "web", Port: 80, TlsAuto: true, Path: "/api", StripPath: true}},
 	}
 	v := statusToView(resp)
 	if v.Deployments[0].Status != "active" {
@@ -60,6 +60,12 @@ func TestStatusToView_LowercaseEnumsAndTimes(t *testing.T) {
 	}
 	if v.Routes[0].TLS != "auto" {
 		t.Errorf("route tls = %q, want auto", v.Routes[0].TLS)
+	}
+	if v.Routes[0].Path != "/api" {
+		t.Errorf("route path = %q, want /api", v.Routes[0].Path)
+	}
+	if !v.Routes[0].StripPath {
+		t.Errorf("route strip_path = false, want true")
 	}
 	if v.Certs != nil {
 		t.Errorf("certs should be nil when empty, got %#v", v.Certs)

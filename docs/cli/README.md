@@ -46,6 +46,7 @@ remainder (`apply`, `status`, `logs`, `audit`, `backup`,
 | [`jaco node remove`](node.md)                | remove a node from the cluster             |
 | [`jaco apply`](apply.md)                     | apply a jaco.yaml + compose pair           |
 | [`jaco status`](status.md)                   | snapshot deployments, replicas, routes     |
+| [`jaco get route`](get-route.md)             | realized ingress routes + readiness for a domain |
 | [`jaco logs`](logs.md)                       | stream container logs across replicas      |
 | [`jaco rollback`](rollback-delete.md)        | roll a deployment back one revision        |
 | [`jaco delete`](rollback-delete.md)          | remove a deployment and its routes/certs   |

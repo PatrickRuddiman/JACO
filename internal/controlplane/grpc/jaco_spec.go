@@ -153,8 +153,8 @@ func ValidateJacoYAMLBytes(data []byte) error {
 // validateJacoYAML checks intrinsic invariants that do not require the
 // compose project: a deployment name, valid enum values on every present
 // service entry, no duplicate service names, and intrinsic route shape
-// (non-empty domain, valid port/tls, no (domain,path) duplicates, no mixed
-// TLS modes on one domain).
+// (non-empty domain, valid port/tls, no (domain,path) duplicates, at most one
+// catch-all route per domain, no mixed TLS modes on one domain).
 //
 // `services:` may be empty or absent — compose is the source of truth for
 // the container set, so a slim jaco.yaml that declares only routes is valid
@@ -217,6 +217,12 @@ func validateJacoYAML(j *JacoYAML) (code string, message string, ok bool) {
 	// would silently shadow another route. Reject all duplicates up front.
 	type domainPath struct{ domain, path string }
 	seenRoutes := map[domainPath]bool{}
+	// A domain may declare at most one catch-all (empty path) route. A second
+	// one is also a (domain, "") duplicate, but it gets a dedicated, clearer
+	// error naming both services because silently load-balancing a domain's
+	// fallback across two different services is the high-risk pattern in
+	// issue #174 (one missing/unhealthy upstream → intermittent 503s).
+	catchAllService := map[string]string{}
 	// A domain must pick one TLS mode: Caddy can't half-redirect (some paths
 	// 308→https, others served plain). Mixed tls:auto + tls:off on one domain
 	// is rejected up front (issue #46). TLS is already resolved to auto/off by
@@ -241,6 +247,14 @@ func validateJacoYAML(j *JacoYAML) (code string, message string, ok bool) {
 			return "route_tls_mixed", fmt.Sprintf("domain %q mixes tls:auto and tls:off routes; a domain must use a single TLS mode", r.Domain), false
 		}
 		domainTLS[r.Domain] = r.TLS
+		if r.Path == "" {
+			if prev, ok := catchAllService[r.Domain]; ok {
+				return "route_multiple_catchall", fmt.Sprintf(
+					"multiple catch-all routes for domain %q: services [%s, %s]; declare a path: prefix on all but one",
+					r.Domain, prev, r.Service), false
+			}
+			catchAllService[r.Domain] = r.Service
+		}
 		key := domainPath{r.Domain, r.Path}
 		if seenRoutes[key] {
 			return "validation_failed", fmt.Sprintf("route conflict: domain %q path %q is declared more than once; (domain, path) combinations must be unique", r.Domain, r.Path), false

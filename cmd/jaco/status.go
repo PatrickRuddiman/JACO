@@ -158,8 +158,10 @@ func renderStatus(out io.Writer, resp *pb.DeployStatusResponse) error {
 		return err
 	}
 
-	// Routes table.
-	rtHeaders := []string{"DOMAIN", "DEPLOYMENT", "SERVICE", "PORT", "TLS"}
+	// Routes table. PATH distinguishes path-scoped routes that share a domain
+	// (empty = catch-all); without it same-domain routes render as
+	// indistinguishable duplicate rows (issue #174).
+	rtHeaders := []string{"DOMAIN", "PATH", "DEPLOYMENT", "SERVICE", "PORT", "TLS"}
 	var rtRows [][]string
 	for _, rt := range resp.GetRoutes() {
 		tls := "off"
@@ -168,6 +170,7 @@ func renderStatus(out io.Writer, resp *pb.DeployStatusResponse) error {
 		}
 		rtRows = append(rtRows, []string{
 			rt.GetDomain(),
+			rt.GetPath(),
 			rt.GetDeployment(),
 			rt.GetService(),
 			strconv.FormatInt(int64(rt.GetPort()), 10),
@@ -235,11 +238,17 @@ type replicaView struct {
 
 type routeView struct {
 	Domain     string `json:"domain" yaml:"domain"`
+	// Path is the URL path prefix this route matches; "" means catch-all.
+	// Surfaced so same-domain path-scoped routes are distinguishable (#174).
+	Path       string `json:"path" yaml:"path"`
 	Deployment string `json:"deployment" yaml:"deployment"`
 	Service    string `json:"service" yaml:"service"`
 	Port       int32  `json:"port" yaml:"port"`
 	// TLS mirrors the table column: "auto" when ACME-managed, else "off".
 	TLS string `json:"tls" yaml:"tls"`
+	// StripPath reports whether the matched path prefix is stripped before
+	// proxying upstream (only meaningful when Path is non-empty).
+	StripPath bool `json:"strip_path" yaml:"strip_path"`
 }
 
 type certView struct {
@@ -282,10 +291,12 @@ func statusToView(resp *pb.DeployStatusResponse) statusView {
 		}
 		v.Routes = append(v.Routes, routeView{
 			Domain:     rt.GetDomain(),
+			Path:       rt.GetPath(),
 			Deployment: rt.GetDeployment(),
 			Service:    rt.GetService(),
 			Port:       rt.GetPort(),
 			TLS:        tls,
+			StripPath:  rt.GetStripPath(),
 		})
 	}
 	for _, cs := range resp.GetCerts() {
