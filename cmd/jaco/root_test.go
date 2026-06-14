@@ -1,31 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 )
-
-// runRootWith invokes rootCmd with the supplied args and returns the error
-// from Execute plus whatever the command wrote to its captured out/err.
-// flagOutput is restored after the call so tests don't leak the persistent
-// flag value into one another.
-func runRootWith(t *testing.T, args ...string) (error, string) {
-	t.Helper()
-	prev := flagOutput
-	t.Cleanup(func() {
-		flagOutput = prev
-		_ = rootCmd.PersistentFlags().Set("output", prev)
-	})
-	var buf bytes.Buffer
-	rootCmd.SetOut(&buf)
-	rootCmd.SetErr(&buf)
-	rootCmd.SetArgs(args)
-	err := rootCmd.Execute()
-	return err, buf.String()
-}
 
 // TestRoot_OutputFlag_RejectsUnsupported pins the interim guard from #156:
 // commands that do not opt into --output via annotationHonorsOutput must
