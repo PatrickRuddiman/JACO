@@ -120,8 +120,43 @@ verify by reading `registry list` from a follower's socket.
 
 Pull-time longest-prefix resolution needs a real private image pull (docker + a
 private registry); it's covered by unit tests
-(`internal/runtime/pull/auth_test.go`) and is the one surface this flow does not
-observe live.
+(`internal/runtime/pull/auth_test.go`).
+
+### Regression guard — single namespace credential must cover its whole host (#172)
+
+Keying credentials per namespace (above) silently broke a single-credential
+deployment: before #171 a `registry login HOST/ns` login was stored under the
+bare host key and authenticated *every* path on that host; #171 began
+preserving the namespace, so an image on a **sibling** path (`HOST/other/app`)
+matched no key, pulled anonymously, hit a registry `401`, and — because
+`pull.Pull` retries forever — left the replica stuck `PENDING` with an empty
+`container_id` and no docker events (the deploy "rolls indefinitely" when a
+`depends_on` dependent is gated on it).
+
+The fix (`pull.ResolveCredentialKey`) restores host-wide coverage **only when a
+host has exactly one credential**; multiple namespace-scoped credentials on one
+host still resolve independently (an unconfigured sibling stays anonymous).
+
+Reproduce on the testbed with a token-auth registry whose ACL scopes each
+namespace separately (a single shared htpasswd would mask the bug — any valid
+credential pulls any path). Register **one** namespace-scoped credential whose
+account is authorized for several namespaces, then deploy stacks pulling from
+sibling namespaces:
+
+```bash
+S=/run/jaco/jaco.sock
+# robot is authorized (registry ACL) for team-a, team-b AND team-c:
+echo secretR | sudo ./jaco registry login reg.example.com:5000/team-a -u robot --password-stdin --socket $S
+sudo ./jaco registry list --socket $S            # EXPECT 1 row: reg.example.com:5000/team-a
+# deploy three stacks: images team-a/app, team-b/app, team-c/app
+# EXPECT (fixed): all three RUNNING; jacod log has ZERO "anonymous token" / 401 lines
+# Pre-fix: team-a RUNNING, team-b/team-c stuck PENDING with
+#   "image pull failed ... failed to fetch anonymous token ... 401 Unauthorized"
+```
+
+Verified live on the Azure testbed: pre-fix the sibling-path stacks logged the
+401 above and never started; post-fix all three pull via the sole-host-credential
+fallback and reach RUNNING with no anonymous-token errors.
 
 ## Teardown
 
