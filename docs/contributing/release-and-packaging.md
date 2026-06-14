@@ -52,8 +52,21 @@ nfpm-built from [`nfpm.yaml`](../../nfpm.yaml). Lays down:
   survive upgrade).
 
 Postinstall, preremove, and postremove hooks under
-`build/packaging/` handle daemon-reload and clean removal. Per-format
-dependencies:
+`build/packaging/` handle daemon-reload, clean removal, and preserving
+the operator's systemd state across upgrades. The hooks inspect the
+maintainer-script argument so they distinguish an **upgrade** from a
+**removal** (deb `remove` / rpm `0` = removal; deb `upgrade <ver>` /
+rpm `1` = upgrade):
+
+- **preremove** only stops + disables `jaco` on a real removal. On an
+  upgrade it does nothing, so an already-enabled+running node keeps its
+  state (issue #173).
+- **postinstall** restarts `jaco` after an upgrade **only if** the unit
+  was already enabled and active, so the new binary is picked up. A
+  fresh install still never auto-enables or auto-starts — the operator
+  must `systemctl enable --now jaco` after editing the config.
+
+Per-format dependencies:
 
 - `.deb` → `docker.io | docker-ce | docker-engine`
 - `.rpm` → `/usr/bin/docker`
