@@ -148,6 +148,12 @@ service Deploy {
   // counter, and the resolved start-ordering dependencies. Reads local state;
   // no leader required so the CLI can hit any node, like Status.
   rpc GetReplicas(GetReplicasRequest) returns (GetReplicasResponse);
+  // GetRoute returns the realized ingress view for one domain: the ordered
+  // routes Caddy serves (path matches longest-prefix-first, catch-all last),
+  // each with its upstream service/port and how many replicas are currently
+  // eligible as upstreams. Lets operators verify path-scoping and spot a
+  // route whose upstream service has no healthy replicas (issue #174).
+  rpc GetRoute(GetRouteRequest) returns (GetRouteResponse);
 }
 
 message ApplyRequest {
@@ -200,6 +206,35 @@ message CertState {
   string environment = 2;
   google.protobuf.Timestamp not_after = 3;
   google.protobuf.Timestamp last_renewal_at = 4;
+}
+
+message GetRouteRequest {
+  string domain = 1;
+}
+message GetRouteResponse {
+  string domain = 1;
+  // routes are ordered exactly as Caddy evaluates them: path-scoped routes
+  // longest-prefix-first, with the catch-all (empty path) route last.
+  repeated RealizedRoute routes = 2;
+}
+// RealizedRoute is one ingress route as it is actually served for a domain,
+// joined with live upstream health (issue #174).
+message RealizedRoute {
+  // path is the matched URL prefix; empty means catch-all (see catch_all).
+  string path = 1;
+  bool catch_all = 2;
+  string deployment = 3;
+  string service = 4;
+  int32 port = 5;
+  bool tls_auto = 6;
+  bool strip_path = 7;
+  // ready_replicas is the number of running, health-fresh replicas of the
+  // upstream (deployment, service) that Caddy would dial; 0 means every
+  // request hitting this route returns 503.
+  int32 ready_replicas = 8;
+  // total_replicas is the number of observed replicas for the upstream
+  // (deployment, service), healthy or not.
+  int32 total_replicas = 9;
 }
 
 message LogsRequest {

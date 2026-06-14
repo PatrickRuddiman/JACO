@@ -351,24 +351,6 @@ func getRoutesCmd() *cobra.Command {
 	return c
 }
 
-func getRouteCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:   "route <domain>",
-		Short: "Print every ingress entry for one domain in path-match order",
-		Args:  cobra.ExactArgs(1),
-	}
-	a := addOperatorFlags(c)
-	c.RunE = func(_ *cobra.Command, args []string) error {
-		client, ctx, cleanup, err := dialDeploy(*a)
-		if err != nil {
-			return err
-		}
-		defer cleanup()
-		return runGetRoute(ctx, client, args[0], os.Stdout)
-	}
-	return c
-}
-
 func runGetRoutes(ctx context.Context, client pb.DeployClient, domain string, out io.Writer) error {
 	resp, err := client.Status(ctx, &pb.DeployStatusRequest{})
 	if err != nil {
@@ -377,21 +359,6 @@ func runGetRoutes(ctx context.Context, client pb.DeployClient, domain string, ou
 	views := routeViews(resp.GetRoutes(), domain)
 	return renderOutput(out, views, func() error {
 		fmt.Fprintln(out, "Routes:")
-		return renderRouteTable(out, views)
-	})
-}
-
-func runGetRoute(ctx context.Context, client pb.DeployClient, domain string, out io.Writer) error {
-	resp, err := client.Status(ctx, &pb.DeployStatusRequest{})
-	if err != nil {
-		return cliclient.FormatError(err)
-	}
-	views := routeViews(resp.GetRoutes(), domain)
-	if len(views) == 0 {
-		return fmt.Errorf("route %q not found", domain)
-	}
-	return renderOutput(out, views, func() error {
-		fmt.Fprintf(out, "Route: %s\n", domain)
 		return renderRouteTable(out, views)
 	})
 }

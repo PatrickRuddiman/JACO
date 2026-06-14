@@ -472,6 +472,7 @@ const (
 	Deploy_Status_FullMethodName      = "/jaco.v1.Deploy/Status"
 	Deploy_Logs_FullMethodName        = "/jaco.v1.Deploy/Logs"
 	Deploy_GetReplicas_FullMethodName = "/jaco.v1.Deploy/GetReplicas"
+	Deploy_GetRoute_FullMethodName    = "/jaco.v1.Deploy/GetRoute"
 )
 
 // DeployClient is the client API for Deploy service.
@@ -489,6 +490,12 @@ type DeployClient interface {
 	// counter, and the resolved start-ordering dependencies. Reads local state;
 	// no leader required so the CLI can hit any node, like Status.
 	GetReplicas(ctx context.Context, in *GetReplicasRequest, opts ...grpc.CallOption) (*GetReplicasResponse, error)
+	// GetRoute returns the realized ingress view for one domain: the ordered
+	// routes Caddy serves (path matches longest-prefix-first, catch-all last),
+	// each with its upstream service/port and how many replicas are currently
+	// eligible as upstreams. Lets operators verify path-scoping and spot a
+	// route whose upstream service has no healthy replicas (issue #174).
+	GetRoute(ctx context.Context, in *GetRouteRequest, opts ...grpc.CallOption) (*GetRouteResponse, error)
 }
 
 type deployClient struct {
@@ -568,6 +575,16 @@ func (c *deployClient) GetReplicas(ctx context.Context, in *GetReplicasRequest, 
 	return out, nil
 }
 
+func (c *deployClient) GetRoute(ctx context.Context, in *GetRouteRequest, opts ...grpc.CallOption) (*GetRouteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetRouteResponse)
+	err := c.cc.Invoke(ctx, Deploy_GetRoute_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DeployServer is the server API for Deploy service.
 // All implementations must embed UnimplementedDeployServer
 // for forward compatibility.
@@ -583,6 +600,12 @@ type DeployServer interface {
 	// counter, and the resolved start-ordering dependencies. Reads local state;
 	// no leader required so the CLI can hit any node, like Status.
 	GetReplicas(context.Context, *GetReplicasRequest) (*GetReplicasResponse, error)
+	// GetRoute returns the realized ingress view for one domain: the ordered
+	// routes Caddy serves (path matches longest-prefix-first, catch-all last),
+	// each with its upstream service/port and how many replicas are currently
+	// eligible as upstreams. Lets operators verify path-scoping and spot a
+	// route whose upstream service has no healthy replicas (issue #174).
+	GetRoute(context.Context, *GetRouteRequest) (*GetRouteResponse, error)
 	mustEmbedUnimplementedDeployServer()
 }
 
@@ -610,6 +633,9 @@ func (UnimplementedDeployServer) Logs(*LogsRequest, grpc.ServerStreamingServer[L
 }
 func (UnimplementedDeployServer) GetReplicas(context.Context, *GetReplicasRequest) (*GetReplicasResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetReplicas not implemented")
+}
+func (UnimplementedDeployServer) GetRoute(context.Context, *GetRouteRequest) (*GetRouteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetRoute not implemented")
 }
 func (UnimplementedDeployServer) mustEmbedUnimplementedDeployServer() {}
 func (UnimplementedDeployServer) testEmbeddedByValue()                {}
@@ -733,6 +759,24 @@ func _Deploy_GetReplicas_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Deploy_GetRoute_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRouteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeployServer).GetRoute(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Deploy_GetRoute_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeployServer).GetRoute(ctx, req.(*GetRouteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Deploy_ServiceDesc is the grpc.ServiceDesc for Deploy service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -759,6 +803,10 @@ var Deploy_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetReplicas",
 			Handler:    _Deploy_GetReplicas_Handler,
+		},
+		{
+			MethodName: "GetRoute",
+			Handler:    _Deploy_GetRoute_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

@@ -51,7 +51,7 @@ func TestRunStatus_RendersThreeTables(t *testing.T) {
 	for _, want := range []string{
 		"Deployments:", "DEPLOYMENT", "sample", "ACTIVE",
 		"Replicas:", "REPLICA_ID", "sample-web-0", "RUNNING",
-		"Routes:", "DOMAIN", "web.example.com", "auto",
+		"Routes:", "DOMAIN", "PATH", "web.example.com", "auto",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q:\n%s", want, got)
@@ -100,6 +100,32 @@ func TestRunStatus_OmitsCertsTableWhenEmpty(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "Certs:") {
 		t.Errorf("Certs table rendered with no cert state:\n%s", out.String())
+	}
+}
+
+// TestRunStatus_RendersPathColumn verifies that same-domain routes differing
+// only by path render as distinct rows with the PATH column populated (the
+// catch-all route shows an empty path). Regression for issue #174.
+func TestRunStatus_RendersPathColumn(t *testing.T) {
+	client := &fakeDeployStatusClient{
+		statusFn: func(_ context.Context, _ *pb.DeployStatusRequest) (*pb.DeployStatusResponse, error) {
+			return &pb.DeployStatusResponse{
+				Routes: []*pb.Route{
+					{Domain: "example.com", Deployment: "app", Service: "oauth2", Port: 4180, TlsAuto: true, Path: "/oauth2"},
+					{Domain: "example.com", Deployment: "app", Service: "website", Port: 8080, TlsAuto: true},
+				},
+			}, nil
+		},
+	}
+	var out bytes.Buffer
+	if err := runStatus(context.Background(), client, "", "", &out); err != nil {
+		t.Fatalf("runStatus: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"PATH", "/oauth2", "oauth2", "website"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("path output missing %q:\n%s", want, got)
+		}
 	}
 }
 

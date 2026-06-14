@@ -46,7 +46,10 @@ Renders up to four tables, in order:
   LAST_HEALTH_AT`. State is from the closed
   `pending | pulling | running | degraded | updating | failed | stopped`
   enum.
-- **Routes** — `DOMAIN, DEPLOYMENT, SERVICE, PORT, TLS`. TLS is
+- **Routes** — `DOMAIN, PATH, DEPLOYMENT, SERVICE, PORT, TLS`. `PATH` is
+  the URL path prefix the route matches; empty means catch-all. Routes that
+  share a `DOMAIN` but differ by `PATH` are path-scoped (Caddy tries the
+  longest prefix first, falling through to the catch-all). TLS is
   `auto` or `off`.
 - **Certs** — `DOMAIN, ENVIRONMENT, NOT_AFTER, LAST_RENEWAL_AT`. Only
   rendered when at least one managed cert exists.
@@ -124,6 +127,7 @@ sudo jaco status hello
 
 ## See also
 
+- [`jaco get route`](get-route.md)
 - [`jaco apply`](apply.md)
 - [`jaco logs`](logs.md)
 - [Status and errors](../concepts/status-and-errors.md)

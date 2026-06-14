@@ -93,33 +93,6 @@ func TestRunGetDeployment_NotFound(t *testing.T) {
 	}
 }
 
-func TestRunGetRoute_FiltersAndShowsPath(t *testing.T) {
-	client := &fakeGetClient{statusFn: func(_ context.Context, _ *pb.DeployStatusRequest) (*pb.DeployStatusResponse, error) {
-		return sampleStatusResp(), nil
-	}}
-	var out bytes.Buffer
-	flagOutput = "table"
-	if err := runGetRoute(context.Background(), client, "web.example.com", &out); err != nil {
-		t.Fatalf("runGetRoute: %v", err)
-	}
-	for _, want := range []string{"Route: web.example.com", "PATH", "/api", "STRIP_PATH", "auto"} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("output missing %q:\n%s", want, out.String())
-		}
-	}
-}
-
-func TestRunGetRoute_NotFound(t *testing.T) {
-	client := &fakeGetClient{statusFn: func(_ context.Context, _ *pb.DeployStatusRequest) (*pb.DeployStatusResponse, error) {
-		return sampleStatusResp(), nil
-	}}
-	var out bytes.Buffer
-	flagOutput = "table"
-	if err := runGetRoute(context.Background(), client, "absent.example.com", &out); err == nil {
-		t.Fatalf("err = nil, want not found")
-	}
-}
-
 func TestRunGetReplica_YamlWithDependsOn(t *testing.T) {
 	client := &fakeGetClient{replicasFn: func(_ context.Context, req *pb.GetReplicasRequest) (*pb.GetReplicasResponse, error) {
 		if req.GetReplicaId() != "sample-web-0" {
