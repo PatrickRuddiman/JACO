@@ -8,11 +8,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// runRootWith invokes rootCmd with the supplied args and returns the error
-// from Execute plus whatever the command wrote to its captured out/err.
+// runRootWith invokes rootCmd with the supplied args and returns whatever the
+// command wrote to its captured out/err plus the error from Execute.
 // flagOutput is restored after the call so tests don't leak the persistent
 // flag value into one another.
-func runRootWith(t *testing.T, args ...string) (error, string) {
+func runRootWith(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	prev := flagOutput
 	t.Cleanup(func() {
@@ -24,7 +24,7 @@ func runRootWith(t *testing.T, args ...string) (error, string) {
 	rootCmd.SetErr(&buf)
 	rootCmd.SetArgs(args)
 	err := rootCmd.Execute()
-	return err, buf.String()
+	return buf.String(), err
 }
 
 // TestRoot_OutputFlag_RejectsUnsupported pins the quick-fix from #156:
@@ -34,7 +34,7 @@ func runRootWith(t *testing.T, args ...string) (error, string) {
 func TestRoot_OutputFlag_RejectsUnsupported(t *testing.T) {
 	for _, fmt := range []string{"json", "yaml"} {
 		t.Run(fmt, func(t *testing.T) {
-			err, _ := runRootWith(t, "status", "-o", fmt)
+			_, err := runRootWith(t, "status", "-o", fmt)
 			if err == nil {
 				t.Fatalf("expected error for -o %s, got nil", fmt)
 			}
