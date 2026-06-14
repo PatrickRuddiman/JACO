@@ -1,6 +1,7 @@
 ---
 sources:
   - cmd/jaco/cluster.go
+  - cmd/jaco/systemd.go
   - internal/controlplane/grpc/cluster.go
   - internal/controlplane/bootstrap/
 ---

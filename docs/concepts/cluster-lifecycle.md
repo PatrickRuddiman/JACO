@@ -7,6 +7,7 @@ sources:
   - internal/scheduler/drain/
   - cmd/jaco/cluster.go
   - cmd/jaco/node.go
+  - cmd/jaco/systemd.go
 ---
 
 # Cluster lifecycle
@@ -49,6 +50,13 @@ What the daemon does:
    open.
 6. Prints the operator token once; the plaintext is never recoverable.
 
+The CLI then enables `jaco.service` (via `systemctl enable jaco`) so the
+freshly-committed node survives a reboot — the deb installs the unit disabled
+on purpose so a half-configured node never auto-starts, and `init` is exactly
+where that posture stops being right. It is best-effort (a no-op where
+`systemctl` is absent, a warning rather than a hard failure on error) and can
+be skipped with `--no-systemd-enable`.
+
 The cluster CA private key lives in the raft state, replicated to every
 node. It never leaves the cluster boundary. Per-node server keys are
 generated locally and never replicated.
@@ -86,6 +94,10 @@ What the joining daemon does:
    doesn't count toward quorum). The leader's voter-set reconciler
    then promotes it to voter or leaves it as a nonvoter according to
    the [odd-count rule](#voter-set-policy) below.
+
+As with `cluster init`, the CLI enables `jaco.service` after a successful join
+so the new member rejoins automatically after a reboot (`--no-systemd-enable`
+opts out; best-effort and a no-op on non-systemd hosts).
 
 The join token is single-use. A consumed token cannot be reused; a
 fresh one must be issued.

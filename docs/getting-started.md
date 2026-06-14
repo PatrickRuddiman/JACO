@@ -56,11 +56,17 @@ sudo jaco cluster init
 #   operator_token: <64 hex chars>
 #
 # Save the operator token now — it cannot be recovered.
+# Enabled jaco.service to start on boot — this node now survives reboot.
 ```
 
 Save the operator token in your password manager. It is the only
 credential that authorizes state-changing RPCs against this cluster
 until you issue more via `jaco token issue`.
+
+`cluster init` also enables `jaco.service` so the daemon comes back up on
+reboot — this is the point at which the node commits to a cluster, so the
+service's installed-but-disabled posture no longer applies. Pass
+`--no-systemd-enable` to opt out (then ensure `jacod` starts on boot yourself).
 
 ## 3. Join the other nodes
 
@@ -81,7 +87,11 @@ On each follower:
 ```sh
 sudo jaco node join --peer <node-1-host>:7000 --token <single-use>
 # Joined cluster.
+# Enabled jaco.service to start on boot — this node now survives reboot.
 ```
+
+Like `cluster init`, `node join` enables `jaco.service` on success so the
+follower rejoins automatically after a reboot. `--no-systemd-enable` opts out.
 
 Confirm everyone is in:
 

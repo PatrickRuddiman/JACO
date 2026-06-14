@@ -1,6 +1,7 @@
 ---
 sources:
   - cmd/jaco/node.go
+  - cmd/jaco/systemd.go
   - internal/controlplane/grpc/cluster.go
   - internal/scheduler/drain/
 ---
