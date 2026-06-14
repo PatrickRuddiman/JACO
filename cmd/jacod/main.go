@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/coreos/go-systemd/v22/activation"
 	"github.com/coreos/go-systemd/v22/daemon"
 
 	"github.com/PatrickRuddiman/jaco/internal/daemon/config"
@@ -97,8 +98,31 @@ func run(ctx context.Context, configPath string, root *slog.Logger) error {
 		docker = d
 	}
 
+	// Systemd socket activation (issue #167): when jacod is started via the
+	// jaco.socket unit, PID 1 has already created and bound
+	// /run/jaco/jaco.sock in the HOST mount namespace and passed us the fd.
+	// Inheriting it guarantees the socket is host-visible to the jaco group
+	// regardless of the daemon's own (sandboxed) mount namespace. When not
+	// socket-activated, activation.Listeners() returns no listeners and we
+	// fall back to creating the socket from cfg.UnixSocket ourselves.
+	var unixListener net.Listener
+	if listeners, lErr := activation.Listeners(); lErr != nil {
+		logger.Warn("systemd socket activation probe failed, using path-based socket", "error", lErr)
+	} else {
+		for _, l := range listeners {
+			if _, ok := l.(*net.UnixListener); ok {
+				unixListener = l
+				break
+			}
+		}
+		if unixListener != nil {
+			logger.Info("using systemd-activated local-control socket", "socket", cfg.UnixSocket)
+		}
+	}
+
 	server, err := dgrpc.New(dgrpc.Options{
 		UnixSocketPath:       cfg.UnixSocket,
+		UnixListener:         unixListener,
 		DataDir:              cfg.DataDir,
 		ListenAddr:           listenBind,
 		ListenAdvertiseAddr:  listenAdvertise,

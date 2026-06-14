@@ -47,6 +47,10 @@ contents:
     dst: /lib/systemd/system/jaco.service
     file_info:
       mode: 0644
+  - src: build/jaco.socket
+    dst: /lib/systemd/system/jaco.socket
+    file_info:
+      mode: 0644
   - src: build/jacod.yaml
     dst: /etc/jaco/jacod.yaml
     type: config|noreplace

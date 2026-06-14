@@ -3,10 +3,12 @@ sources:
   - internal/daemon/config/
   - internal/daemon/netdetect/
   - internal/daemon/grpc/heartbeat.go
+  - internal/daemon/grpc/server.go
   - internal/discovery/dns/forwarder.go
   - internal/discovery/dns/resolvconf.go
   - internal/runtime/cgroupv2/
   - cmd/jacod/main.go
+  - build/jaco.socket
 ---
 
 # Configuration
@@ -83,6 +85,16 @@ boundary: any process whose user is in the `jaco` group can drive the
 local daemon **without** presenting a bearer token. See
 [Auth and tokens](concepts/auth-and-tokens.md). Default
 `/var/run/jaco/jaco.sock`.
+
+Under the shipped systemd unit the socket is **socket-activated**:
+`jaco.socket` (PID 1) creates and binds it in the host mount namespace
+and passes the listening file descriptor to `jacod`, which serves the
+inherited socket instead of binding the path itself. Keep this key in
+sync with `jaco.socket`'s `ListenStream=` — they must name the same
+path. Without socket activation (e.g. running `jacod` by hand) the
+daemon falls back to binding `unix_socket` directly. See
+[Troubleshooting](operations/troubleshooting.md) for the issue #167
+background.
 
 ### `wg_port` (int, required, 1–65535)
 

@@ -66,7 +66,7 @@ Registered on the root command in `cmd/jaco/root.go`:
 | flag                  | env                | default | meaning                                                        |
 |-----------------------|--------------------|---------|----------------------------------------------------------------|
 | `--context <name>`    | —                  | —       | named cluster context (clusters-config support is in progress) |
-| `-o, --output <fmt>`  | —                  | `table` | output format. Currently honored only by `jaco audit` (`table` / `json`); every other subcommand rejects non-default values with `output format "<fmt>" not implemented yet; only "table" is supported (#156)` to fail loudly on CI scripts that parse the wrong shape |
+| `-o, --output <fmt>`  | —                  | `table` | output format `table` / `json` / `yaml`. Honored by the read-only commands `jaco status`, `jaco cluster status`, `jaco node list`, and `jaco audit`. Mutating commands (`apply`, `delete`, `rollback`, `node join`, …) still reject non-`table` values with `output format "<fmt>" not implemented yet; only "table" is supported (#156)` so CI scripts that parse the wrong shape fail loudly. Structured output uses lowercase `snake_case` enum values (e.g. `running`, `active`, `ready`); table output keeps UPPERCASE for human scanning |
 | `--server <addr>`     | —                  | —       | single-shot server override; bypasses context                  |
 | `-q, --quiet`         | —                  | `false` | suppress non-essential output                                  |
 | `-v, --verbose`       | —                  | `false` | debug-level logs to stderr                                     |

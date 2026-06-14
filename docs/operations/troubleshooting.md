@@ -7,6 +7,10 @@ sources:
   - internal/ingress/
   - internal/discovery/dns/
   - proto/jaco/v1/entities.proto
+  - internal/daemon/grpc/server.go
+  - cmd/jacod/main.go
+  - build/jaco.service
+  - build/jaco.socket
 ---
 
 # Troubleshooting
@@ -81,6 +85,54 @@ jaco token issue --server $LEADER --name <your-identity>
 revoke it without minting a replacement first, you lock yourself out
 of the cluster (the unix-socket path on cluster nodes is the only
 remaining way in).
+
+## `local socket /var/run/jaco/jaco.sock is not available`
+
+```
+no --server given and local socket /var/run/jaco/jaco.sock is not available:
+pass --server (host:port) with --token, or run this command on a cluster node
+with the jaco daemon socket
+```
+
+A `jaco`-group member on a cluster node runs an on-node command (no
+`--server`) and the CLI can't find the control socket — even though the
+daemon is healthy and `ss -xlp | grep jaco` shows it listening on exactly
+that path.
+
+The classic signature is the socket being visible to `jacod` but not to the
+host: `ss` proves it's listening, yet `ls -lL /var/run/jaco/jaco.sock`
+reports "No such file or directory" for root and group members alike. That
+means `jacod` bound the socket inside a **private mount namespace** — the
+path resolves only inside the daemon's own mount view. Confirm with:
+
+```sh
+nsenter -t "$(pgrep -x jacod)" -m ls -lL /run/jaco/   # socket present in-ns?
+ls -lL /run/jaco/                                      # absent on the host?
+```
+
+If the socket shows up under `nsenter` but not on the host, `jacod` bound
+the socket itself inside its private mount namespace instead of inheriting
+it from systemd (issue #167). The fix is **systemd socket activation**: the
+shipped `jaco.socket` unit makes PID 1 create and bind `/run/jaco/jaco.sock`
+in the host mount namespace and pass the daemon the file descriptor, so the
+socket is host-visible no matter how the daemon's filesystem is sandboxed.
+`jaco.service` pulls it in via `Requires=jaco.socket` / `After=jaco.socket`,
+and `jacod` logs `using systemd-activated local-control socket` on startup.
+
+If `jaco.socket` is missing or disabled, install it and reload:
+
+```sh
+sudo install -m 0644 jaco.socket /lib/systemd/system/jaco.socket
+sudo systemctl daemon-reload
+sudo systemctl restart jaco        # Requires= starts jaco.socket first
+ls -lL /run/jaco/jaco.sock         # now present on the host
+```
+
+The socket stays mode `0660`, group `jaco` (set by the `jaco.socket` unit),
+so any `jaco`-group member can drive the daemon over it with no token.
+Relatedly, keep the symlinked `/var/run/jaco` and bare `/run` out of the
+service's `ReadWritePaths` — listing them adds a second, namespace-private
+bind mount that would re-shadow the host-visible `/run/jaco`.
 
 ## `validation_failed`
 
@@ -293,15 +345,20 @@ spec.
 
 ## `output format "<fmt>" not implemented yet; only "table" is supported (#156)`
 
-v0.3.4+ CLI explicitly rejects `-o json` / `-o yaml` on every
-subcommand except `jaco audit` (the only one that actually
-implements non-table output). Pre-v0.3.4 the flag was silently
-ignored — CI pipelines piping `jaco status -o json | jq .` got a
-`parse error` from jq because the actual output was the table
-format. The hard rejection makes the breakage visible. Use `jaco
-audit -o json` for any structured-output need; for `status` /
-`logs` / etc., either parse the table or watch for v0.4.0 which
-may extend `-o json` coverage.
+The read-only commands `jaco status`, `jaco cluster status`, `jaco
+node list`, and `jaco audit` implement `-o json` and `-o yaml`, so
+`jaco status mydeploy -o json | jq .` works as expected. Structured
+output uses lowercase `snake_case` enum values (e.g. replica state
+`running`, deployment status `active`, node status `ready`); the
+`table` view keeps the UPPERCASE form for human scanning.
+
+Mutating commands (`apply`, `delete`, `rollback`, `node join`,
+`logs`, …) do **not** serialize json/yaml and reject non-`table`
+values with this hard error rather than silently emitting table
+output. That deliberate failure makes the gap visible to CI: a
+pre-v0.3.4 `jaco status -o json | jq .` silently produced table text
+and jq raised a `parse error`; the rejection (and now the real
+serializers) prevent that class of silent breakage.
 
 ## `port_conflict`
 

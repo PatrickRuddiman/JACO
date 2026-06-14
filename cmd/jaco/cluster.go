@@ -83,6 +83,8 @@ func clusterStatusCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "status",
 		Short: "Show the local jacod's cluster status",
+		// Honors --output; renders -o json / -o yaml in runClusterStatus.
+		Annotations: map[string]string{annotationHonorsOutput: "true"},
 	}
 	var socket string
 	c.Flags().StringVar(&socket, "socket", socketDefault(), "local jacod unix socket")
@@ -106,6 +108,13 @@ func runClusterStatus(ctx context.Context, client pb.ClusterClient, out io.Write
 	if err != nil {
 		return cliclient.FormatError(err)
 	}
+	return renderOutput(out, clusterStatusToView(resp), func() error {
+		return renderClusterStatus(out, resp)
+	})
+}
+
+// renderClusterStatus writes the human-readable cluster status view.
+func renderClusterStatus(out io.Writer, resp *pb.ClusterStatusResponse) error {
 	if !resp.GetInitialized() {
 		fmt.Fprintln(out, "Status:    uninitialized")
 		fmt.Fprintln(out, "")
@@ -125,15 +134,7 @@ func runClusterStatus(ctx context.Context, client pb.ClusterClient, out io.Write
 	// leader; we render "?" for the suffrage cell in that case so
 	// operators see they're looking at follower-derived data rather
 	// than misread an absent column.
-	suffrage := make(map[string]string, len(resp.GetSuffrages()))
-	for _, s := range resp.GetSuffrages() {
-		switch s.GetKind() {
-		case pb.NodeSuffrage_KIND_VOTER:
-			suffrage[s.GetHostname()] = "VOTER"
-		case pb.NodeSuffrage_KIND_NONVOTER:
-			suffrage[s.GetHostname()] = "NONVOTER"
-		}
-	}
+	suffrage := suffrageByHostname(resp)
 	fmt.Fprintf(out, "Nodes (%d):\n", len(resp.GetNodes()))
 	for _, n := range resp.GetNodes() {
 		status := strings.TrimPrefix(n.GetStatus().String(), "NODE_STATUS_")
@@ -147,6 +148,68 @@ func runClusterStatus(ctx context.Context, client pb.ClusterClient, out io.Write
 		fmt.Fprintf(out, "  - %s @ %s [%s, %s]\n", n.GetHostname(), n.GetAddress(), status, s)
 	}
 	return nil
+}
+
+// suffrageByHostname maps each node's hostname to its raft suffrage as an
+// UPPERCASE table token ("VOTER"/"NONVOTER"); hostnames absent from the map
+// have no observable suffrage (follower-derived or pre-config).
+func suffrageByHostname(resp *pb.ClusterStatusResponse) map[string]string {
+	suffrage := make(map[string]string, len(resp.GetSuffrages()))
+	for _, s := range resp.GetSuffrages() {
+		switch s.GetKind() {
+		case pb.NodeSuffrage_KIND_VOTER:
+			suffrage[s.GetHostname()] = "VOTER"
+		case pb.NodeSuffrage_KIND_NONVOTER:
+			suffrage[s.GetHostname()] = "NONVOTER"
+		}
+	}
+	return suffrage
+}
+
+// --- structured (-o json / -o yaml) view --------------------------------------
+
+// clusterStatusView is the JSON/YAML shape of `jaco cluster status`. Enum
+// fields (node status, suffrage) are lowercase snake_case; suffrage is
+// "voter" | "nonvoter" | "unknown" (the last when this jacod can't observe a
+// node's raft suffrage).
+type clusterStatusView struct {
+	Initialized bool              `json:"initialized" yaml:"initialized"`
+	Leader      string            `json:"leader" yaml:"leader"`
+	RaftIndex   uint64            `json:"raft_index" yaml:"raft_index"`
+	Nodes       []clusterNodeView `json:"nodes" yaml:"nodes"`
+}
+
+type clusterNodeView struct {
+	Hostname string `json:"hostname" yaml:"hostname"`
+	Address  string `json:"address" yaml:"address"`
+	Status   string `json:"status" yaml:"status"`
+	Suffrage string `json:"suffrage" yaml:"suffrage"`
+}
+
+// clusterStatusToView builds the structured cluster status. When uninitialized
+// it returns {initialized:false} with an empty node list so scripts get a
+// stable shape instead of the prose the table path prints.
+func clusterStatusToView(resp *pb.ClusterStatusResponse) clusterStatusView {
+	v := clusterStatusView{
+		Initialized: resp.GetInitialized(),
+		Leader:      resp.GetLeader(),
+		RaftIndex:   resp.GetRaftIndex(),
+		Nodes:       make([]clusterNodeView, 0, len(resp.GetNodes())),
+	}
+	suffrage := suffrageByHostname(resp)
+	for _, n := range resp.GetNodes() {
+		s, ok := suffrage[n.GetHostname()]
+		if !ok {
+			s = "unknown"
+		}
+		v.Nodes = append(v.Nodes, clusterNodeView{
+			Hostname: n.GetHostname(),
+			Address:  n.GetAddress(),
+			Status:   enumString(n.GetStatus().String(), "NODE_STATUS_"),
+			Suffrage: strings.ToLower(s),
+		})
+	}
+	return v
 }
 
 func socketDefault() string {

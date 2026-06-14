@@ -17,8 +17,8 @@ embedded Caddy, WireGuard, and per-(deployment, network) docker bridges
 with nftables-enforced isolation. It ships as **two binaries**:
 
 - `jacod` — the long-running daemon, managed by systemd. Listens on a
-  unix socket for local CLI control and on TCP for peer + remote
-  control.
+  unix socket for local CLI control (socket-activated by `jaco.socket`
+  under the shipped unit) and on TCP for peer + remote control.
 - `jaco` — the operator and developer CLI. Talks to a local `jacod`
   over the unix socket and to peer `jacod`s over TCP for cross-host
   control.

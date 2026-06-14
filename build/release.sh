@@ -14,6 +14,7 @@
 #   install.sh        installs both binaries + unit + jaco user + data dir
 #   uninstall.sh      symmetric uninstaller
 #   jaco.service      systemd unit (ExecStart=/usr/local/bin/jacod)
+#   jaco.socket       systemd socket unit (local-control socket, issue #167)
 #   LICENSE
 #   README.md
 #
@@ -56,6 +57,7 @@ build_one() {
   chmod 0755 "$stage_dir/install.sh"
 
   cp "$BUILD_DIR/jaco.service" "$stage_dir/jaco.service"
+  cp "$BUILD_DIR/jaco.socket"  "$stage_dir/jaco.socket"
   cp "$BUILD_DIR/jacod.yaml"   "$stage_dir/jacod.yaml"
   cp "$BUILD_DIR/uninstall.sh" "$stage_dir/uninstall.sh"
   chmod 0755 "$stage_dir/uninstall.sh"
