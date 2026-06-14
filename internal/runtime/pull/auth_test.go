@@ -215,6 +215,78 @@ func TestMatchCredentialKey_BareHostOnly(t *testing.T) {
 	}
 }
 
+// TestResolveCredentialKey_SoleHostCredentialCoversSiblingPath is the issue
+// #172 regression guard. Before #171, `registry login HOST/ns` stored the
+// bare-host key, so a single credential authenticated every path on that
+// host; #171 began preserving the namespace, which left an image on a sibling
+// path with no key to match → anonymous pull → registry 401 → the replica
+// stuck PENDING forever. ResolveCredentialKey restores the old coverage: when
+// a host has exactly one credential, it serves every path on that host.
+func TestResolveCredentialKey_SoleHostCredentialCoversSiblingPath(t *testing.T) {
+	// Only a single namespace-scoped credential is configured for the host.
+	keys := []string{"reg.example.com:5000/team-a"}
+
+	cases := []struct {
+		name    string
+		repo    string
+		wantKey string
+		wantOK  bool
+	}{
+		{"matching namespace", "reg.example.com:5000/team-a/app", "reg.example.com:5000/team-a", true},
+		{"sibling namespace (the #172 case)", "reg.example.com:5000/team-b/app", "reg.example.com:5000/team-a", true},
+		{"bare host image", "reg.example.com:5000/app", "reg.example.com:5000/team-a", true},
+		{"different host stays anonymous", "other.example.com/app", "", false},
+	}
+	for _, c := range cases {
+		gotKey, gotOK := pull.ResolveCredentialKey(c.repo, keys)
+		if gotKey != c.wantKey || gotOK != c.wantOK {
+			t.Errorf("%s: ResolveCredentialKey(%q) = (%q,%v), want (%q,%v)", c.name, c.repo, gotKey, gotOK, c.wantKey, c.wantOK)
+		}
+	}
+}
+
+// TestResolveCredentialKey_MultipleHostCredentialsStayScoped asserts the
+// host fallback fires ONLY for a single-credential host: when several
+// namespace-scoped credentials share a host (the multi-tenant case #171
+// enables), an image on a configured namespace resolves to its own
+// credential, while an image on an unconfigured sibling stays anonymous —
+// no single credential is unambiguously correct, so we must not leak one
+// namespace's credential to another.
+func TestResolveCredentialKey_MultipleHostCredentialsStayScoped(t *testing.T) {
+	keys := []string{
+		"reg.example.com:5000/team-a",
+		"reg.example.com:5000/team-b",
+	}
+	cases := []struct {
+		name    string
+		repo    string
+		wantKey string
+		wantOK  bool
+	}{
+		{"team-a matches its own key", "reg.example.com:5000/team-a/app", "reg.example.com:5000/team-a", true},
+		{"team-b matches its own key", "reg.example.com:5000/team-b/app", "reg.example.com:5000/team-b", true},
+		{"unconfigured sibling stays anonymous", "reg.example.com:5000/team-c/app", "", false},
+	}
+	for _, c := range cases {
+		gotKey, gotOK := pull.ResolveCredentialKey(c.repo, keys)
+		if gotKey != c.wantKey || gotOK != c.wantOK {
+			t.Errorf("%s: ResolveCredentialKey(%q) = (%q,%v), want (%q,%v)", c.name, c.repo, gotKey, gotOK, c.wantKey, c.wantOK)
+		}
+	}
+}
+
+// TestResolveCredentialKey_HostKeyWinsAndNoFallbackWhenNothingStored covers
+// two edges: an explicit bare-host key resolves via longest-prefix (no
+// fallback needed), and an empty store resolves to nothing (anonymous).
+func TestResolveCredentialKey_HostKeyWinsAndNoFallbackWhenNothingStored(t *testing.T) {
+	if got, ok := pull.ResolveCredentialKey("ghcr.io/owner/repo", []string{"ghcr.io"}); !ok || got != "ghcr.io" {
+		t.Errorf("explicit host key: got (%q,%v), want (ghcr.io,true)", got, ok)
+	}
+	if got, ok := pull.ResolveCredentialKey("ghcr.io/owner/repo", nil); ok || got != "" {
+		t.Errorf("empty store: got (%q,%v), want (\"\",false)", got, ok)
+	}
+}
+
 // TestRegistryHost_StripsNamespace asserts the bare-host extraction used to
 // keep the X-Registry-Auth ServerAddress host-only.
 func TestRegistryHost_StripsNamespace(t *testing.T) {

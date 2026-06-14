@@ -566,19 +566,24 @@ func (r *Reconciler) Watcher() *health.Watcher { return r.watcher }
 // form (Docker Hub variants → "docker.io"), then resolves the most specific
 // matching credential via longest-prefix matching over state — a
 // namespace-scoped credential ("ghcr.io/owner") wins over the bare-host
-// fallback ("ghcr.io"). A missing credential returns ("", nil) so the pull
-// proceeds anonymously; a canonicalization error is returned so the
-// reconciler surfaces it on ReplicaObserved instead of looping silently.
+// fallback ("ghcr.io"). When no key matches but the image's host has exactly
+// one configured credential, that credential covers the whole host (pre-#171
+// back-compat; see issue #172 and pull.ResolveCredentialKey). A missing
+// credential returns ("", nil) so the pull proceeds anonymously; a
+// canonicalization error is returned so the reconciler surfaces it on
+// ReplicaObserved instead of looping silently.
 func (r *Reconciler) authResolver() pull.AuthResolver {
 	return func(ref string) (string, error) {
 		repo, err := pull.CanonicalRepo(ref)
 		if err != nil {
 			return "", err
 		}
-		key, ok := pull.MatchCredentialKey(repo, func(k string) bool {
-			_, found := r.state.RegistryCredentials.Get(k)
-			return found
-		})
+		creds := r.state.RegistryCredentials.List()
+		keys := make([]string, 0, len(creds))
+		for _, c := range creds {
+			keys = append(keys, c.GetRegistry())
+		}
+		key, ok := pull.ResolveCredentialKey(repo, keys)
 		if !ok {
 			return "", nil
 		}
