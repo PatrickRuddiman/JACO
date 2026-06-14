@@ -60,7 +60,11 @@ func registryLoginCmd() *cobra.Command {
 		Long: "Reads the password from a terminal prompt by default, or from stdin " +
 			"with --password-stdin (CI / piped). The password is NEVER taken as a " +
 			"command-line argument — passing it that way would leak via /proc and " +
-			"shell history. Docker Hub canonicalizes to 'docker.io'.",
+			"shell history. Docker Hub canonicalizes to 'docker.io'.\n\n" +
+			"<registry> may be a bare host ('ghcr.io') or a namespace-scoped key " +
+			"('ghcr.io/owner') so a single host can carry distinct credentials per " +
+			"namespace. At pull time the most specific match wins, falling back to " +
+			"the bare-host credential when no namespace matches.",
 		Args: cobra.ExactArgs(1),
 	}
 	f := &registryFlags{}

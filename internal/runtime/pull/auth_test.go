@@ -70,6 +70,35 @@ func TestBuildRegistryAuth_NilReturnsEmpty(t *testing.T) {
 	}
 }
 
+// TestBuildRegistryAuth_ServerAddressIsHostOnly asserts that a
+// namespace-scoped credential key ("ghcr.io/owner") presents a host-only
+// ServerAddress ("ghcr.io") in the X-Registry-Auth blob. The moby daemon
+// matches the auth config by registry hostname, so leaking the namespace into
+// ServerAddress would make the daemon ignore the credential.
+func TestBuildRegistryAuth_ServerAddressIsHostOnly(t *testing.T) {
+	got, err := pull.BuildRegistryAuth(&pb.RegistryCredential{
+		Registry: "ghcr.io/owner",
+		Username: "alice",
+		Secret:   []byte("hunter2"),
+	})
+	if err != nil {
+		t.Fatalf("BuildRegistryAuth: %v", err)
+	}
+	raw, err := base64.URLEncoding.DecodeString(got)
+	if err != nil {
+		t.Fatalf("decode base64url: %v", err)
+	}
+	var decoded struct {
+		ServerAddress string `json:"serveraddress"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode JSON: %v", err)
+	}
+	if decoded.ServerAddress != "ghcr.io" {
+		t.Errorf("serveraddress = %q, want ghcr.io (namespace must be stripped)", decoded.ServerAddress)
+	}
+}
+
 // TestCanonicalHost_NormalizesDockerHubAndPreservesPort exercises the
 // resolver-side canonicalization that pairs with the FSM-side normalization
 // in canonicalRegistryHost. Both must agree or the per-pull lookup misses.
@@ -104,6 +133,100 @@ func TestCanonicalHost_RejectsEmptyAndGarbage(t *testing.T) {
 	for _, ref := range []string{"", "  ", "://", "no spaces allowed"} {
 		if _, err := pull.CanonicalHost(ref); err == nil {
 			t.Errorf("CanonicalHost(%q): want error, got nil", ref)
+		}
+	}
+}
+
+// TestCanonicalRepo_ReturnsHostAndRepositoryPath asserts the full
+// "host[:port]/<repository-path>" form the per-namespace resolver matches
+// against: Docker Hub folds to docker.io (and bare names gain the implicit
+// library/ namespace), GHCR keeps its owner/repo path, and a non-default
+// port is preserved on the host segment.
+func TestCanonicalRepo_ReturnsHostAndRepositoryPath(t *testing.T) {
+	cases := []struct {
+		ref  string
+		want string
+	}{
+		{"alpine:3.18", "docker.io/library/alpine"},
+		{"library/alpine", "docker.io/library/alpine"},
+		{"docker.io/myorg/app:v1", "docker.io/myorg/app"},
+		{"ghcr.io/owner/repo:tag", "ghcr.io/owner/repo"},
+		{"GHCR.IO/owner/repo", "ghcr.io/owner/repo"},
+		{"registry.example.com:5000/team/svc", "registry.example.com:5000/team/svc"},
+	}
+	for _, c := range cases {
+		got, err := pull.CanonicalRepo(c.ref)
+		if err != nil {
+			t.Errorf("CanonicalRepo(%q): %v", c.ref, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("CanonicalRepo(%q) = %q, want %q", c.ref, got, c.want)
+		}
+	}
+}
+
+// TestCanonicalRepo_RejectsGarbage mirrors CanonicalHost's error contract so
+// a malformed ref fails the pull rather than mis-keying the lookup.
+func TestCanonicalRepo_RejectsGarbage(t *testing.T) {
+	for _, ref := range []string{"", "  ", "://", "no spaces allowed"} {
+		if _, err := pull.CanonicalRepo(ref); err == nil {
+			t.Errorf("CanonicalRepo(%q): want error, got nil", ref)
+		}
+	}
+}
+
+// TestMatchCredentialKey_LongestPrefixWins is the core per-namespace
+// resolution contract: the most specific stored key beats the bare host, an
+// image under an unconfigured namespace falls back to the bare host, and a
+// host with no stored credential at all resolves to nothing (anonymous pull).
+func TestMatchCredentialKey_LongestPrefixWins(t *testing.T) {
+	stored := map[string]bool{
+		"ghcr.io":                 true,
+		"ghcr.io/company":         true,
+		"ghcr.io/company/private": true,
+	}
+	lookup := func(k string) bool { return stored[k] }
+
+	cases := []struct {
+		repo    string
+		wantKey string
+		wantOK  bool
+	}{
+		{"ghcr.io/company/private/app", "ghcr.io/company/private", true}, // exact deepest
+		{"ghcr.io/company/other", "ghcr.io/company", true},               // namespace match
+		{"ghcr.io/orphan/x", "ghcr.io", true},                            // host fallback
+		{"docker.io/library/alpine", "", false},                          // nothing stored
+	}
+	for _, c := range cases {
+		gotKey, gotOK := pull.MatchCredentialKey(c.repo, lookup)
+		if gotKey != c.wantKey || gotOK != c.wantOK {
+			t.Errorf("MatchCredentialKey(%q) = (%q,%v), want (%q,%v)", c.repo, gotKey, gotOK, c.wantKey, c.wantOK)
+		}
+	}
+}
+
+// TestMatchCredentialKey_BareHostOnly covers the degenerate input (a host
+// with no path) so callers that pass a bare host still get a single lookup.
+func TestMatchCredentialKey_BareHostOnly(t *testing.T) {
+	lookup := func(k string) bool { return k == "ghcr.io" }
+	if got, ok := pull.MatchCredentialKey("ghcr.io", lookup); !ok || got != "ghcr.io" {
+		t.Errorf("MatchCredentialKey(ghcr.io) = (%q,%v), want (ghcr.io,true)", got, ok)
+	}
+}
+
+// TestRegistryHost_StripsNamespace asserts the bare-host extraction used to
+// keep the X-Registry-Auth ServerAddress host-only.
+func TestRegistryHost_StripsNamespace(t *testing.T) {
+	cases := map[string]string{
+		"ghcr.io":                        "ghcr.io",
+		"ghcr.io/owner":                  "ghcr.io",
+		"ghcr.io/owner/team":             "ghcr.io",
+		"registry.example.com:5000/team": "registry.example.com:5000",
+	}
+	for in, want := range cases {
+		if got := pull.RegistryHost(in); got != want {
+			t.Errorf("RegistryHost(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

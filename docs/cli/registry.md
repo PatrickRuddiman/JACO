@@ -177,8 +177,12 @@ Local → unix socket. Remote → operator token.
 
 ### Behavior
 
-Prints one row per known credential: registry, username, last-updated
-timestamp. **The secret is never printed.** The list path returns a
+Prints one row per known credential key: registry (`host[:port]` or
+`host[:port]/namespace`), username, last-updated timestamp.
+Namespace-scoped credentials are listed as distinct rows — multiple
+logins under the same host (e.g. `ghcr.io/personal` and
+`ghcr.io/company`) each appear, alongside a bare-host row if one is
+stored. **The secret is never printed.** The list path returns a
 `RegistryCredentialSummary` message that has no secret field — the
 wire type itself enforces redaction. Operators rotate by re-running
 `login` with the new secret; there is no read-back of the existing
@@ -195,7 +199,9 @@ secret.
 jaco registry list
 # REGISTRY                                 USERNAME                       UPDATED
 # docker.io                                alice                          2026-05-20T11:00:00Z
-# ghcr.io                                  ci-bot                         2026-05-24T08:14:00Z
+# ghcr.io                                  fallback                       2026-05-24T08:14:00Z
+# ghcr.io/company                          ci-bot                         2026-05-24T08:15:00Z
+# ghcr.io/personal                         alice                          2026-05-24T08:16:00Z
 # registry.example.com:5000                deploy                         2026-05-18T09:00:00Z
 ```
 

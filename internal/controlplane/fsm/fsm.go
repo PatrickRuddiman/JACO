@@ -540,7 +540,7 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 		if cred == nil {
 			return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
 		}
-		host := canonicalRegistryHost(cred.GetRegistry())
+		host := canonicalRegistryKey(cred.GetRegistry())
 		if host == "" {
 			return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
 		}
@@ -558,7 +558,7 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 		}
 
 	case *pb.Command_RegistryCredentialRemove:
-		host := canonicalRegistryHost(p.RegistryCredentialRemove.GetRegistry())
+		host := canonicalRegistryKey(p.RegistryCredentialRemove.GetRegistry())
 		if host == "" {
 			return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
 		}
@@ -589,31 +589,46 @@ func commandOp(cmd *pb.Command) string {
 	return name
 }
 
-// canonicalRegistryHost normalizes the registry-host key used by
-// state.RegistryCredentials to the same form pull.CanonicalHost produces
-// from a parsed image reference. Both sides MUST agree or the reconciler's
-// per-pull lookup misses every credential.
+// canonicalRegistryKey normalizes the credential key used by
+// state.RegistryCredentials to the same form the reconciler's per-pull
+// resolver matches against (pull.CanonicalRepo + pull.MatchCredentialKey).
+// Both sides MUST agree or the lookup misses every credential.
 //
-// Empty / whitespace-only input returns "" so the caller can drop the
-// command; everything else is lower-cased and the legacy Docker Hub aliases
-// ("index.docker.io", "index.docker.io/v1") fold to "docker.io". Self-hosted
-// hosts with a non-default port keep the port verbatim.
-func canonicalRegistryHost(host string) string {
-	h := strings.ToLower(strings.TrimSpace(host))
+// The key is "host[:port]" or, when the operator scopes the credential to a
+// registry namespace, "host[:port]/namespace" (e.g. "ghcr.io/owner"). Empty /
+// whitespace-only input returns "" so the caller can drop the command;
+// otherwise the host is lower-cased with the legacy Docker Hub aliases
+// ("index.docker.io" and friends) folded to "docker.io", any scheme / query /
+// fragment is stripped, and the namespace path is lower-cased and trimmed of
+// surrounding slashes. Self-hosted hosts with a non-default port keep the
+// port verbatim.
+func canonicalRegistryKey(ref string) string {
+	h := strings.ToLower(strings.TrimSpace(ref))
 	if h == "" {
 		return ""
 	}
 	// Some clients emit "https://registry.example.com/v2/" — strip the scheme
-	// and any path so we end up with the bare host[:port].
+	// first so the path split below sees the bare host.
 	if i := strings.Index(h, "://"); i >= 0 {
 		h = h[i+3:]
 	}
-	if i := strings.IndexAny(h, "/?#"); i >= 0 {
+	if i := strings.IndexAny(h, "?#"); i >= 0 {
 		h = h[:i]
 	}
-	switch h {
-	case "index.docker.io", "registry-1.docker.io", "registry.docker.io":
-		return "docker.io"
+	host, path := h, ""
+	if i := strings.IndexByte(h, '/'); i >= 0 {
+		host, path = h[:i], h[i+1:]
 	}
-	return h
+	switch host {
+	case "index.docker.io", "registry-1.docker.io", "registry.docker.io":
+		host = "docker.io"
+	}
+	if host == "" {
+		return ""
+	}
+	path = strings.Trim(path, "/")
+	if path == "" {
+		return host
+	}
+	return host + "/" + path
 }

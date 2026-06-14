@@ -562,18 +562,27 @@ func (r *Reconciler) Watcher() *health.Watcher { return r.watcher }
 // (rather than cached on the Reconciler) so a credential rotation lands on
 // the next pull attempt — pull.Pull invokes the resolver once per attempt.
 //
-// The closure canonicalizes the image ref (Docker Hub variants → "docker.io"),
-// looks the credential up in state.RegistryCredentials, and base64-encodes
-// it via pull.BuildRegistryAuth. A missing credential returns ("", nil) so
-// the pull proceeds anonymously; a canonicalization error is returned so the
+// The closure canonicalizes the image ref to its "host[:port]/<repo-path>"
+// form (Docker Hub variants → "docker.io"), then resolves the most specific
+// matching credential via longest-prefix matching over state — a
+// namespace-scoped credential ("ghcr.io/owner") wins over the bare-host
+// fallback ("ghcr.io"). A missing credential returns ("", nil) so the pull
+// proceeds anonymously; a canonicalization error is returned so the
 // reconciler surfaces it on ReplicaObserved instead of looping silently.
 func (r *Reconciler) authResolver() pull.AuthResolver {
 	return func(ref string) (string, error) {
-		host, err := pull.CanonicalHost(ref)
+		repo, err := pull.CanonicalRepo(ref)
 		if err != nil {
 			return "", err
 		}
-		cred, ok := r.state.RegistryCredentials.Get(host)
+		key, ok := pull.MatchCredentialKey(repo, func(k string) bool {
+			_, found := r.state.RegistryCredentials.Get(k)
+			return found
+		})
+		if !ok {
+			return "", nil
+		}
+		cred, ok := r.state.RegistryCredentials.Get(key)
 		if !ok {
 			return "", nil
 		}

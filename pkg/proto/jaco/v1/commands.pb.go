@@ -2463,8 +2463,9 @@ func (x *AuditAppend) GetEvent() *AuditEvent {
 }
 
 // RegistryCredentialUpsert installs (or replaces) the credential for the
-// canonical registry host carried in credential.registry. The FSM stamps
-// updated_at from cmd.ts if the caller left it unset.
+// canonical registry key carried in credential.registry ("host[:port]" or
+// "host[:port]/namespace"). The FSM stamps updated_at from cmd.ts if the
+// caller left it unset.
 type RegistryCredentialUpsert struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Credential    *RegistryCredential    `protobuf:"bytes,1,opt,name=credential,proto3" json:"credential,omitempty"`
@@ -2510,7 +2511,8 @@ func (x *RegistryCredentialUpsert) GetCredential() *RegistryCredential {
 }
 
 // RegistryCredentialRemove drops the credential for registry (canonical
-// host). Idempotent: removing an unknown host is not an error.
+// "host[:port]" or "host[:port]/namespace" key). Idempotent: removing an
+// unknown key is not an error.
 type RegistryCredentialRemove struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Registry      string                 `protobuf:"bytes,1,opt,name=registry,proto3" json:"registry,omitempty"`

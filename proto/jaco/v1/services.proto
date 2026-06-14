@@ -262,17 +262,17 @@ service RegistryCredentials {
 }
 
 message RegistryCredentialAddRequest {
-  string registry = 1; // host[:port]; canonicalized server-side
+  string registry = 1; // host[:port][/namespace]; canonicalized server-side
   string username = 2;
   bytes secret = 3;
 }
 message RegistryCredentialAddResponse {
-  string registry = 1; // canonicalized host echoed back
+  string registry = 1; // canonical key echoed back (host[:port][/namespace])
   google.protobuf.Timestamp updated_at = 2;
 }
 
 message RegistryCredentialRemoveRequest {
-  string registry = 1;
+  string registry = 1; // host[:port][/namespace]; canonicalized server-side
 }
 message RegistryCredentialRemoveResponse {}
 

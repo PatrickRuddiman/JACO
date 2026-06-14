@@ -67,6 +67,47 @@ func TestRegistryCredentials_ListRedactsSecret(t *testing.T) {
 	}
 }
 
+// TestRegistryCredentials_ListEnumeratesNamespaceScopedKeys asserts the List
+// handler returns one row per distinct canonical key — including multiple
+// namespace-scoped credentials under the same host alongside a bare-host
+// fallback. This is the surface issue #101's per-namespace support fixes:
+// before, every "ghcr.io/<org>" collapsed to a single "ghcr.io" row.
+func TestRegistryCredentials_ListEnumeratesNamespaceScopedKeys(t *testing.T) {
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	now := timestamppb.Now()
+	for _, c := range []struct{ key, user string }{
+		{"ghcr.io", "fallback"},
+		{"ghcr.io/personal", "alice"},
+		{"ghcr.io/company", "ci-bot"},
+	} {
+		st.RegistryCredentials.Apply(&pb.RegistryCredential{
+			Registry:  c.key,
+			Username:  c.user,
+			Secret:    []byte("secret"),
+			UpdatedAt: now,
+		}, 1)
+	}
+
+	srv := grpcsrv.NewRegistryCredentialsServer(st, nil)
+	resp, err := srv.List(context.Background(), &pb.RegistryCredentialListRequest{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	got := map[string]string{}
+	for _, c := range resp.GetCredentials() {
+		got[c.GetRegistry()] = c.GetUsername()
+	}
+	want := map[string]string{
+		"ghcr.io":          "fallback",
+		"ghcr.io/personal": "alice",
+		"ghcr.io/company":  "ci-bot",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("List entries = %v, want %v", got, want)
+	}
+}
+
 // TestRegistryCredentials_AddRequiresLeader covers the leader gate: with a
 // nil raft handle, Add returns Unavailable rather than silently swallowing
 // the write. (Same posture as Tokens.Issue / Cluster.IssueJoinToken.)

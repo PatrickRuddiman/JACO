@@ -316,10 +316,16 @@ message RestartCounter {
 // ----- Registry entities -----
 
 // RegistryCredential is the raft-replicated container-registry credential
-// consumed at image-pull time. Keyed by canonical registry host:
+// consumed at image-pull time. Keyed by canonical registry host, optionally
+// suffixed with a registry namespace for per-namespace credentials:
 //   - "docker.io"   for Docker Hub (normalized from index.docker.io / docker.io)
-//   - "ghcr.io"     for GitHub Container Registry
+//   - "ghcr.io"     for GitHub Container Registry (host-wide fallback)
+//   - "ghcr.io/owner"  scopes a credential to the "owner" namespace on ghcr.io
 //   - "registry.example.com:5000"  for self-hosted registries on non-443 ports
+//
+// At pull time the resolver picks the longest-prefix match against the
+// image's "host[:port]/<repository-path>", so a namespace-scoped credential
+// wins over the bare-host one. registry carries that full canonical key.
 //
 // secret is the password / API token / PAT, held opaquely. Encoded
 // at-rest in raft alongside the cluster CA private key under the same
