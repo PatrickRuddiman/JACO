@@ -49,6 +49,7 @@ Config:
   /etc/jaco/jacod.yaml       (edit before first start)
 Unit:
   /lib/systemd/system/jaco.service
+  /lib/systemd/system/jaco.socket   (local-control socket, issue #167)
 Service user:
   jaco (system, in docker group)
 
