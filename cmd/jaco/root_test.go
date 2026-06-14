@@ -27,22 +27,37 @@ func runRootWith(t *testing.T, args ...string) (error, string) {
 	return err, buf.String()
 }
 
-// TestRoot_OutputFlag_RejectsUnsupported pins the quick-fix from #156:
+// TestRoot_OutputFlag_RejectsUnsupported pins the interim guard from #156:
 // commands that do not opt into --output via annotationHonorsOutput must
 // error loudly on -o json / -o yaml so CI pipelines piping through jq fail
-// at the source instead of silently receiving table output.
+// at the source instead of silently receiving table output. We exercise the
+// guard directly with an un-annotated stub so we don't depend on a command's
+// RunE (which would try to dial a daemon).
 func TestRoot_OutputFlag_RejectsUnsupported(t *testing.T) {
-	for _, fmt := range []string{"json", "yaml"} {
-		t.Run(fmt, func(t *testing.T) {
-			err, _ := runRootWith(t, "status", "-o", fmt)
+	for _, format := range []string{"json", "yaml"} {
+		t.Run(format, func(t *testing.T) {
+			cmd := &cobra.Command{Use: "stub"}
+			cmd.Flags().String("output", format, "")
+			err := rootCmd.PersistentPreRunE(cmd, nil)
 			if err == nil {
-				t.Fatalf("expected error for -o %s, got nil", fmt)
+				t.Fatalf("expected error for -o %s, got nil", format)
 			}
-			want := "output format \"" + fmt + "\" not implemented"
+			want := "output format \"" + format + "\" not implemented"
 			if !strings.Contains(err.Error(), want) {
 				t.Fatalf("error %q does not mention %q", err.Error(), want)
 			}
 		})
+	}
+}
+
+// TestRoot_OutputFlag_StatusHonorsAnnotation pins that the read-only commands
+// that now serialize json/yaml (status, cluster status, node list, audit) are
+// tagged so the root guard lets non-table formats through to their RunE.
+func TestRoot_OutputFlag_StatusHonorsAnnotation(t *testing.T) {
+	for _, c := range []*cobra.Command{statusCmd(), clusterStatusCmd(), nodeListCmd()} {
+		if c.Annotations[annotationHonorsOutput] != "true" {
+			t.Errorf("command %q missing %s annotation", c.Name(), annotationHonorsOutput)
+		}
 	}
 }
 

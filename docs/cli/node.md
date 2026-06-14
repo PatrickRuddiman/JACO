@@ -169,6 +169,19 @@ Operator token only (currently TCP-only; `--server` is required).
 ### Behavior
 
 Prints one tab-separated line per member: `hostname  address  status`.
+The table `status` is the raw enum (`NODE_STATUS_READY`).
+
+`-o json` / `-o yaml` emit a `{"nodes": [...]}` object instead, with
+`status` as a lowercase `snake_case` value (`ready`, `joining`,
+`isolation_unavailable`, `drain_timeout`):
+
+```json
+{
+  "nodes": [
+    { "hostname": "node-1", "address": "10.0.0.5:7001", "status": "ready" }
+  ]
+}
+```
 
 ### Exit codes
 

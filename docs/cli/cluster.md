@@ -108,6 +108,26 @@ Run `jaco cluster init` to start a new cluster,
 or `jaco node join` to join an existing one.
 ```
 
+#### Output formats
+
+`-o json` / `-o yaml` emit a structured view. `status`/`suffrage` use
+lowercase `snake_case`; `suffrage` is `voter`, `nonvoter`, or `unknown`
+(the last when this jacod can't observe a node's raft suffrage — e.g. it
+isn't the leader). When uninitialized, json/yaml return
+`{"initialized": false, ...}` with an empty `nodes` list rather than the
+prose above, so probes get a stable shape.
+
+```json
+{
+  "initialized": true,
+  "leader": "node-1",
+  "raft_index": 4178,
+  "nodes": [
+    { "hostname": "node-1", "address": "10.0.0.5:7001", "status": "ready", "suffrage": "voter" }
+  ]
+}
+```
+
 ### Exit codes
 
 - `0` — status printed (initialized or not).
