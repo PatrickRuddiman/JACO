@@ -5,6 +5,7 @@ sources:
   - Makefile
   - internal/packaging/
   - cmd/jaco/self_upgrade.go
+  - build/packaging/
   - build/jaco.service
   - build/jaco.socket
   - build/release.sh

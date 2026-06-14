@@ -3,6 +3,8 @@ sources:
   - cmd/jaco/self_upgrade.go
   - internal/packaging/
   - .github/workflows/release.yml
+  - build/packaging/
+  - nfpm.yaml
 ---
 
 # Upgrades
@@ -14,6 +16,11 @@ binaries, restarts the daemon under systemd, and rolls back on health
 failure.
 
 CLI reference: [`jaco self-upgrade`](../cli/self-upgrade.md).
+
+If you installed from a `.deb` / `.rpm` you can also upgrade by
+installing a newer package over the old one. That path preserves the
+node's systemd state — see
+[Package-manager upgrades](#package-manager-upgrades-deb--rpm) below.
 
 ## Why one node at a time
 
@@ -103,6 +110,43 @@ prior version's tarball URL on each node.
 
 A `self-upgrade` that **fails the post-restart health check** rolls
 back automatically on that node only.
+
+## Package-manager upgrades (deb / rpm)
+
+`jaco self-upgrade` is the canonical in-place path, but you can also
+upgrade a node by installing a newer package over the older one:
+
+```sh
+# Debian / Ubuntu
+sudo apt install ./jaco_<X.Y.Z>_<arch>.deb
+# RHEL / Fedora
+sudo dnf upgrade ./jaco-<X.Y.Z>-1.<arch>.rpm
+```
+
+The package preserves the node's systemd state across the upgrade,
+matching the standard debhelper `--restart-after-upgrade` posture:
+
+- The pre-remove hook
+  ([`build/packaging/preremove.sh`](../../build/packaging/preremove.sh))
+  only stops and disables `jaco` on a real removal. dpkg/rpm run the
+  pre-remove script on an upgrade too, so it inspects the maintainer
+  argument (`remove` / `0` = removal, `upgrade <ver>` / `1` = upgrade)
+  and does nothing on upgrade. A node that was `enabled` + `active`
+  stays that way.
+- The post-install hook
+  ([`build/packaging/postinstall.sh`](../../build/packaging/postinstall.sh))
+  reloads systemd, and on an upgrade restarts `jaco` **only if** the
+  unit was already enabled and running, so the new binary is picked up.
+
+A **fresh** install never auto-enables or auto-starts the service — you
+still run `sudo systemctl enable --now jaco` once after editing
+`/etc/jaco/jacod.yaml` (see [Installation](../installation.md)). Only
+nodes you have already brought up are restarted on upgrade.
+
+Unlike `self-upgrade`, the package path does **not** verify a minisign
+signature or roll back on a failed health check. Prefer `self-upgrade`
+for routine rolling upgrades; use the package path when a fleet tool
+drives `apt` / `dnf` directly.
 
 ## On hosts without systemd
 

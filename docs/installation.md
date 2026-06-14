@@ -5,6 +5,7 @@ sources:
   - .github/workflows/release.yml
   - cmd/jacod/main.go
   - internal/packaging/
+  - build/packaging/
   - build/jaco.service
   - build/jaco.socket
   - build/release.sh
@@ -121,6 +122,17 @@ either of those two transitions runs. From here, either:
 - join an existing cluster with `sudo jaco node join --peer … --token …`.
 
 Both flows are walked end-to-end in [Getting started](getting-started.md).
+
+## Upgrading an existing install
+
+Installing a newer package over an older one
+(`sudo apt install ./jaco_<arch>.deb`, `sudo dnf upgrade ./jaco_<arch>.rpm`)
+preserves the node's systemd state: a node that was already `enabled` +
+`active` is restarted on the new binary, while one you never started
+stays stopped. A fresh install still never auto-enables or auto-starts.
+See [Upgrades](operations/upgrades.md#package-manager-upgrades-deb--rpm)
+for the package path, or [`jaco self-upgrade`](operations/upgrades.md)
+for the signed in-place path.
 
 ## See also
 
