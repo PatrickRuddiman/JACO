@@ -2,6 +2,13 @@
 Description=JACO orchestrator daemon
 After=network-online.target docker.service
 Wants=network-online.target
+# Socket activation (issue #167): jaco.socket creates and binds
+# /run/jaco/jaco.sock in the HOST mount namespace (PID 1) and hands jacod the
+# fd, so the local-control socket is always reachable by the jaco group
+# regardless of this unit's filesystem sandbox. Requires= pulls the socket in
+# (and tears it down) with the service; After= guarantees it exists first.
+Requires=jaco.socket
+After=jaco.socket
 
 [Service]
 Type=notify
@@ -15,10 +22,21 @@ AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 NoNewPrivileges=true
 
 # Filesystem hardening — daemon writes to its data dir + the unix socket
-# parent + /run for pid/etc. RuntimeDirectory recreates /run/jaco on every
-# unit start (bug 014: tmpfs clears it on reboot).
+# parent. The local-control socket itself is created by jaco.socket (PID 1,
+# host namespace) and inherited as an fd, so it stays host-visible even though
+# this unit runs in a sandboxed mount namespace (issue #167). RuntimeDirectory
+# =jaco still provisions /run/jaco host-global and recreates it on every start
+# (bug 014: tmpfs clears it on reboot); jaco.socket shares the same directory.
+#
+# Do NOT add /var/run/jaco or /run back to ReadWritePaths. /var/run is a
+# symlink to /run, so ReadWritePaths=/var/run/jaco makes systemd set up a
+# SECOND, namespace-private bind mount that shadows the host-visible
+# RuntimeDirectory mount — anything jacod writes there lands inside its private
+# mount view and is invisible to root + jaco-group members (issue #167). The
+# daemon writes nothing in /run outside /run/jaco, so RuntimeDirectory alone
+# is sufficient.
 ProtectSystem=strict
-ReadWritePaths=/var/lib/jaco /var/run/jaco /run
+ReadWritePaths=/var/lib/jaco
 RuntimeDirectory=jaco
 RuntimeDirectoryMode=0755
 # Private /tmp so the firewall reconciler's os.CreateTemp("", ...) for nft

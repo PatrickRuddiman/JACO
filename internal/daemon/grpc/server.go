@@ -155,8 +155,20 @@ type Options struct {
 	UnixSocketPath string
 
 	// SocketMode is the permission mask applied to the socket file
-	// (default 0o660 — owner+group rw).
+	// (default 0o660 — owner+group rw). Ignored when UnixListener is set
+	// (systemd's .socket unit owns the mode/group then).
 	SocketMode os.FileMode
+
+	// UnixListener, when non-nil, is a pre-bound local-control listener the
+	// daemon should serve on instead of creating one from UnixSocketPath.
+	// This is the systemd socket-activation path: systemd (PID 1, host mount
+	// namespace) creates and binds /run/jaco/jaco.sock and passes us the fd,
+	// so the socket file always exists on the host /run regardless of the
+	// daemon's own mount namespace (issue #167). When set, New does NOT
+	// MkdirAll / Remove / Chmod the path — systemd owns the socket file.
+	// UnixSocketPath is still required (used for logging + as the advertised
+	// path). Nil → the path-based net.Listen fallback (dev, tests, non-systemd).
+	UnixListener net.Listener
 
 	// DataDir is the daemon's $JACO_DATA_DIR. Cluster.Init writes raft
 	// state under $DataDir/raft and certs under $DataDir/node.
@@ -250,19 +262,31 @@ func New(opts Options) (*Server, error) {
 		opts.SocketMode = 0o660
 	}
 
-	if err := os.MkdirAll(filepath.Dir(opts.UnixSocketPath), 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir socket parent: %w", err)
-	}
-	// Remove any stale socket file from a previous run.
-	_ = os.Remove(opts.UnixSocketPath)
+	var lis net.Listener
+	if opts.UnixListener != nil {
+		// Socket-activated: systemd created + bound the socket in the host
+		// mount namespace and handed us the fd. Do NOT MkdirAll / Remove /
+		// Chmod — systemd owns the socket file (mode + group come from the
+		// jaco.socket unit), and recreating it here would drop the socket
+		// into the daemon's private mount view, re-hiding it from the host
+		// and the jaco group (issue #167).
+		lis = opts.UnixListener
+	} else {
+		if err := os.MkdirAll(filepath.Dir(opts.UnixSocketPath), 0o755); err != nil {
+			return nil, fmt.Errorf("mkdir socket parent: %w", err)
+		}
+		// Remove any stale socket file from a previous run.
+		_ = os.Remove(opts.UnixSocketPath)
 
-	lis, err := net.Listen("unix", opts.UnixSocketPath)
-	if err != nil {
-		return nil, fmt.Errorf("listen unix %s: %w", opts.UnixSocketPath, err)
-	}
-	if err := os.Chmod(opts.UnixSocketPath, opts.SocketMode); err != nil {
-		_ = lis.Close()
-		return nil, fmt.Errorf("chmod socket: %w", err)
+		l, err := net.Listen("unix", opts.UnixSocketPath)
+		if err != nil {
+			return nil, fmt.Errorf("listen unix %s: %w", opts.UnixSocketPath, err)
+		}
+		if err := os.Chmod(opts.UnixSocketPath, opts.SocketMode); err != nil {
+			_ = l.Close()
+			return nil, fmt.Errorf("chmod socket: %w", err)
+		}
+		lis = l
 	}
 
 	gate := admission.New()

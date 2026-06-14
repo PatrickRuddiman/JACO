@@ -1,0 +1,23 @@
+[Unit]
+Description=JACO daemon local-control socket
+# Bound to the service: starting/stopping one affects the other.
+PartOf=jaco.service
+
+[Socket]
+# systemd (PID 1) creates and binds this socket in the HOST mount namespace,
+# then passes the fd to jacod. This is the fix for issue #167: the socket is
+# reachable by every jaco-group member regardless of the daemon unit's own
+# filesystem sandbox. /var/run is a symlink to /run, so this is the same path
+# the daemon advertises (config default /var/run/jaco/jaco.sock).
+ListenStream=/run/jaco/jaco.sock
+# Owner + group + mode of the socket file. jaco-group members get rw.
+SocketUser=jaco
+SocketGroup=jaco
+SocketMode=0660
+# Provision /run/jaco host-global before binding (mirrors jaco.service so the
+# directory exists whether the socket or the service starts first).
+RuntimeDirectory=jaco
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=sockets.target

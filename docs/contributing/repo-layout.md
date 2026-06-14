@@ -75,7 +75,7 @@ What lives where. Use this as the map when you're about to grep.
 │   └── testbed/         # Azure provisioning template for benchmarking
 ├── testdata/            # repo-root testdata
 ├── scripts/test/        # privileged integration + isolation rig scripts
-├── build/               # systemd unit, jacod.yaml template, install scripts
+├── build/               # systemd service + socket units, jacod.yaml template, install scripts
 ├── .github/workflows/   # ci / integration / isolation-rig / release
 ├── Makefile
 ├── nfpm.yaml            # deb/rpm/apk packaging recipe

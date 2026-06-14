@@ -5,6 +5,10 @@ sources:
   - .github/workflows/release.yml
   - cmd/jacod/main.go
   - internal/packaging/
+  - build/jaco.service
+  - build/jaco.socket
+  - build/release.sh
+  - build/install.sh.tpl
 ---
 
 # Installation
@@ -63,6 +67,7 @@ sudo install -m 0755 jacod /usr/local/bin/jacod
 sudo install -d -m 0755 /etc/jaco
 sudo install -m 0644 jacod.yaml /etc/jaco/jacod.yaml
 sudo install -m 0644 jaco.service /lib/systemd/system/jaco.service
+sudo install -m 0644 jaco.socket  /lib/systemd/system/jaco.socket
 sudo systemctl daemon-reload
 sudo systemctl enable --now jaco
 ```
@@ -95,6 +100,11 @@ After a successful install you will find:
   the first start if the defaults don't fit.
 - `/lib/systemd/system/jaco.service` — systemd unit. `daemon-reload`
   runs automatically on package install.
+- `/lib/systemd/system/jaco.socket` — systemd socket unit. systemd (PID 1)
+  creates and binds the local control socket in the host namespace and hands
+  the daemon the file descriptor, so the socket is always reachable by the
+  `jaco` group regardless of the daemon's filesystem sandbox (issue #167).
+  Pulled in automatically by `jaco.service` via `Requires=`.
 - `/var/lib/jaco/` — created by the daemon on first boot. Holds raft
   store, snapshots, the node certificate, and the WireGuard private key.
 - `/var/run/jaco/jaco.sock` — the local control socket. Mode `0660`,
