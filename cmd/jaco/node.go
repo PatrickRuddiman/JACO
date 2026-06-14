@@ -109,10 +109,13 @@ opens its raft node, and connects to the existing cluster).`,
 		socket    string
 		peer      string
 		joinToken string
+
+		noSystemdEnable bool
 	)
 	c.Flags().StringVar(&socket, "socket", socketDefault(), "local jacod unix socket")
 	c.Flags().StringVar(&peer, "peer", "", "leader / any-cluster-member gRPC address (host:port); required")
 	c.Flags().StringVar(&joinToken, "token", "", "single-use join token (or JACO_JOIN_TOKEN env)")
+	c.Flags().BoolVar(&noSystemdEnable, "no-systemd-enable", false, "do not run `systemctl enable jaco` after join (this node won't auto-start after a reboot)")
 	_ = c.MarkFlagRequired("peer")
 
 	c.RunE = func(_ *cobra.Command, _ []string) error {
@@ -129,14 +132,16 @@ opens its raft node, and connects to the existing cluster).`,
 		defer conn.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		return runNodeJoin(ctx, pb.NewClusterClient(conn), peer, joinToken, os.Stdout)
+		return runNodeJoin(ctx, pb.NewClusterClient(conn), peer, joinToken, !noSystemdEnable, os.Stdout)
 	}
 	return c
 }
 
 // runNodeJoin is the unit-testable body: takes a pb.ClusterClient so tests
-// inject a fake without spinning up jacod.
-func runNodeJoin(ctx context.Context, client pb.ClusterClient, peer, token string, out io.Writer) error {
+// inject a fake without spinning up jacod. When enableSystemd is true it
+// enables jaco.service after a successful join so the freshly-committed node
+// survives a reboot (issue #151).
+func runNodeJoin(ctx context.Context, client pb.ClusterClient, peer, token string, enableSystemd bool, out io.Writer) error {
 	if _, err := client.Join(ctx, &pb.ClusterJoinRequest{
 		PeerAddr:  peer,
 		JoinToken: token,
@@ -144,6 +149,9 @@ func runNodeJoin(ctx context.Context, client pb.ClusterClient, peer, token strin
 		return cliclient.FormatError(err)
 	}
 	fmt.Fprintln(out, "Joined cluster.")
+	if enableSystemd {
+		systemdEnabler(out)
+	}
 	return nil
 }
 

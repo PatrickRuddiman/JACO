@@ -44,7 +44,7 @@ func TestRunClusterInit_PrintsTokenAndID(t *testing.T) {
 			}, nil
 		},
 	}
-	if err := runClusterInit(context.Background(), client, "my-cluster", &out); err != nil {
+	if err := runClusterInit(context.Background(), client, "my-cluster", false, &out); err != nil {
 		t.Fatalf("runClusterInit: %v", err)
 	}
 	got := out.String()
@@ -61,7 +61,7 @@ func TestRunClusterInit_SurfacesServerError(t *testing.T) {
 			return nil, errors.New("cluster_already_initialized")
 		},
 	}
-	err := runClusterInit(context.Background(), client, "", &bytes.Buffer{})
+	err := runClusterInit(context.Background(), client, "", false, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "cluster_already_initialized") {
 		t.Errorf("err = %v", err)
 	}
@@ -183,7 +183,7 @@ func TestRunNodeJoin_SuccessPrintsConfirmation(t *testing.T) {
 			return &pb.ClusterJoinResponse{}, nil
 		},
 	}
-	if err := runNodeJoin(context.Background(), client, "10.0.0.1:7000", "tok-123", &out); err != nil {
+	if err := runNodeJoin(context.Background(), client, "10.0.0.1:7000", "tok-123", false, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "Joined cluster") {
@@ -200,7 +200,7 @@ func TestRunNodeJoin_SurfacesServerError(t *testing.T) {
 			return nil, errors.New("join_token_invalid")
 		},
 	}
-	err := runNodeJoin(context.Background(), client, "10.0.0.1:7000", "tok-bad", &bytes.Buffer{})
+	err := runNodeJoin(context.Background(), client, "10.0.0.1:7000", "tok-bad", false, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "join_token_invalid") {
 		t.Errorf("err = %v", err)
 	}
