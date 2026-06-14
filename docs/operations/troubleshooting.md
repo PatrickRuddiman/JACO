@@ -345,15 +345,20 @@ spec.
 
 ## `output format "<fmt>" not implemented yet; only "table" is supported (#156)`
 
-v0.3.4+ CLI explicitly rejects `-o json` / `-o yaml` on every
-subcommand except `jaco audit` (the only one that actually
-implements non-table output). Pre-v0.3.4 the flag was silently
-ignored — CI pipelines piping `jaco status -o json | jq .` got a
-`parse error` from jq because the actual output was the table
-format. The hard rejection makes the breakage visible. Use `jaco
-audit -o json` for any structured-output need; for `status` /
-`logs` / etc., either parse the table or watch for v0.4.0 which
-may extend `-o json` coverage.
+The read-only commands `jaco status`, `jaco cluster status`, `jaco
+node list`, and `jaco audit` implement `-o json` and `-o yaml`, so
+`jaco status mydeploy -o json | jq .` works as expected. Structured
+output uses lowercase `snake_case` enum values (e.g. replica state
+`running`, deployment status `active`, node status `ready`); the
+`table` view keeps the UPPERCASE form for human scanning.
+
+Mutating commands (`apply`, `delete`, `rollback`, `node join`,
+`logs`, …) do **not** serialize json/yaml and reject non-`table`
+values with this hard error rather than silently emitting table
+output. That deliberate failure makes the gap visible to CI: a
+pre-v0.3.4 `jaco status -o json | jq .` silently produced table text
+and jq raised a `parse error`; the rejection (and now the real
+serializers) prevent that class of silent breakage.
 
 ## `port_conflict`
 

@@ -56,6 +56,47 @@ With `-w`, the initial snapshot prints, then the CLI opens a
 and `routes`. Each event prints a `---` separator followed by a fresh
 snapshot. Resync events trigger an idempotent re-fetch.
 
+## Output formats
+
+`-o json` and `-o yaml` emit a structured snapshot instead of the tables.
+Enum fields use **lowercase `snake_case`** values — the table view's
+UPPERCASE is for human scanning only; scripts should match the lowercase
+form below (replica `state`, deployment `status`):
+
+```json
+{
+  "deployments": [
+    { "name": "mydeploy", "applied_revision": 8, "previous_revision": 7, "status": "active" }
+  ],
+  "replicas": [
+    { "id": "mydeploy-web-0", "state": "running", "host": "node-a", "container_id": "c1", "last_health_at": "2026-06-01T12:00:00Z" }
+  ],
+  "routes": [
+    { "domain": "web.example.com", "deployment": "mydeploy", "service": "web", "port": 80, "tls": "auto" }
+  ],
+  "certs": [
+    { "domain": "web.example.com", "environment": "prod", "not_after": "2026-08-01T00:00:00Z", "last_renewal_at": "2026-06-02T00:00:00Z" }
+  ]
+}
+```
+
+- `status` is one of `pending`, `active`.
+- `state` is one of
+  `pending | pulling | running | degraded | updating | failed | stopped`.
+- `tls` is `auto` or `off`.
+- `certs` is omitted when no managed cert exists. Timestamp fields are
+  RFC3339 UTC and omitted when unset.
+- `-o yaml` carries the same fields and casing.
+
+With `-w`, json output is a stream of concatenated JSON snapshots (a valid
+`jq` input); yaml output separates snapshots with `---` document breaks.
+
+Example — poll for rollout convergence with `jq`:
+
+```sh
+jaco status mydeploy -o json | jq -e '.replicas | all(.state == "running")'
+```
+
 ## Exit codes
 
 - `0` — snapshot rendered (or watch loop exited cleanly).

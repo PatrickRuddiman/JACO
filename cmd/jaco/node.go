@@ -191,6 +191,8 @@ func nodeListCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "list",
 		Short: "List cluster members",
+		// Honors --output; renders -o json / -o yaml via renderNodeList.
+		Annotations: map[string]string{annotationHonorsOutput: "true"},
 	}
 	var server, token, caCertPath string
 	c.Flags().StringVar(&server, "server", "", "leader address (host:port); required")
@@ -218,12 +220,46 @@ func nodeListCmd() *cobra.Command {
 		if err != nil {
 			return cliclient.FormatError(err)
 		}
-		for _, n := range resp.GetNodes() {
-			fmt.Printf("%s\t%s\t%s\n", n.GetHostname(), n.GetAddress(), n.GetStatus())
-		}
-		return nil
+		return renderNodeList(os.Stdout, resp)
 	}
 	return c
+}
+
+// renderNodeList dispatches the node list on --output. The table path keeps
+// the tab-separated `hostname address status` rows; json/yaml emit a
+// {nodes:[...]} object with lowercase snake_case status values.
+func renderNodeList(out io.Writer, resp *pb.NodeListResponse) error {
+	return renderOutput(out, nodeListToView(resp), func() error {
+		for _, n := range resp.GetNodes() {
+			fmt.Fprintf(out, "%s\t%s\t%s\n", n.GetHostname(), n.GetAddress(), n.GetStatus())
+		}
+		return nil
+	})
+}
+
+// nodeListView is the JSON/YAML shape of `jaco node list`. Wrapped in an
+// object (not a bare array) so top-level fields can be added without breaking
+// consumers.
+type nodeListView struct {
+	Nodes []nodeView `json:"nodes" yaml:"nodes"`
+}
+
+type nodeView struct {
+	Hostname string `json:"hostname" yaml:"hostname"`
+	Address  string `json:"address" yaml:"address"`
+	Status   string `json:"status" yaml:"status"`
+}
+
+func nodeListToView(resp *pb.NodeListResponse) nodeListView {
+	v := nodeListView{Nodes: make([]nodeView, 0, len(resp.GetNodes()))}
+	for _, n := range resp.GetNodes() {
+		v.Nodes = append(v.Nodes, nodeView{
+			Hostname: n.GetHostname(),
+			Address:  n.GetAddress(),
+			Status:   enumString(n.GetStatus().String(), "NODE_STATUS_"),
+		})
+	}
+	return v
 }
 
 // --- shared dial helper ---------------------------------------------------

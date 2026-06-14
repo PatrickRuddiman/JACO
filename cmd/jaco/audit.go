@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/PatrickRuddiman/jaco/internal/cliclient"
 	grpcsrv "github.com/PatrickRuddiman/jaco/internal/controlplane/grpc"
@@ -84,7 +85,12 @@ func init() {
 			// Buffer all events into a JSON array for non-follow.
 			return collectAuditJSON(stream, enc)
 		case "yaml":
-			return fmt.Errorf("-o yaml not implemented yet (task 12)")
+			if follow {
+				// One YAML document per event (yaml.Encoder emits `---`
+				// separators), flushed as they arrive.
+				return streamAuditYAML(stream, os.Stdout)
+			}
+			return collectAuditYAML(stream, os.Stdout)
 		default:
 			return streamAuditTable(stream)
 		}
@@ -102,11 +108,11 @@ func contextForStream(follow bool) (context.Context, context.CancelFunc) {
 }
 
 type auditEventJSON struct {
-	Type      string            `json:"type"`
-	Identity  string            `json:"identity,omitempty"`
-	Ts        string            `json:"ts,omitempty"`
-	RaftIndex uint64            `json:"raft_index"`
-	Payload   map[string]string `json:"payload,omitempty"`
+	Type      string            `json:"type" yaml:"type"`
+	Identity  string            `json:"identity,omitempty" yaml:"identity,omitempty"`
+	Ts        string            `json:"ts,omitempty" yaml:"ts,omitempty"`
+	RaftIndex uint64            `json:"raft_index" yaml:"raft_index"`
+	Payload   map[string]string `json:"payload,omitempty" yaml:"payload,omitempty"`
 }
 
 func eventToJSON(ev *pb.AuditEvent) auditEventJSON {
@@ -150,6 +156,48 @@ func collectAuditJSON(stream pb.Audit_QueryClient, enc *json.Encoder) error {
 		all = append(all, eventToJSON(ev))
 	}
 	return enc.Encode(all)
+}
+
+func collectAuditYAML(stream pb.Audit_QueryClient, out io.Writer) error {
+	var all []auditEventJSON
+	for {
+		ev, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return cliclient.FormatError(err)
+		}
+		all = append(all, eventToJSON(ev))
+	}
+	return cliclient.RenderYAML(out, all)
+}
+
+func streamAuditYAML(stream pb.Audit_QueryClient, out io.Writer) error {
+	enc := yaml.NewEncoder(out)
+	enc.SetIndent(2)
+	defer enc.Close()
+	for {
+		ev, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return cliclient.FormatError(err)
+		}
+		if err := enc.Encode(eventToJSON(ev)); err != nil {
+			return err
+		}
+		flushIfPossible(out)
+	}
+}
+
+// flushIfPossible flushes w when it exposes a Flush method, so follow-mode
+// streaming output reaches the consumer promptly.
+func flushIfPossible(w io.Writer) {
+	if f, ok := w.(interface{ Flush() error }); ok {
+		_ = f.Flush()
+	}
 }
 
 func streamAuditTable(stream pb.Audit_QueryClient) error {
