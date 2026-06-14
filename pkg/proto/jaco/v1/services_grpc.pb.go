@@ -466,11 +466,12 @@ var Cluster_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	Deploy_Apply_FullMethodName    = "/jaco.v1.Deploy/Apply"
-	Deploy_Rollback_FullMethodName = "/jaco.v1.Deploy/Rollback"
-	Deploy_Delete_FullMethodName   = "/jaco.v1.Deploy/Delete"
-	Deploy_Status_FullMethodName   = "/jaco.v1.Deploy/Status"
-	Deploy_Logs_FullMethodName     = "/jaco.v1.Deploy/Logs"
+	Deploy_Apply_FullMethodName       = "/jaco.v1.Deploy/Apply"
+	Deploy_Rollback_FullMethodName    = "/jaco.v1.Deploy/Rollback"
+	Deploy_Delete_FullMethodName      = "/jaco.v1.Deploy/Delete"
+	Deploy_Status_FullMethodName      = "/jaco.v1.Deploy/Status"
+	Deploy_Logs_FullMethodName        = "/jaco.v1.Deploy/Logs"
+	Deploy_GetReplicas_FullMethodName = "/jaco.v1.Deploy/GetReplicas"
 )
 
 // DeployClient is the client API for Deploy service.
@@ -482,6 +483,12 @@ type DeployClient interface {
 	Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error)
 	Status(ctx context.Context, in *DeployStatusRequest, opts ...grpc.CallOption) (*DeployStatusResponse, error)
 	Logs(ctx context.Context, in *LogsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LogLine], error)
+	// GetReplicas returns the rich per-replica view used by `jaco get
+	// replica[s]` (issue #175): the desired spec (deployment, service, image,
+	// revision), the latest observation (state, reason, container), the restart
+	// counter, and the resolved start-ordering dependencies. Reads local state;
+	// no leader required so the CLI can hit any node, like Status.
+	GetReplicas(ctx context.Context, in *GetReplicasRequest, opts ...grpc.CallOption) (*GetReplicasResponse, error)
 }
 
 type deployClient struct {
@@ -551,6 +558,16 @@ func (c *deployClient) Logs(ctx context.Context, in *LogsRequest, opts ...grpc.C
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Deploy_LogsClient = grpc.ServerStreamingClient[LogLine]
 
+func (c *deployClient) GetReplicas(ctx context.Context, in *GetReplicasRequest, opts ...grpc.CallOption) (*GetReplicasResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetReplicasResponse)
+	err := c.cc.Invoke(ctx, Deploy_GetReplicas_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DeployServer is the server API for Deploy service.
 // All implementations must embed UnimplementedDeployServer
 // for forward compatibility.
@@ -560,6 +577,12 @@ type DeployServer interface {
 	Delete(context.Context, *DeleteRequest) (*DeleteResponse, error)
 	Status(context.Context, *DeployStatusRequest) (*DeployStatusResponse, error)
 	Logs(*LogsRequest, grpc.ServerStreamingServer[LogLine]) error
+	// GetReplicas returns the rich per-replica view used by `jaco get
+	// replica[s]` (issue #175): the desired spec (deployment, service, image,
+	// revision), the latest observation (state, reason, container), the restart
+	// counter, and the resolved start-ordering dependencies. Reads local state;
+	// no leader required so the CLI can hit any node, like Status.
+	GetReplicas(context.Context, *GetReplicasRequest) (*GetReplicasResponse, error)
 	mustEmbedUnimplementedDeployServer()
 }
 
@@ -584,6 +607,9 @@ func (UnimplementedDeployServer) Status(context.Context, *DeployStatusRequest) (
 }
 func (UnimplementedDeployServer) Logs(*LogsRequest, grpc.ServerStreamingServer[LogLine]) error {
 	return status.Error(codes.Unimplemented, "method Logs not implemented")
+}
+func (UnimplementedDeployServer) GetReplicas(context.Context, *GetReplicasRequest) (*GetReplicasResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetReplicas not implemented")
 }
 func (UnimplementedDeployServer) mustEmbedUnimplementedDeployServer() {}
 func (UnimplementedDeployServer) testEmbeddedByValue()                {}
@@ -689,6 +715,24 @@ func _Deploy_Logs_Handler(srv interface{}, stream grpc.ServerStream) error {
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Deploy_LogsServer = grpc.ServerStreamingServer[LogLine]
 
+func _Deploy_GetReplicas_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetReplicasRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeployServer).GetReplicas(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Deploy_GetReplicas_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeployServer).GetReplicas(ctx, req.(*GetReplicasRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Deploy_ServiceDesc is the grpc.ServiceDesc for Deploy service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -711,6 +755,10 @@ var Deploy_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Status",
 			Handler:    _Deploy_Status_Handler,
+		},
+		{
+			MethodName: "GetReplicas",
+			Handler:    _Deploy_GetReplicas_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
