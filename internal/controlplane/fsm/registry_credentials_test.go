@@ -113,6 +113,66 @@ func TestApply_RegistryCredentialRemove_RemovesAndAudits(t *testing.T) {
 	}
 }
 
+// TestApply_RegistryCredentialUpsert_NamespaceScopedCoexist asserts that
+// per-namespace credentials on the same host are keyed distinctly
+// ("ghcr.io/personal" vs "ghcr.io/company" vs bare "ghcr.io") rather than
+// collapsing to a single host row — the regression that issue #101's
+// per-namespace support fixes. Input case + trailing slash canonicalize.
+func TestApply_RegistryCredentialUpsert_NamespaceScopedCoexist(t *testing.T) {
+	f, s, _ := newFSM(t)
+	type cred struct{ registry, user, key string }
+	creds := []cred{
+		{"ghcr.io/Personal/", "alice", "ghcr.io/personal"},
+		{"ghcr.io/company", "ci-bot", "ghcr.io/company"},
+		{"ghcr.io", "fallback", "ghcr.io"},
+	}
+	for i, c := range creds {
+		applyCmd(t, f, uint64(10+i), &pb.Command{
+			Ts: timestamppb.Now(),
+			Payload: &pb.Command_RegistryCredentialUpsert{
+				RegistryCredentialUpsert: &pb.RegistryCredentialUpsert{
+					Credential: &pb.RegistryCredential{
+						Registry: c.registry,
+						Username: c.user,
+						Secret:   []byte("secret-" + c.user),
+					},
+				},
+			},
+		})
+	}
+	if n := s.RegistryCredentials.Len(); n != 3 {
+		t.Fatalf("stored credential count = %d, want 3 distinct namespace keys", n)
+	}
+	for _, c := range creds {
+		got, ok := s.RegistryCredentials.Get(c.key)
+		if !ok {
+			t.Errorf("credential for key %q not stored", c.key)
+			continue
+		}
+		if got.GetUsername() != c.user {
+			t.Errorf("key %q username = %q, want %q", c.key, got.GetUsername(), c.user)
+		}
+	}
+
+	// Removing the namespace-scoped key must leave the bare-host fallback and
+	// the other namespace untouched.
+	applyCmd(t, f, 100, &pb.Command{
+		Ts: timestamppb.Now(),
+		Payload: &pb.Command_RegistryCredentialRemove{
+			RegistryCredentialRemove: &pb.RegistryCredentialRemove{Registry: "ghcr.io/company"},
+		},
+	})
+	if _, ok := s.RegistryCredentials.Get("ghcr.io/company"); ok {
+		t.Errorf("ghcr.io/company still present after scoped Remove")
+	}
+	if _, ok := s.RegistryCredentials.Get("ghcr.io"); !ok {
+		t.Errorf("bare ghcr.io fallback removed by scoped Remove — must be independent")
+	}
+	if _, ok := s.RegistryCredentials.Get("ghcr.io/personal"); !ok {
+		t.Errorf("ghcr.io/personal removed by unrelated scoped Remove")
+	}
+}
+
 // TestSnapshotRestore_PreservesRegistryCredentials applies an upsert,
 // snapshots, restores into a fresh FSM, and verifies the credential survives
 // with secret intact (raft snapshot is the on-disk distribution channel for

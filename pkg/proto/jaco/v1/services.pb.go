@@ -2120,7 +2120,7 @@ func (x *TokenInfo) GetAllowsPrivileged() bool {
 
 type RegistryCredentialAddRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Registry      string                 `protobuf:"bytes,1,opt,name=registry,proto3" json:"registry,omitempty"` // host[:port]; canonicalized server-side
+	Registry      string                 `protobuf:"bytes,1,opt,name=registry,proto3" json:"registry,omitempty"` // host[:port][/namespace]; canonicalized server-side
 	Username      string                 `protobuf:"bytes,2,opt,name=username,proto3" json:"username,omitempty"`
 	Secret        []byte                 `protobuf:"bytes,3,opt,name=secret,proto3" json:"secret,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -2180,7 +2180,7 @@ func (x *RegistryCredentialAddRequest) GetSecret() []byte {
 
 type RegistryCredentialAddResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Registry      string                 `protobuf:"bytes,1,opt,name=registry,proto3" json:"registry,omitempty"` // canonicalized host echoed back
+	Registry      string                 `protobuf:"bytes,1,opt,name=registry,proto3" json:"registry,omitempty"` // canonical key echoed back (host[:port][/namespace])
 	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2232,7 +2232,7 @@ func (x *RegistryCredentialAddResponse) GetUpdatedAt() *timestamppb.Timestamp {
 
 type RegistryCredentialRemoveRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Registry      string                 `protobuf:"bytes,1,opt,name=registry,proto3" json:"registry,omitempty"`
+	Registry      string                 `protobuf:"bytes,1,opt,name=registry,proto3" json:"registry,omitempty"` // host[:port][/namespace]; canonicalized server-side
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

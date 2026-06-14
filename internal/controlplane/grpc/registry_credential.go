@@ -38,7 +38,7 @@ func (r *registryCredentialsServer) Add(ctx context.Context, req *pb.RegistryCre
 	if !r.raft.IsLeader() {
 		return nil, errorStatus(codes.Unavailable, "no_leader", "add registry credential requires leader")
 	}
-	host := canonicalRegistryHost(req.GetRegistry())
+	host := canonicalRegistryKey(req.GetRegistry())
 	if host == "" {
 		return nil, errorStatus(codes.InvalidArgument, "validation_failed", "registry is required")
 	}
@@ -80,7 +80,7 @@ func (r *registryCredentialsServer) Remove(ctx context.Context, req *pb.Registry
 	if !r.raft.IsLeader() {
 		return nil, errorStatus(codes.Unavailable, "no_leader", "remove registry credential requires leader")
 	}
-	host := canonicalRegistryHost(req.GetRegistry())
+	host := canonicalRegistryKey(req.GetRegistry())
 	if host == "" {
 		return nil, errorStatus(codes.InvalidArgument, "validation_failed", "registry is required")
 	}
@@ -113,25 +113,44 @@ func (r *registryCredentialsServer) List(_ context.Context, _ *pb.RegistryCreden
 	return &pb.RegistryCredentialListResponse{Credentials: out}, nil
 }
 
-// canonicalRegistryHost mirrors the FSM helper of the same name so the gRPC
+// canonicalRegistryKey mirrors the FSM helper of the same name so the gRPC
 // handler validates / canonicalizes against the same key space the FSM
 // stores under. Kept duplicated rather than exported because both call sites
 // are internal and a future change to the canonicalization rules should land
 // in lock-step.
-func canonicalRegistryHost(host string) string {
-	h := strings.ToLower(strings.TrimSpace(host))
+//
+// The key is "host[:port]" or, when the operator scopes the credential to a
+// registry namespace, "host[:port]/namespace" (e.g. "ghcr.io/owner"). The
+// host is lower-cased with Docker Hub aliases folded to "docker.io"; any
+// scheme, query, or fragment is stripped; the namespace path is lower-cased
+// and trimmed of surrounding slashes. An empty/whitespace host returns "".
+func canonicalRegistryKey(ref string) string {
+	h := strings.ToLower(strings.TrimSpace(ref))
 	if h == "" {
 		return ""
 	}
 	if i := strings.Index(h, "://"); i >= 0 {
 		h = h[i+3:]
 	}
-	if i := strings.IndexAny(h, "/?#"); i >= 0 {
+	// Drop any query / fragment, then split the host from the namespace path
+	// on the first "/".
+	if i := strings.IndexAny(h, "?#"); i >= 0 {
 		h = h[:i]
 	}
-	switch h {
-	case "index.docker.io", "registry-1.docker.io", "registry.docker.io":
-		return "docker.io"
+	host, path := h, ""
+	if i := strings.IndexByte(h, '/'); i >= 0 {
+		host, path = h[:i], h[i+1:]
 	}
-	return h
+	switch host {
+	case "index.docker.io", "registry-1.docker.io", "registry.docker.io":
+		host = "docker.io"
+	}
+	if host == "" {
+		return ""
+	}
+	path = strings.Trim(path, "/")
+	if path == "" {
+		return host
+	}
+	return host + "/" + path
 }
