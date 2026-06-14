@@ -22,6 +22,7 @@ JACO_BIN_PATH="$PREFIX/bin/jaco"
 JACOD_BIN_PATH="$PREFIX/bin/jacod"
 CONFIG_PATH="$CONFIG_DIR/jacod.yaml"
 SERVICE_PATH="/etc/systemd/system/jaco.service"
+SOCKET_PATH="/etc/systemd/system/jaco.socket"
 
 require_root() {
   if [[ "$(id -u)" -ne 0 ]]; then
@@ -119,6 +120,11 @@ install_unit() {
   local self_dir
   self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   install -m 0644 "$self_dir/jaco.service" "$SERVICE_PATH"
+  # jaco.socket is pulled in by jaco.service's Requires= (issue #167): systemd
+  # creates and binds the local-control socket in the host namespace and hands
+  # jacod the fd, so it stays reachable by the jaco group. Must ship alongside
+  # the service or `systemctl enable jaco` fails on the missing dependency.
+  install -m 0644 "$self_dir/jaco.socket" "$SOCKET_PATH"
   systemctl daemon-reload
   systemctl enable jaco >/dev/null
 }

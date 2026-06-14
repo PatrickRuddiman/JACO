@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # JACO uninstaller. Symmetric counterpart of install.sh:
 #   - stops + disables jaco.service
-#   - removes /etc/systemd/system/jaco.service
+#   - removes /etc/systemd/system/jaco.service and jaco.socket
 #   - removes $JACO_PREFIX/bin/{jaco,jacod}
 #   - removes $JACO_CONFIG_DIR (jacod.yaml + anything else there)
 #   - removes $JACO_DATA_DIR (skip with --preserve-data)
@@ -19,6 +19,7 @@ CONFIG_DIR="${JACO_CONFIG_DIR:-/etc/jaco}"
 JACO_BIN_PATH="$PREFIX/bin/jaco"
 JACOD_BIN_PATH="$PREFIX/bin/jacod"
 SERVICE_PATH="/etc/systemd/system/jaco.service"
+SOCKET_PATH="/etc/systemd/system/jaco.socket"
 
 PRESERVE_DATA=0
 for arg in "$@"; do
@@ -45,8 +46,16 @@ stop_service() {
 }
 
 remove_unit() {
+  local reload=0
+  if [[ -f "$SOCKET_PATH" ]]; then
+    rm -f "$SOCKET_PATH"
+    reload=1
+  fi
   if [[ -f "$SERVICE_PATH" ]]; then
     rm -f "$SERVICE_PATH"
+    reload=1
+  fi
+  if [[ "$reload" -eq 1 ]]; then
     systemctl daemon-reload
   fi
 }
