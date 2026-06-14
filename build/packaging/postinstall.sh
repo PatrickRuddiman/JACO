@@ -11,6 +11,22 @@
 
 set -e
 
+# Detect whether this is an upgrade vs. a fresh install. dpkg/rpm pass
+# the operation in $1 with different conventions:
+#   deb  fresh: `configure` with empty $2   upgrade: `configure <old-version>`
+#   rpm  fresh: `1`                          upgrade: `2` (or more)
+# On an upgrade we restart an already-running unit below; on a fresh
+# install we deliberately leave it stopped (see header).
+is_upgrade=0
+case "$1" in
+    configure)
+        [ -n "$2" ] && is_upgrade=1
+        ;;
+    [2-9]|[1-9][0-9]*)
+        is_upgrade=1
+        ;;
+esac
+
 # Create the jaco system group + user if missing. --system gives a sub-1000
 # uid/gid and no aging. /var/lib/jaco is the data dir but we don't create
 # the home eagerly; RuntimeDirectory= in the unit handles /run/jaco.
@@ -37,6 +53,24 @@ install -d -m 0750 -o jaco -g jaco /var/lib/jaco
 
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload >/dev/null 2>&1 || true
+
+    # On upgrade only: pick up the freshly-installed binary + unit if the
+    # operator already had the service enabled and running. preremove.sh
+    # no longer stops the unit on upgrade, so "is-active" here reflects the
+    # pre-upgrade state. We never enable/start on a fresh install (issue
+    # #173 keeps the #151 footgun out of scope).
+    if [ "$is_upgrade" = 1 ]; then
+        if systemctl is-enabled --quiet jaco 2>/dev/null \
+           && systemctl is-active --quiet jaco 2>/dev/null; then
+            systemctl restart jaco >/dev/null 2>&1 || true
+        fi
+    fi
+fi
+
+# Upgrades are quiet — the operator already configured this node. Only
+# print the getting-started banner on a fresh install.
+if [ "$is_upgrade" = 1 ]; then
+    exit 0
 fi
 
 cat <<'EOF'
