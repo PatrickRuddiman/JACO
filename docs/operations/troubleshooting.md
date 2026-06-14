@@ -7,6 +7,10 @@ sources:
   - internal/ingress/
   - internal/discovery/dns/
   - proto/jaco/v1/entities.proto
+  - internal/daemon/grpc/server.go
+  - cmd/jacod/main.go
+  - build/jaco.service
+  - build/jaco.socket
 ---
 
 # Troubleshooting

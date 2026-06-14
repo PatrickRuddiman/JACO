@@ -5,6 +5,10 @@ sources:
   - .github/workflows/release.yml
   - cmd/jacod/main.go
   - internal/packaging/
+  - build/jaco.service
+  - build/jaco.socket
+  - build/release.sh
+  - build/install.sh.tpl
 ---
 
 # Installation

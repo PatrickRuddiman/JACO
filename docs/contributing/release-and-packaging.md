@@ -5,6 +5,11 @@ sources:
   - Makefile
   - internal/packaging/
   - cmd/jaco/self_upgrade.go
+  - build/jaco.service
+  - build/jaco.socket
+  - build/release.sh
+  - build/install.sh.tpl
+  - build/uninstall.sh
 ---
 
 # Release and packaging
@@ -40,6 +45,9 @@ nfpm-built from [`nfpm.yaml`](../../nfpm.yaml). Lays down:
 
 - `/usr/local/bin/jaco` and `/usr/local/bin/jacod` (mode 0755).
 - `/lib/systemd/system/jaco.service`.
+- `/lib/systemd/system/jaco.socket` — local-control socket unit, pulled
+  in by `jaco.service` via `Requires=` so systemd binds the socket in
+  the host namespace (issue #167).
 - `/etc/jaco/jacod.yaml` (`type: config|noreplace` — operator edits
   survive upgrade).
 
@@ -62,7 +70,11 @@ Built by the release workflow (`linux/<arch>`) and by the local
 
 - `jaco`, `jacod` (static, `CGO_ENABLED=0`, `-trimpath -ldflags
   "-s -w -X main.version=<tag>"`).
-- `jaco.service`, `jacod.yaml`, `LICENSE`, `README.md`, `INSTALL.md`.
+- `jaco.service`, `jaco.socket`, `jacod.yaml`, `install.sh`,
+  `uninstall.sh`, `LICENSE`, `README.md`.
+
+The tarball's `install.sh` lays down both units, the binaries, and the
+config; `uninstall.sh` is its symmetric counterpart.
 
 ## Local preview
 
