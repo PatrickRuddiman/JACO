@@ -245,7 +245,9 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 // TestRunStatus_RendersDeploymentDetailsReason — a PENDING deployment carries
 // the scheduler's reason in status_details; it must surface in the DETAILS
 // column so the operator sees why nothing scheduled (the original report:
-// status read ACTIVE/empty and "told me nothing").
+// status read ACTIVE/empty and "told me nothing"). The reason text here is the
+// real string the placement layer emits when a pin matches no ready server
+// (internal/scheduler/placement.PlaceReplica), not an invented placeholder.
 func TestRunStatus_RendersDeploymentDetailsReason(t *testing.T) {
 	client := &fakeDeployStatusClient{
 		statusFn: func(_ context.Context, _ *pb.DeployStatusRequest) (*pb.DeployStatusResponse, error) {
@@ -253,7 +255,7 @@ func TestRunStatus_RendersDeploymentDetailsReason(t *testing.T) {
 				Deployments: []*pb.Deployment{{
 					Name: "website", AppliedRevision: 6, PreviousRevision: 5,
 					Status:        pb.DeploymentStatus_DEPLOYMENT_STATUS_PENDING,
-					StatusDetails: map[string]string{"reason": "unschedulable: no eligible host"},
+					StatusDetails: map[string]string{"reason": `service "mirror": no eligible hosts`},
 				}},
 			}, nil
 		},
@@ -263,7 +265,7 @@ func TestRunStatus_RendersDeploymentDetailsReason(t *testing.T) {
 		t.Fatalf("runStatus: %v", err)
 	}
 	got := out.String()
-	for _, want := range []string{"DETAILS", "PENDING", "unschedulable: no eligible host"} {
+	for _, want := range []string{"DETAILS", "PENDING", "mirror", "no eligible hosts"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q:\n%s", want, got)
 		}
@@ -315,7 +317,7 @@ func TestStatusToView_IncludesReasonFields(t *testing.T) {
 	resp := &pb.DeployStatusResponse{
 		Deployments: []*pb.Deployment{{
 			Name: "website", Status: pb.DeploymentStatus_DEPLOYMENT_STATUS_PENDING,
-			StatusDetails: map[string]string{"reason": "unschedulable"},
+			StatusDetails: map[string]string{"reason": `service "mirror": no eligible hosts`},
 		}},
 		Replicas: []*pb.ReplicaObserved{
 			{
@@ -326,7 +328,7 @@ func TestStatusToView_IncludesReasonFields(t *testing.T) {
 		},
 	}
 	v := statusToView(resp)
-	if len(v.Deployments) != 1 || v.Deployments[0].StatusDetails["reason"] != "unschedulable" {
+	if len(v.Deployments) != 1 || v.Deployments[0].StatusDetails["reason"] != `service "mirror": no eligible hosts` {
 		t.Errorf("deployment status_details not carried: %+v", v.Deployments)
 	}
 	if len(v.Replicas) != 2 {

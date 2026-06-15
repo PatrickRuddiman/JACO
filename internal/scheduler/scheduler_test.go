@@ -547,8 +547,13 @@ func TestReconcile_RemovesReplicasWhenScalingDown(t *testing.T) {
 }
 
 func TestReconcile_PinnedHostFailureMarksDeploymentPending(t *testing.T) {
-	// Service pins itself to a node that doesn't exist; reconcile must
-	// raise DEPLOYMENT_STATUS_PENDING and write no ReplicaDesired.
+	// Service pins itself to a node that doesn't exist -- the original report:
+	// "a placement value that doesn't match any server". Reconcile must raise
+	// DEPLOYMENT_STATUS_PENDING, write no ReplicaDesired, and -- the whole point
+	// of the report -- record a reason that *explains* the unschedulable
+	// placement, both in the deployment's status_details (shown in `jaco status`
+	// DETAILS) and in the daemon log. Asserting only "status == PENDING" would
+	// pass even if the operator still saw no indication of why.
 	brokers := watch.NewRegistry()
 	st := state.New(brokers)
 	f := fsm.New(st, brokers)
@@ -590,8 +595,15 @@ func TestReconcile_PinnedHostFailureMarksDeploymentPending(t *testing.T) {
 	if got := st.ReplicasDesired.Len(); got != 0 {
 		t.Errorf("ReplicasDesired = %d, want 0 (pinned-host failure must not place anything)", got)
 	}
-	if logs := logBuf.String(); !strings.Contains(logs, "deployment scheduling blocked") || !strings.Contains(logs, "pinned") {
-		t.Errorf("scheduler did not log the scheduling-blocked transition; got:\n%s", logs)
+	// The reason an operator reads must name the placement failure, not be
+	// blank or generic. node-z is pinned but only node-a is ready, so the
+	// eligible set is empty -> "no eligible hosts".
+	if reason := dep.GetStatusDetails()["reason"]; !strings.Contains(reason, "no eligible hosts") {
+		t.Errorf("deployment reason = %q, want it to explain the unschedulable placement (no eligible hosts)", reason)
+	}
+	if logs := logBuf.String(); !strings.Contains(logs, "deployment scheduling blocked") ||
+		!strings.Contains(logs, "pinned") || !strings.Contains(logs, "no eligible hosts") {
+		t.Errorf("scheduler did not log the scheduling-blocked transition with a reason; got:\n%s", logs)
 	}
 }
 
