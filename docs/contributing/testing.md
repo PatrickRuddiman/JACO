@@ -1,6 +1,7 @@
 ---
 sources:
   - Makefile
+  - SMOKETEST.md
   - .github/workflows/ci.yml
   - .github/workflows/integration.yml
   - .github/workflows/isolation-rig.yml
@@ -136,6 +137,20 @@ benchmarking on the Azure substrate provisioned by
 
 Today only the JACO path is implemented end-to-end; the other three
 are stubs waiting for their bootstrap + manifests + bench adapter.
+
+## Live smoke test
+
+[`SMOKETEST.md`](../../SMOKETEST.md) at the repo root is the authoritative
+runbook for live-smoking a change against real infrastructure. The unit,
+integration, and rig surfaces above stub or scope down the edges; a smoke does
+not. It stands up the full three-node Azure bed with Docker, joins a raft
+cluster from the real `.deb` under systemd, stands up an in-cluster
+`registry:2`, and applies the [`tests/samples/jaco`](../../tests/samples/jaco)
+`bench` stack with `jaco apply` — and it is not a pass until that stack is
+observed RUNNING across the cluster and reachable through the ingress LB. Even
+a control-plane-only change runs on this bed, so a follower proves the write
+replicated and the runtime proves no pull or reconcile regressed. The
+`/smoke-test` workflow treats that file as authoritative.
 
 ## Behavior-pinning fixtures
 

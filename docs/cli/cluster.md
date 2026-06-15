@@ -17,7 +17,7 @@ running on, as root.
 ### Synopsis
 
 ```
-sudo jaco cluster init [--name <cluster-name>] [--socket <path>]
+sudo jaco cluster init [--name <cluster-name>] [--socket <path>] [--no-systemd-enable]
 ```
 
 ### Flags
@@ -26,6 +26,7 @@ sudo jaco cluster init [--name <cluster-name>] [--socket <path>]
 |-----------------------|-------------------------------|----------------------------------------|
 | `--name <s>`          | UUID                          | optional human-readable cluster name   |
 | `--socket <path>`     | `/var/run/jaco/jaco.sock`     | local jacod unix socket                |
+| `--no-systemd-enable` | `false`                       | skip `systemctl enable jaco` after init |
 
 `JACO_SOCKET` overrides the default socket path.
 
@@ -45,6 +46,17 @@ never retrievable from raft.
 After this command returns, every other RPC works (token-gated on the
 cross-host listener; socket-trust on the local listener).
 
+`cluster init` is the operator's "this node is now a cluster member"
+commitment, so by default it also runs `systemctl enable jaco` — the deb
+postinstall installs the unit **disabled** so a half-configured node never
+auto-starts, and `init` is exactly the moment that posture stops being right.
+Without it, a reboot would silently drop this freshly-initialized node from the
+cluster. The enable is best-effort: on hosts without `systemctl` (e.g. the
+Alpine/apk path) it is a friendly no-op, and an enable failure prints a warning
+with the manual fix rather than failing the already-committed init. Pass
+`--no-systemd-enable` to skip it (you must then ensure `jacod` starts on boot
+yourself).
+
 ### Exit codes
 
 - `0` — cluster initialized.
@@ -60,6 +72,7 @@ sudo jaco cluster init
 #   operator_token: 2b1c...   (64 hex chars)
 #
 # Save the operator token now — it cannot be recovered.
+# Enabled jaco.service to start on boot — this node now survives reboot.
 ```
 
 Store the token immediately. It is the only operator credential that

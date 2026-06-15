@@ -442,7 +442,7 @@ func TestValidateJacoYAML_RouteConflict(t *testing.T) {
 		}
 	})
 
-	t.Run("conflict on catch-all (empty path)", func(t *testing.T) {
+	t.Run("multiple catch-all routes rejected with dedicated message", func(t *testing.T) {
 		j := &JacoYAML{
 			Deployment: "d",
 			Services: []JacoServiceDecl{
@@ -454,11 +454,14 @@ func TestValidateJacoYAML_RouteConflict(t *testing.T) {
 				{Domain: "jaco.sh", Path: "", Service: "web2", Port: 80, TLS: "auto"},
 			},
 		}
-		_, msg, ok := validateJacoYAML(j)
+		code, msg, ok := validateJacoYAML(j)
 		if ok {
 			t.Fatal("validation passed; expected catch-all conflict rejection")
 		}
-		want := `route conflict: domain "jaco.sh" path "" is declared more than once; (domain, path) combinations must be unique`
+		if code != "route_multiple_catchall" {
+			t.Errorf("code = %q, want route_multiple_catchall", code)
+		}
+		want := `multiple catch-all routes for domain "jaco.sh": services [web1, web2]; declare a path: prefix on all but one`
 		if msg != want {
 			t.Errorf("msg = %q, want %q", msg, want)
 		}

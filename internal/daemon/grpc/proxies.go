@@ -73,6 +73,12 @@ func (p *deployProxy) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.De
 func (p *deployProxy) Status(ctx context.Context, req *pb.DeployStatusRequest) (*pb.DeployStatusResponse, error) {
 	return p.get().Status(ctx, req)
 }
+	func (p *deployProxy) GetReplicas(ctx context.Context, req *pb.GetReplicasRequest) (*pb.GetReplicasResponse, error) {
+	return p.get().GetReplicas(ctx, req)
+	}
+	func (p *deployProxy) GetRoute(ctx context.Context, req *pb.GetRouteRequest) (*pb.GetRouteResponse, error) {
+	return p.get().GetRoute(ctx, req)
+	}
 
 // Logs is implemented locally on the daemon — the controlplane stub
 // returns Unimplemented because it needs a dockerx handle + hostname,

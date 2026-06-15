@@ -142,6 +142,18 @@ service Deploy {
   rpc Delete(DeleteRequest) returns (DeleteResponse);
   rpc Status(DeployStatusRequest) returns (DeployStatusResponse);
   rpc Logs(LogsRequest) returns (stream LogLine);
+  // GetReplicas returns the rich per-replica view used by `jaco get
+  // replica[s]` (issue #175): the desired spec (deployment, service, image,
+  // revision), the latest observation (state, reason, container), the restart
+  // counter, and the resolved start-ordering dependencies. Reads local state;
+  // no leader required so the CLI can hit any node, like Status.
+  rpc GetReplicas(GetReplicasRequest) returns (GetReplicasResponse);
+  // GetRoute returns the realized ingress view for one domain: the ordered
+  // routes Caddy serves (path matches longest-prefix-first, catch-all last),
+  // each with its upstream service/port and how many replicas are currently
+  // eligible as upstreams. Lets operators verify path-scoping and spot a
+  // route whose upstream service has no healthy replicas (issue #174).
+  rpc GetRoute(GetRouteRequest) returns (GetRouteResponse);
 }
 
 message ApplyRequest {
@@ -196,6 +208,35 @@ message CertState {
   google.protobuf.Timestamp last_renewal_at = 4;
 }
 
+message GetRouteRequest {
+  string domain = 1;
+}
+message GetRouteResponse {
+  string domain = 1;
+  // routes are ordered exactly as Caddy evaluates them: path-scoped routes
+  // longest-prefix-first, with the catch-all (empty path) route last.
+  repeated RealizedRoute routes = 2;
+}
+// RealizedRoute is one ingress route as it is actually served for a domain,
+// joined with live upstream health (issue #174).
+message RealizedRoute {
+  // path is the matched URL prefix; empty means catch-all (see catch_all).
+  string path = 1;
+  bool catch_all = 2;
+  string deployment = 3;
+  string service = 4;
+  int32 port = 5;
+  bool tls_auto = 6;
+  bool strip_path = 7;
+  // ready_replicas is the number of running, health-fresh replicas of the
+  // upstream (deployment, service) that Caddy would dial; 0 means every
+  // request hitting this route returns 503.
+  int32 ready_replicas = 8;
+  // total_replicas is the number of observed replicas for the upstream
+  // (deployment, service), healthy or not.
+  int32 total_replicas = 9;
+}
+
 message LogsRequest {
   string deployment = 1;
   string service = 2;
@@ -211,6 +252,64 @@ message LogLine {
   string stream = 3;
   google.protobuf.Timestamp ts = 4;
   string line = 5;
+}
+
+// GetReplicasRequest scopes the GetReplicas read. All fields are optional and
+// AND-combined: empty filters return every replica. replica_id selects a
+// single replica for the `jaco get replica <id>` detail view.
+message GetReplicasRequest {
+  string deployment_filter = 1;
+  string service_filter = 2;
+  string replica_id = 3;
+}
+
+message GetReplicasResponse {
+  repeated ReplicaDetail replicas = 1;
+}
+
+// ReplicaDetail is the operator-facing join of one replica's desired spec,
+// latest observation, restart counter, and resolved start-ordering
+// dependencies (issue #175). Distinct from ReplicaObserved (which carries only
+// the observation half) so `jaco get replica` can answer "which dependency is
+// blocking this PENDING replica, and what image/revision is it trying to run"
+// without the operator holding the compose file.
+message ReplicaDetail {
+  string id = 1;
+  string deployment = 2;
+  string service = 3;
+  int32 index = 4;
+  string host = 5;
+  string container_id = 6;
+  ReplicaState state = 7;
+  string image = 8;
+  // revision is the ReplicaDesired raft_index the replica was scheduled from.
+  uint64 revision = 9;
+  // restart_count is the RestartCounter consecutive_failures for this replica
+  // (0 when no counter exists yet).
+  int32 restart_count = 10;
+  google.protobuf.Timestamp last_attempt_at = 11;
+  google.protobuf.Timestamp started_at = 12;
+  google.protobuf.Timestamp last_health_at = 13;
+  // code + message mirror ReplicaObserved: the last health/transition reason
+  // (e.g. a pull error or healthcheck failure detail).
+  string code = 14;
+  string message = 15;
+  map<string, string> details = 16;
+  repeated DependencyState depends_on = 17;
+}
+
+// DependencyState is one resolved entry of a replica's compose-declared
+// depends_on: the target service, the wait condition, that service's current
+// aggregate observed state, and whether the gate is satisfied right now.
+message DependencyState {
+  string service = 1;
+  // condition is the compose wait condition ("service_started" |
+  // "service_healthy"); empty for advisory (required=false) deps.
+  string condition = 2;
+  // state is the best (most-advanced) observed state across the dependency
+  // service's replicas, or UNSPECIFIED when none have reported.
+  ReplicaState state = 3;
+  bool satisfied = 4;
 }
 
 // ----- Tokens service -----

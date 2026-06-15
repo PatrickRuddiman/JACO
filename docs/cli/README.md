@@ -46,6 +46,8 @@ remainder (`apply`, `status`, `logs`, `audit`, `backup`,
 | [`jaco node remove`](node.md)                | remove a node from the cluster             |
 | [`jaco apply`](apply.md)                     | apply a jaco.yaml + compose pair           |
 | [`jaco status`](status.md)                   | snapshot deployments, replicas, routes     |
+| [`jaco get`](get.md)                         | dump the current in-raft deployment / replica / route spec |
+| [`jaco get route`](get-route.md)             | realized ingress routes + readiness for a domain |
 | [`jaco logs`](logs.md)                       | stream container logs across replicas      |
 | [`jaco rollback`](rollback-delete.md)        | roll a deployment back one revision        |
 | [`jaco delete`](rollback-delete.md)          | remove a deployment and its routes/certs   |
@@ -66,7 +68,7 @@ Registered on the root command in `cmd/jaco/root.go`:
 | flag                  | env                | default | meaning                                                        |
 |-----------------------|--------------------|---------|----------------------------------------------------------------|
 | `--context <name>`    | —                  | —       | named cluster context (clusters-config support is in progress) |
-| `-o, --output <fmt>`  | —                  | `table` | output format `table` / `json` / `yaml`. Honored by the read-only commands `jaco status`, `jaco cluster status`, `jaco node list`, and `jaco audit`. Mutating commands (`apply`, `delete`, `rollback`, `node join`, …) still reject non-`table` values with `output format "<fmt>" not implemented yet; only "table" is supported (#156)` so CI scripts that parse the wrong shape fail loudly. Structured output uses lowercase `snake_case` enum values (e.g. `running`, `active`, `ready`); table output keeps UPPERCASE for human scanning |
+| `-o, --output <fmt>`  | —                  | `table` | output format `table` / `json` / `yaml`. Honored by the read-only commands `jaco status`, `jaco get *`, `jaco cluster status`, `jaco node list`, and `jaco audit`. Mutating commands (`apply`, `delete`, `rollback`, `node join`, …) still reject non-`table` values with `output format "<fmt>" not implemented yet; only "table" is supported (#156)` so CI scripts that parse the wrong shape fail loudly. Structured output uses lowercase `snake_case` enum values (e.g. `running`, `active`, `ready`); table output keeps UPPERCASE for human scanning |
 | `--server <addr>`     | —                  | —       | single-shot server override; bypasses context                  |
 | `-q, --quiet`         | —                  | `false` | suppress non-essential output                                  |
 | `-v, --verbose`       | —                  | `false` | debug-level logs to stderr                                     |

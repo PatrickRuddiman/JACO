@@ -107,6 +107,57 @@ func MatchCredentialKey(repo string, lookup func(key string) bool) (string, bool
 	}
 }
 
+// ResolveCredentialKey picks the stored credential key to authenticate a pull
+// of repo (the CanonicalRepo output) from the full set of configured keys. It
+// first does longest-prefix matching (a namespace-scoped key beats a bare-host
+// one, exactly like MatchCredentialKey). When nothing matches, it applies a
+// backward-compatible host fallback: if the image's host has exactly one
+// configured credential, that credential covers the whole host.
+//
+// This restores pre-#171 behavior for the common single-credential case.
+// Before #171 the store collapsed a "host/namespace" login to the bare host
+// key, so one credential authenticated every path on that host; #171 began
+// preserving the namespace, which silently broke images on a sibling path
+// (no host-level key to fall back to → anonymous pull → registry 401 → the
+// replica never starts). See issue #172.
+//
+// The fallback deliberately fires only when the host has a single credential:
+// when several namespace-scoped credentials share a host (the multi-tenant
+// case #171 enables), an image on an unconfigured sibling namespace stays
+// anonymous, because no single credential is unambiguously correct. Returns
+// ("", false) when no credential applies (anonymous pull).
+func ResolveCredentialKey(repo string, keys []string) (string, bool) {
+	set := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		set[k] = struct{}{}
+	}
+	if key, ok := MatchCredentialKey(repo, func(k string) bool {
+		_, found := set[k]
+		return found
+	}); ok {
+		return key, true
+	}
+
+	host := RegistryHost(repo)
+	if host == "" {
+		return "", false
+	}
+	prefix := host + "/"
+	sole := ""
+	for _, k := range keys {
+		if k == host || strings.HasPrefix(k, prefix) {
+			if sole != "" {
+				return "", false // ambiguous: multiple credentials on this host
+			}
+			sole = k
+		}
+	}
+	if sole == "" {
+		return "", false
+	}
+	return sole, true
+}
+
 // RegistryHost strips any "/namespace" suffix from a canonical credential key,
 // returning the bare "host[:port]". A key without a namespace is returned
 // unchanged. Used to keep the moby X-Registry-Auth ServerAddress host-only:

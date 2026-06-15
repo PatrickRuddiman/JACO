@@ -48,8 +48,10 @@ mints the first operator token). The token is printed once on success and
 cannot be recovered.`,
 	}
 	var socket, clusterName string
+	var noSystemdEnable bool
 	c.Flags().StringVar(&socket, "socket", socketDefault(), "local jacod unix socket")
 	c.Flags().StringVar(&clusterName, "name", "", "optional cluster name (defaults to a UUID)")
+	c.Flags().BoolVar(&noSystemdEnable, "no-systemd-enable", false, "do not run `systemctl enable jaco` after init (this node won't auto-start after a reboot)")
 
 	c.RunE = func(_ *cobra.Command, _ []string) error {
 		conn, err := dialDaemon(socket)
@@ -59,14 +61,16 @@ cannot be recovered.`,
 		defer conn.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		return runClusterInit(ctx, pb.NewClusterClient(conn), clusterName, os.Stdout)
+		return runClusterInit(ctx, pb.NewClusterClient(conn), clusterName, !noSystemdEnable, os.Stdout)
 	}
 	return c
 }
 
 // runClusterInit is the unit-testable body: takes a pb.ClusterClient so
-// tests inject a fake without spinning up jacod.
-func runClusterInit(ctx context.Context, client pb.ClusterClient, clusterName string, out io.Writer) error {
+// tests inject a fake without spinning up jacod. When enableSystemd is true it
+// enables jaco.service after a successful init so the freshly-committed node
+// survives a reboot (issue #151).
+func runClusterInit(ctx context.Context, client pb.ClusterClient, clusterName string, enableSystemd bool, out io.Writer) error {
 	resp, err := client.Init(ctx, &pb.ClusterInitRequest{ClusterName: clusterName})
 	if err != nil {
 		return cliclient.FormatError(err)
@@ -76,6 +80,9 @@ func runClusterInit(ctx context.Context, client pb.ClusterClient, clusterName st
 	fmt.Fprintln(out, "  operator_token:", resp.GetOperatorToken())
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Save the operator token now — it cannot be recovered.")
+	if enableSystemd {
+		systemdEnabler(out)
+	}
 	return nil
 }
 

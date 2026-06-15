@@ -120,6 +120,15 @@ either of those two transitions runs. From here, either:
 - bootstrap a new cluster with `sudo jaco cluster init`, or
 - join an existing cluster with `sudo jaco node join --peer … --token …`.
 
+Both of those commands are the point at which this node commits to a cluster,
+so they also run `systemctl enable jaco` for you — the daemon will come back up
+on reboot without a manual `systemctl enable`. (The package itself ships the
+unit **disabled** on purpose so a half-configured node never auto-starts; the
+enable only happens once you've committed to a cluster shape.) Pass
+`--no-systemd-enable` to either command to opt out; on non-systemd hosts (the
+Alpine/apk path) the step is a no-op and you bring `jacod` up under your own
+service manager.
+
 Both flows are walked end-to-end in [Getting started](getting-started.md).
 
 ## See also

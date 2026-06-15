@@ -62,7 +62,7 @@ jaco node issue-join-token --server node-1:7000
 ### Synopsis
 
 ```
-sudo jaco node join --peer <host:port> --token <single-use> [--socket <path>]
+sudo jaco node join --peer <host:port> --token <single-use> [--socket <path>] [--no-systemd-enable]
 ```
 
 ### Flags
@@ -72,6 +72,7 @@ sudo jaco node join --peer <host:port> --token <single-use> [--socket <path>]
 | `--peer <addr>`       | — (required)                  | leader or any cluster member's gRPC      |
 | `--token <s>`         | `JACO_JOIN_TOKEN`             | single-use join token                    |
 | `--socket <path>`     | `/var/run/jaco/jaco.sock`     | local jacod unix socket                  |
+| `--no-systemd-enable` | `false`                       | skip `systemctl enable jaco` after join  |
 
 ### Auth
 
@@ -86,6 +87,14 @@ persists everything under `$JACO_DATA_DIR/node/`, opens its raft node,
 and joins the existing cluster. The join token is consumed (marked
 `consumed_at` in raft) and cannot be reused.
 
+`node join` is the operator's "this node is now a cluster member"
+commitment, so by default it also runs `systemctl enable jaco` after a
+successful join — otherwise a reboot would silently drop this node back out of
+the cluster (the deb installs the unit disabled on purpose so half-configured
+nodes never auto-start). The enable is best-effort: a friendly no-op where
+`systemctl` is absent (e.g. Alpine/apk), and a warning-with-manual-fix rather
+than a hard failure if enabling errors. Pass `--no-systemd-enable` to skip it.
+
 ### Exit codes
 
 - `0` — node joined.
@@ -96,6 +105,7 @@ and joins the existing cluster. The join token is consumed (marked
 ```sh
 sudo jaco node join --peer node-1:7000 --token <single-use>
 # Joined cluster.
+# Enabled jaco.service to start on boot — this node now survives reboot.
 ```
 
 ## `jaco node remove`
