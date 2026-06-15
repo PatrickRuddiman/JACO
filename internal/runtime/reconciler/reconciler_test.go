@@ -46,6 +46,7 @@ type fakeContainer struct {
 	ID, Name, Image string
 	Labels          map[string]string
 	State           string
+	DNS             []string // captured HostConfig.DNS
 }
 
 func newFakeDocker() *fakeDocker { return &fakeDocker{containers: map[string]*fakeContainer{}} }
@@ -64,7 +65,7 @@ func (f *fakeDocker) ImagePull(ctx context.Context, ref string, _ image.PullOpti
 	return io.NopCloser(strings.NewReader(`{}`)), nil
 }
 
-func (f *fakeDocker) ContainerCreate(_ context.Context, cfg *container.Config, _ *container.HostConfig, _ *network.NetworkingConfig, _ *ocispec.Platform, name string) (container.CreateResponse, error) {
+func (f *fakeDocker) ContainerCreate(_ context.Context, cfg *container.Config, hostCfg *container.HostConfig, _ *network.NetworkingConfig, _ *ocispec.Platform, name string) (container.CreateResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.idSeq++
@@ -73,7 +74,11 @@ func (f *fakeDocker) ContainerCreate(_ context.Context, cfg *container.Config, _
 	for k, v := range cfg.Labels {
 		labels[k] = v
 	}
-	f.containers[id] = &fakeContainer{ID: id, Name: name, Image: cfg.Image, Labels: labels, State: "created"}
+	var dns []string
+	if hostCfg != nil {
+		dns = append([]string(nil), hostCfg.DNS...)
+	}
+	f.containers[id] = &fakeContainer{ID: id, Name: name, Image: cfg.Image, Labels: labels, State: "created", DNS: dns}
 	return container.CreateResponse{ID: id}, nil
 }
 
@@ -159,6 +164,19 @@ func (f *fakeDocker) snapshotByReplicaID() map[string]string {
 		}
 	}
 	return out
+}
+
+// dnsForReplica returns the HostConfig.DNS captured for the container of the
+// given replica, and whether such a container has been created yet.
+func (f *fakeDocker) dnsForReplica(replicaID string) ([]string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.containers {
+		if c.Labels["jaco.replica_id"] == replicaID {
+			return c.DNS, true
+		}
+	}
+	return nil, false
 }
 
 const composeYAML = `services:
