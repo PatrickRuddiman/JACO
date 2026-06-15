@@ -70,10 +70,11 @@ type ContainerSpec struct {
 	Networks []string
 
 	// DNSServers is the per-bridge gateway IPs the runtime reconciler
-	// computes from state.Subnets so the container's /etc/resolv.conf
-	// points at JACO's DNS Manager (task 27 + iter 31). Empty when the
-	// runtime hasn't resolved them yet (test paths) — docker's default
-	// applies in that case.
+	// derives from each network's authoritative subnet CIDR (the value
+	// ensureSubnet returns) so the container's /etc/resolv.conf points at
+	// JACO's DNS Manager (task 27 + iter 31; #181). Empty when the runtime
+	// hasn't resolved them yet (test paths) — docker's default applies in
+	// that case.
 	DNSServers []string
 
 	// Ports the user declared in compose. JACO does NOT publish these to the
