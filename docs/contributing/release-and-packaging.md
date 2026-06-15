@@ -4,6 +4,7 @@ sources:
   - nfpm.yaml
   - Makefile
   - internal/packaging/
+  - build/packaging/
   - cmd/jaco/self_upgrade.go
   - build/jaco.service
   - build/jaco.socket

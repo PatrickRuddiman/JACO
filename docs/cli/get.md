@@ -41,7 +41,7 @@ Every subcommand accepts the standard transport flags and honors the global
 | `jaco get replicas`              | list replicas: id, deployment, service, state, host, restart count, image |
 | `jaco get replica <id>`          | one replica's spec, state, restart count, and resolved `depends_on` gates |
 | `jaco get routes`                | list ingress routes **including the path-prefix column**             |
-| `jaco get route <domain>`        | every ingress entry for one domain, in path-match order              |
+| `jaco get route <domain>`        | every ingress entry for one domain, in path-match order, with upstream readiness |
 
 `get replicas` accepts `--deployment` and `--service` filters; `get routes`
 accepts `--domain`.
@@ -113,11 +113,15 @@ depends_on:
     satisfied: false
 
 $ jaco get route example.com
-Route: example.com
-DOMAIN       PATH   DEPLOYMENT  SERVICE  PORT  TLS   STRIP_PATH
-example.com  /api   app         api      8080  auto  true
-example.com  /      app         web      80    auto  false
+Routes for example.com:
+PATH  SERVICE  PORT  TLS   STRIP  FALLBACK  READY
+/api  api      8080  auto  yes    no        2/2
+      web      80    auto  no     yes       3/3
 ```
+
+The catch-all row has an empty `PATH` and `FALLBACK yes`; `READY` is the
+`ready/total` healthy-upstream count. See [`jaco get route`](get-route.md)
+for the full column reference and the `-o json` shape.
 
 ## Not yet supported
 
