@@ -1,6 +1,7 @@
 ---
 sources:
   - internal/controlplane/grpc/
+  - cmd/jaco/get.go
   - internal/runtime/compose/
   - internal/runtime/pull/
   - internal/discovery/firewall/
@@ -556,6 +557,14 @@ startup race:
 
 ## Where to look next
 
+- In-raft spec dump: `jaco get deployment <name> -o yaml` prints the
+  literal stored jaco.yaml, the projected compose, and the route paths
+  the cluster is actually serving — the source of truth behind the
+  trimmed `jaco status` projection. `jaco get replica <id> -o yaml`
+  adds the resolved compose `depends_on` gates (each target's current
+  aggregate state and whether the gate is satisfied right now), which
+  is the fastest way to see why a replica is parked behind a
+  dependency. See [`jaco get`](../cli/get.md).
 - Daemon logs: `journalctl -u jaco -p info` (or `-p err`).
 - Filter by subsystem: `journalctl SUBSYSTEM=scheduler -f`.
 - Audit events: `jaco audit --since 1h --server $LEADER`.
@@ -568,6 +577,7 @@ startup race:
 
 - [Status and errors](../concepts/status-and-errors.md)
 - [Recovery](recovery.md)
+- [`jaco get`](../cli/get.md) — dump the in-raft deployment / replica / route spec
 - [`jaco audit`](../cli/audit.md)
 - [Observability](../concepts/observability.md)
 

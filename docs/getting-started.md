@@ -175,6 +175,8 @@ jaco rollback --server $LEADER hello
 ## What to read next
 
 - [CLI reference](cli/README.md) — every subcommand, every flag.
+- [`jaco get`](cli/get.md) — dump the current in-raft deployment,
+  replica, or route spec as YAML/JSON for incident triage.
 - [`jaco.yaml` schema](manifests/jaco-yaml.md) and [supported compose
   fields](manifests/compose.md) — what's actually accepted.
 - [Architecture](concepts/architecture.md) — the moving parts and the

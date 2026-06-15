@@ -124,6 +124,7 @@ sudo jaco status hello
 
 ## See also
 
+- [`jaco get`](get.md) — dump the full in-raft spec (`status` is a live projection; `get` is the stored source of truth)
 - [`jaco apply`](apply.md)
 - [`jaco logs`](logs.md)
 - [Status and errors](../concepts/status-and-errors.md)
