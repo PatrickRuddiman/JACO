@@ -189,11 +189,13 @@ func TestRun_HandlesRoutesObservedCertsTokens(t *testing.T) {
 	time.Sleep(rebuild.DebounceWindow + 100*time.Millisecond)
 	st.ChallengeTokens.Apply(&pb.ChallengeToken{Token: "t1"}, 4)
 	time.Sleep(rebuild.DebounceWindow + 100*time.Millisecond)
+	st.CertBlobs.Apply(&pb.CertBlob{Key: "certificates/staging/a.example.com/a.example.com.crt"}, 5)
+	time.Sleep(rebuild.DebounceWindow + 100*time.Millisecond)
 
 	got := rebuilds.Load()
-	// 1 initial + 4 events = 5. Slack +1 for any debounce racing during the
+	// 1 initial + 5 events = 6. Slack +1 for any debounce racing during the
 	// initial pass.
-	if got < 5 || got > 6 {
-		t.Errorf("rebuilds = %d, want 5 (one per broker after initial)", got)
+	if got < 6 || got > 7 {
+		t.Errorf("rebuilds = %d, want 6 (one per broker after initial)", got)
 	}
 }

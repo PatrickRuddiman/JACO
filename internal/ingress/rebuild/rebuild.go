@@ -1,8 +1,8 @@
 // Package rebuild owns the debounced Caddy config-reload loop. Watches
-// Routes / ReplicaObserved / Certs / ChallengeTokens; on any event,
-// debounces for DebounceWindow, then re-renders via the injected builder
-// and calls the injected loader unless the new bytes are identical to the
-// previously-loaded config (saves a Caddy reload roundtrip).
+// Routes / TCPRoutes / ReplicaObserved / Certs / CertBlobs / ChallengeTokens;
+// on any event, debounces for DebounceWindow, then re-renders via the injected
+// builder and calls the injected loader unless the new bytes are identical to
+// the previously-loaded config (saves a Caddy reload roundtrip).
 package rebuild
 
 import (
@@ -107,6 +107,13 @@ func (r *Reloader) Run(ctx context.Context) error {
 	defer obs.Cancel()
 	certs := r.brokers.Certs.Subscribe()
 	defer certs.Cancel()
+	// CertBlobs drives a re-render so a follower flips its automation policy
+	// (staging→prod) the moment a promotion replicates: the staging-vs-prod
+	// policy is derived from replicated cert-blob state on non-leader nodes
+	// (issue #182). Without this the follower would keep rendering the stale
+	// policy until some other watched store happened to change.
+	certBlobs := r.brokers.CertBlobs.Subscribe()
+	defer certBlobs.Cancel()
 	tokens := r.brokers.ChallengeTokens.Subscribe()
 	defer tokens.Cancel()
 
@@ -130,6 +137,9 @@ func (r *Reloader) Run(ctx context.Context) error {
 			pending = true
 			resetTimer(debounce, DebounceWindow)
 		case <-certs.Events():
+			pending = true
+			resetTimer(debounce, DebounceWindow)
+		case <-certBlobs.Events():
 			pending = true
 			resetTimer(debounce, DebounceWindow)
 		case <-tokens.Events():
