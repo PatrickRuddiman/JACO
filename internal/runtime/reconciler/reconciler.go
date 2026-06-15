@@ -379,8 +379,7 @@ func (r *Reconciler) runStart(workCtx, watchCtx context.Context, rep *pb.Replica
 				logging.KeyReplicaID, rep.GetId(), logging.KeyDeployment, rep.GetDeployment(), "network", netSuffix, "error", ensErr)
 		}
 		// Point the container's resolv.conf at this bridge's gateway, where the
-		// per-bridge DNS responder listens. Derived from the authoritative cidr
-		// above so it's populated even before the subnet replicates locally.
+		// per-bridge DNS responder listens.
 		gw, gwErr := bridge.GatewayIP(cidr)
 		if gwErr != nil {
 			r.logger.Error("compute bridge gateway for DNS failed",
