@@ -241,3 +241,101 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 	defer l.mu.Unlock()
 	return l.w.Write(p)
 }
+
+// TestRunStatus_RendersDeploymentDetailsReason — a PENDING deployment carries
+// the scheduler's reason in status_details; it must surface in the DETAILS
+// column so the operator sees why nothing scheduled (the original report:
+// status read ACTIVE/empty and "told me nothing").
+func TestRunStatus_RendersDeploymentDetailsReason(t *testing.T) {
+	client := &fakeDeployStatusClient{
+		statusFn: func(_ context.Context, _ *pb.DeployStatusRequest) (*pb.DeployStatusResponse, error) {
+			return &pb.DeployStatusResponse{
+				Deployments: []*pb.Deployment{{
+					Name: "website", AppliedRevision: 6, PreviousRevision: 5,
+					Status:        pb.DeploymentStatus_DEPLOYMENT_STATUS_PENDING,
+					StatusDetails: map[string]string{"reason": "unschedulable: no eligible host"},
+				}},
+			}, nil
+		},
+	}
+	var out bytes.Buffer
+	if err := runStatus(context.Background(), client, "", "", &out); err != nil {
+		t.Fatalf("runStatus: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"DETAILS", "PENDING", "unschedulable: no eligible host"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestRunStatus_RendersReplicaReason — failed/pending replicas must surface
+// their observed failure code+message in the REASON column, while a healthy
+// RUNNING replica stays blank (classify returns no code, so no noise).
+func TestRunStatus_RendersReplicaReason(t *testing.T) {
+	client := &fakeDeployStatusClient{
+		statusFn: func(_ context.Context, _ *pb.DeployStatusRequest) (*pb.DeployStatusResponse, error) {
+			return &pb.DeployStatusResponse{
+				Replicas: []*pb.ReplicaObserved{
+					{
+						Id: "website-web-0", State: pb.ReplicaState_REPLICA_STATE_FAILED,
+						ContainerId: "c-1", Code: "container_exited",
+						Details: map[string]string{"exit_code": "1"},
+					},
+					{
+						Id: "website-mirror-0", State: pb.ReplicaState_REPLICA_STATE_PENDING,
+						Code: "image_pull_failed", Details: map[string]string{"reason": "manifest unknown"},
+					},
+					{
+						Id: "website-web-1", State: pb.ReplicaState_REPLICA_STATE_RUNNING,
+						Host: "node-a", ContainerId: "c-2",
+					},
+				},
+			}, nil
+		},
+	}
+	var out bytes.Buffer
+	if err := runStatus(context.Background(), client, "", "", &out); err != nil {
+		t.Fatalf("runStatus: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"REASON", "container_exited", "exit 1", "image_pull_failed", "manifest unknown"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestStatusToView_IncludesReasonFields — the json/yaml view must carry the
+// new reason fields (deployment status_details; replica code/message/details)
+// and omit them for a healthy replica (omitempty), so `-o json` is as
+// informative as the table.
+func TestStatusToView_IncludesReasonFields(t *testing.T) {
+	resp := &pb.DeployStatusResponse{
+		Deployments: []*pb.Deployment{{
+			Name: "website", Status: pb.DeploymentStatus_DEPLOYMENT_STATUS_PENDING,
+			StatusDetails: map[string]string{"reason": "unschedulable"},
+		}},
+		Replicas: []*pb.ReplicaObserved{
+			{
+				Id: "website-web-0", State: pb.ReplicaState_REPLICA_STATE_FAILED,
+				Code: "container_exited", Message: "boom", Details: map[string]string{"exit_code": "1"},
+			},
+			{Id: "website-web-1", State: pb.ReplicaState_REPLICA_STATE_RUNNING, Host: "node-a"},
+		},
+	}
+	v := statusToView(resp)
+	if len(v.Deployments) != 1 || v.Deployments[0].StatusDetails["reason"] != "unschedulable" {
+		t.Errorf("deployment status_details not carried: %+v", v.Deployments)
+	}
+	if len(v.Replicas) != 2 {
+		t.Fatalf("replicas = %d, want 2", len(v.Replicas))
+	}
+	if r := v.Replicas[0]; r.Code != "container_exited" || r.Message != "boom" || r.Details["exit_code"] != "1" {
+		t.Errorf("failed replica view missing reason fields: %+v", r)
+	}
+	if r := v.Replicas[1]; r.Code != "" || r.Message != "" || len(r.Details) != 0 {
+		t.Errorf("healthy replica should carry no reason fields: %+v", r)
+	}
+}
