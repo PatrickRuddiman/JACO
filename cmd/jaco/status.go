@@ -143,16 +143,12 @@ func renderStatus(out io.Writer, resp *pb.DeployStatusResponse) error {
 	repHeaders := []string{"REPLICA_ID", "STATE", "HOST", "CONTAINER_ID", "LAST_HEALTH_AT", "REASON"}
 	var repRows [][]string
 	for _, r := range resp.GetReplicas() {
-		last := ""
-		if t := r.GetLastHealthAt(); t != nil {
-			last = t.AsTime().UTC().Format(time.RFC3339)
-		}
 		repRows = append(repRows, []string{
 			r.GetId(),
 			strings.TrimPrefix(r.GetState().String(), "REPLICA_STATE_"),
 			r.GetHost(),
 			r.GetContainerId(),
-			last,
+			formatTime(r.GetLastHealthAt()),
 			formatReplicaReason(r),
 		})
 	}
