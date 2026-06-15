@@ -6,6 +6,7 @@ sources:
   - internal/daemon/grpc/apply_or_forward.go
   - internal/controlplane/grpc/jaco_spec.go
   - internal/controlplane/grpc/status.go
+  - internal/controlplane/grpc/getroute.go
   - proto/jaco/v1/entities.proto
 ---
 
@@ -41,6 +42,27 @@ For each `Route` entity in raft state:
 Multiple routes for the same domain with different `path` prefixes
 co-exist; Caddy is fed routes longest-prefix-first so the more
 specific path wins.
+
+`(domain, path)` is the uniqueness key — Caddy dispatches one upstream
+per request, so the same pair can never appear twice. A domain may
+declare **at most one catch-all** (empty `path`) route; a second one is
+rejected at apply with [`route_multiple_catchall`](status-and-errors.md)
+because silently load-balancing a domain's fallback across two
+different services is the issue #174 trap (one missing or unhealthy
+upstream then yields intermittent failures). Path-scoped routes plus a
+single catch-all fallback is the supported multi-service-per-domain
+shape.
+
+### Inspecting the realized routes
+
+`jaco get route <domain>` prints the routes Caddy actually serves for a
+domain, in evaluation order (longest path prefix first, catch-all
+last), with each route's upstream service and live replica readiness as
+`ready/total`. A route showing `0/n` has no healthy upstream and is the
+silent-failure case to look for. The view is computed in the control
+plane from replicated state (the same deterministic mapping Caddy is
+fed), so it is authoritative and identical on every node. See
+[`jaco get route`](../cli/get-route.md).
 
 ### Path stripping
 
@@ -274,9 +296,12 @@ and gracefully swaps listeners as needed.
 
 ## Failure modes
 
-- **No healthy upstream** — Caddy returns HTTP 502 with the
+- **No healthy upstream** — JACO excludes ineligible replicas from the
+  upstream list, so a route whose backends are all down is rendered with
+  an empty upstream set and Caddy returns HTTP 503 with the
   `Server: jaco` header. `jaco status <dep>/<svc>` reports the
-  unreachable target.
+  unreachable target; `jaco get route <domain>` shows the route's
+  upstream readiness as `0/n`.
 - **TLS issuance failure** — `cert_state = pending`; plaintext HTTP
   for the domain continues to serve; backoff capped at 1 h.
 - **Cluster-wide ACME disabled** — set `acme_enabled: false` in
@@ -297,6 +322,8 @@ and gracefully swaps listeners as needed.
 
 ## See also
 
+- [`jaco get route`](../cli/get-route.md) — inspect a domain's realized
+  routes and upstream readiness
 - [`jaco.yaml` schema](../manifests/jaco-yaml.md) — the `routes`
   block
 - [Networking](networking.md), [Isolation](isolation.md)

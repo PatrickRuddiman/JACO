@@ -41,6 +41,9 @@ constructors.
 | `token_invalid`                       | bearer token does not match any known operator token                                  |
 | `token_revoked`                       | matching token, but `revoked_at` is set                                               |
 | `validation_failed`                   | manifest schema violation; details include `field`                                    |
+| `route_tls_mixed`                     | one domain mixes `tls: auto` and `tls: off` routes; a domain must use a single TLS mode |
+| `route_multiple_catchall`             | a domain declares more than one catch-all (empty `path`) route; all but one must declare a `path:` prefix (issue #174) |
+| `route_not_found`                     | `jaco get route <domain>` for a domain that has no routes                              |
 | `unknown_service`                     | jaco service not present in compose                                                   |
 | `unknown_host`                        | `hosts[*]` not a cluster member                                                       |
 | `unknown_network`                     | service-level network not in top-level `networks:`                                    |

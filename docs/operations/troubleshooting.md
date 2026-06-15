@@ -152,6 +152,64 @@ Lint locally first:
 jaco validate --jaco ./hello/jaco.yaml --compose ./hello/docker-compose.yml
 ```
 
+## `route_multiple_catchall`
+
+A domain declares more than one catch-all route — two `routes:` entries
+for the same domain that both omit `path:`. Caddy can only forward a
+domain's unmatched traffic to one upstream, so a second catch-all would
+silently load-balance the fallback across two services; if either one
+is missing or unhealthy a fraction of requests return 503 (issue #174).
+The error names both services:
+
+```
+route_multiple_catchall: multiple catch-all routes for domain "app.example.com": services [website, oauth2]; declare a path: prefix on all but one
+```
+
+Fix it by giving every route for the domain but one an explicit
+`path:` prefix, so each request maps to exactly one upstream:
+
+```yaml
+routes:
+  - domain: app.example.com
+    service: oauth2
+    port: 4180
+    path: /oauth2      # specific prefix, evaluated first
+  - domain: app.example.com
+    service: website
+    port: 8080         # catch-all fallback (no path)
+```
+
+Path-scoped routes plus a single catch-all is the supported
+multi-service-per-domain shape. See
+[Ingress → Route → Caddy mapping](../concepts/ingress.md#route--caddy-mapping).
+
+## Intermittent 503s on a domain with several routes
+
+A domain serves some requests fine and 503s others, or 503s every
+request to one path prefix. The route's upstream has no healthy
+replica: JACO drops ineligible replicas from the Caddy upstream list,
+so a route with all backends down is served with an empty upstream set
+and Caddy returns 503.
+
+Inspect the realized routes and their readiness:
+
+```sh
+jaco get route app.example.com
+```
+
+```
+Routes for app.example.com:
+PATH      SERVICE   PORT   TLS    STRIP   FALLBACK   READY
+/oauth2   oauth2    4180   auto   no      no         2/2
+          website   8080   auto   no      yes        0/1
+```
+
+A `READY` of `0/n` is the offending route. Check the backing replicas
+with `jaco status <deployment>/<service>` and the daemon logs for the
+pull/health failure. Routes that share a domain but differ by `PATH`
+are path-scoped, not duplicates — the SERVICE and READY columns make
+the intended split explicit. See [`jaco get route`](../cli/get-route.md).
+
 ## `unknown_service` / `unknown_host` / `unknown_network`
 
 Apply was rejected because:
@@ -567,6 +625,7 @@ startup race:
 ## See also
 
 - [Status and errors](../concepts/status-and-errors.md)
+- [`jaco get route`](../cli/get-route.md)
 - [Recovery](recovery.md)
 - [`jaco audit`](../cli/audit.md)
 - [Observability](../concepts/observability.md)
