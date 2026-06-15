@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -122,7 +123,7 @@ func runStatusWatch(ctx context.Context, deploy pb.DeployClient, watch pb.WatchC
 // renderStatus prints three tables: deployments, replicas, routes.
 func renderStatus(out io.Writer, resp *pb.DeployStatusResponse) error {
 	// Deployments table.
-	depHeaders := []string{"DEPLOYMENT", "REVISION", "PREVIOUS", "STATUS"}
+	depHeaders := []string{"DEPLOYMENT", "REVISION", "PREVIOUS", "STATUS", "DETAILS"}
 	var depRows [][]string
 	for _, d := range resp.GetDeployments() {
 		depRows = append(depRows, []string{
@@ -130,6 +131,7 @@ func renderStatus(out io.Writer, resp *pb.DeployStatusResponse) error {
 			strconv.FormatUint(d.GetAppliedRevision(), 10),
 			strconv.FormatUint(d.GetPreviousRevision(), 10),
 			strings.TrimPrefix(d.GetStatus().String(), "DEPLOYMENT_STATUS_"),
+			formatStatusDetails(d.GetStatusDetails()),
 		})
 	}
 	fmt.Fprintln(out, "Deployments:")
@@ -138,7 +140,7 @@ func renderStatus(out io.Writer, resp *pb.DeployStatusResponse) error {
 	}
 
 	// Replicas table.
-	repHeaders := []string{"REPLICA_ID", "STATE", "HOST", "CONTAINER_ID", "LAST_HEALTH_AT"}
+	repHeaders := []string{"REPLICA_ID", "STATE", "HOST", "CONTAINER_ID", "LAST_HEALTH_AT", "REASON"}
 	var repRows [][]string
 	for _, r := range resp.GetReplicas() {
 		last := ""
@@ -151,6 +153,7 @@ func renderStatus(out io.Writer, resp *pb.DeployStatusResponse) error {
 			r.GetHost(),
 			r.GetContainerId(),
 			last,
+			formatReplicaReason(r),
 		})
 	}
 	fmt.Fprintln(out, "\nReplicas:")
@@ -226,6 +229,9 @@ type deploymentView struct {
 	AppliedRevision  uint64 `json:"applied_revision" yaml:"applied_revision"`
 	PreviousRevision uint64 `json:"previous_revision" yaml:"previous_revision"`
 	Status           string `json:"status" yaml:"status"`
+	// StatusDetails carries the scheduler's reason when a deployment is
+	// PENDING (e.g. an unschedulable placement). Omitted when empty.
+	StatusDetails map[string]string `json:"status_details,omitempty" yaml:"status_details,omitempty"`
 }
 
 type replicaView struct {
@@ -234,10 +240,15 @@ type replicaView struct {
 	Host         string `json:"host" yaml:"host"`
 	ContainerID  string `json:"container_id" yaml:"container_id"`
 	LastHealthAt string `json:"last_health_at,omitempty" yaml:"last_health_at,omitempty"`
+	// Code / Message / Details mirror the observed failure context the table
+	// REASON column shows. Omitted when empty (e.g. a healthy replica).
+	Code    string            `json:"code,omitempty" yaml:"code,omitempty"`
+	Message string            `json:"message,omitempty" yaml:"message,omitempty"`
+	Details map[string]string `json:"details,omitempty" yaml:"details,omitempty"`
 }
 
 type routeView struct {
-	Domain     string `json:"domain" yaml:"domain"`
+	Domain string `json:"domain" yaml:"domain"`
 	// Path is the URL path prefix this route matches; "" means catch-all.
 	// Surfaced so same-domain path-scoped routes are distinguishable (#174).
 	Path       string `json:"path" yaml:"path"`
@@ -273,6 +284,7 @@ func statusToView(resp *pb.DeployStatusResponse) statusView {
 			AppliedRevision:  d.GetAppliedRevision(),
 			PreviousRevision: d.GetPreviousRevision(),
 			Status:           enumString(d.GetStatus().String(), "DEPLOYMENT_STATUS_"),
+			StatusDetails:    d.GetStatusDetails(),
 		})
 	}
 	for _, r := range resp.GetReplicas() {
@@ -282,6 +294,9 @@ func statusToView(resp *pb.DeployStatusResponse) statusView {
 			Host:         r.GetHost(),
 			ContainerID:  r.GetContainerId(),
 			LastHealthAt: formatTime(r.GetLastHealthAt()),
+			Code:         r.GetCode(),
+			Message:      r.GetMessage(),
+			Details:      r.GetDetails(),
 		})
 	}
 	for _, rt := range resp.GetRoutes() {
@@ -320,4 +335,57 @@ func formatTime(t *timestamppb.Timestamp) string {
 		return ""
 	}
 	return t.AsTime().UTC().Format(time.RFC3339)
+}
+
+// formatStatusDetails renders a deployment's status_details map for the table
+// DETAILS column. The scheduler sets "reason" when it parks a deployment in
+// PENDING (e.g. an unschedulable placement), so prefer that; fall back to a
+// sorted key=value join so any other detail still surfaces. Empty → "".
+func formatStatusDetails(details map[string]string) string {
+	if len(details) == 0 {
+		return ""
+	}
+	if reason := details["reason"]; reason != "" {
+		return reason
+	}
+	keys := make([]string, 0, len(details))
+	for k := range details {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+details[k])
+	}
+	return strings.Join(parts, " ")
+}
+
+// formatReplicaReason renders the REASON column for a replica: the observed
+// failure code plus its human message (or details["reason"] when message is
+// empty), with the container exit code appended when present. A healthy
+// RUNNING replica carries no code (classify returns ""), so this returns ""
+// and the column stays blank for it.
+func formatReplicaReason(r *pb.ReplicaObserved) string {
+	code := r.GetCode()
+	msg := r.GetMessage()
+	if msg == "" {
+		msg = r.GetDetails()["reason"]
+	}
+	var s string
+	switch {
+	case code != "" && msg != "":
+		s = code + ": " + msg
+	case code != "":
+		s = code
+	default:
+		s = msg
+	}
+	if exit := r.GetDetails()["exit_code"]; exit != "" {
+		if s == "" {
+			s = "exit " + exit
+		} else {
+			s = s + " (exit " + exit + ")"
+		}
+	}
+	return s
 }

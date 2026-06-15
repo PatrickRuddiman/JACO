@@ -9,6 +9,9 @@ import (
 
 	"google.golang.org/grpc/metadata"
 
+	grpcsrv "github.com/PatrickRuddiman/jaco/internal/controlplane/grpc"
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -60,6 +63,43 @@ const statusComposeYAML = `services:
 networks:
   default: {}
 `
+
+// TestStatus_FillsObservedHostFromDesired — the health-watcher submits
+// observations without a Host, so a FAILED replica lands in state with a blank
+// host and `jaco status` showed an empty HOST column. The Status handler must
+// backfill it from the matching ReplicaDesired, and pass the failure
+// code/message/details through untouched. Uses NewDeployServer directly (Status
+// reads local state; no raft/leader required), seeding state by hand.
+func TestStatus_FillsObservedHostFromDesired(t *testing.T) {
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	st.ReplicasDesired.Apply(&pb.ReplicaDesired{
+		Id: "website-web-0", Deployment: "website", Service: "web", Host: "node-a", Image: "nginx",
+	}, 1)
+	// Observed without Host (the health-watcher path) but with a failure reason.
+	st.ReplicasObserved.Apply(&pb.ReplicaObserved{
+		Id: "website-web-0", State: pb.ReplicaState_REPLICA_STATE_FAILED,
+		ContainerId: "c-1", Code: "container_exited", Message: "boom",
+		Details: map[string]string{"exit_code": "1"},
+	}, 2)
+
+	srv := grpcsrv.NewDeployServer(st, nil)
+	resp, err := srv.Status(context.Background(), &pb.DeployStatusRequest{})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if len(resp.GetReplicas()) != 1 {
+		t.Fatalf("replicas = %d, want 1", len(resp.GetReplicas()))
+	}
+	r := resp.GetReplicas()[0]
+	if r.GetHost() != "node-a" {
+		t.Errorf("observed host = %q, want node-a (filled from desired)", r.GetHost())
+	}
+	if r.GetCode() != "container_exited" || r.GetMessage() != "boom" || r.GetDetails()["exit_code"] != "1" {
+		t.Errorf("reason fields not passed through: code=%q message=%q details=%v",
+			r.GetCode(), r.GetMessage(), r.GetDetails())
+	}
+}
 
 func TestStatus_ReturnsDeploymentAndRoutes(t *testing.T) {
 	c := setupTwoNodeCluster(t)

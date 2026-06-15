@@ -39,13 +39,20 @@ Operator token (TCP) or unix-socket trust (local).
 
 Renders up to four tables, in order:
 
-- **Deployments** — `DEPLOYMENT, REVISION, PREVIOUS, STATUS`. Status
-  is one of `PENDING`, `ACTIVE` (see
-  [Status and errors](../concepts/status-and-errors.md)).
+- **Deployments** — `DEPLOYMENT, REVISION, PREVIOUS, STATUS, DETAILS`.
+  Status is one of `PENDING`, `ACTIVE` (see
+  [Status and errors](../concepts/status-and-errors.md)). `DETAILS`
+  carries the scheduler's `reason` when a deployment is `PENDING` (e.g. an
+  unschedulable `placement: hosts` pin); blank for `ACTIVE`.
 - **Replicas** — `REPLICA_ID, STATE, HOST, CONTAINER_ID,
-  LAST_HEALTH_AT`. State is from the closed
+  LAST_HEALTH_AT, REASON`. State is from the closed
   `pending | pulling | running | degraded | updating | failed | stopped`
-  enum.
+  enum. `REASON` shows the observed failure `code` (and message) for a
+  replica that isn't healthy — e.g. `container_exited (exit 1)` or
+  `image_pull_failed: manifest unknown`; blank for a healthy `running`
+  replica. `HOST` falls back to the replica's scheduled host when the
+  runtime reported the observation without one, so a `failed` replica
+  still shows where it ran.
 - **Routes** — `DOMAIN, PATH, DEPLOYMENT, SERVICE, PORT, TLS`. `PATH` is
   the URL path prefix the route matches; empty means catch-all. Routes that
   share a `DOMAIN` but differ by `PATH` are path-scoped (Caddy tries the
@@ -69,10 +76,14 @@ form below (replica `state`, deployment `status`):
 ```json
 {
   "deployments": [
-    { "name": "mydeploy", "applied_revision": 8, "previous_revision": 7, "status": "active" }
+    { "name": "mydeploy", "applied_revision": 8, "previous_revision": 7, "status": "active" },
+    { "name": "website", "applied_revision": 6, "previous_revision": 5, "status": "pending",
+      "status_details": { "reason": "service \"mirror\" pins host \"ghost\" which is not a cluster member" } }
   ],
   "replicas": [
-    { "id": "mydeploy-web-0", "state": "running", "host": "node-a", "container_id": "c1", "last_health_at": "2026-06-01T12:00:00Z" }
+    { "id": "mydeploy-web-0", "state": "running", "host": "node-a", "container_id": "c1", "last_health_at": "2026-06-01T12:00:00Z" },
+    { "id": "website-web-0", "state": "failed", "host": "node-a", "container_id": "c9", "last_health_at": "2026-06-01T12:00:00Z",
+      "code": "container_exited", "message": "container exited", "details": { "exit_code": "1" } }
   ],
   "routes": [
     { "domain": "web.example.com", "deployment": "mydeploy", "service": "web", "port": 80, "tls": "auto" }
@@ -87,6 +98,11 @@ form below (replica `state`, deployment `status`):
 - `state` is one of
   `pending | pulling | running | degraded | updating | failed | stopped`.
 - `tls` is `auto` or `off`.
+- `status_details` (deployment) carries the scheduler `reason` when the
+  status is `pending`; omitted otherwise.
+- replica `code` / `message` / `details` mirror the table's `REASON`
+  column (`details.exit_code` for an exited container, `details.reason`
+  for a pull failure); all three are omitted for a healthy replica.
 - `certs` is omitted when no managed cert exists. Timestamp fields are
   RFC3339 UTC and omitted when unset.
 - `-o yaml` carries the same fields and casing.

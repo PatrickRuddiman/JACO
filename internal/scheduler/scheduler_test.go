@@ -3,6 +3,8 @@ package scheduler_test
 import (
 	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -557,6 +559,8 @@ func TestReconcile_PinnedHostFailureMarksDeploymentPending(t *testing.T) {
 		return nil
 	}
 	s := scheduler.New(st, brokers, &fakeLeader{leader: true}, applier, nil)
+	var logBuf bytes.Buffer
+	s.Logger = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	seedNode(t, f, "node-a", &raftIdx)
 	// Apply a deployment pinning to node-z (which doesn't exist).
@@ -585,6 +589,9 @@ func TestReconcile_PinnedHostFailureMarksDeploymentPending(t *testing.T) {
 	}
 	if got := st.ReplicasDesired.Len(); got != 0 {
 		t.Errorf("ReplicasDesired = %d, want 0 (pinned-host failure must not place anything)", got)
+	}
+	if logs := logBuf.String(); !strings.Contains(logs, "deployment scheduling blocked") || !strings.Contains(logs, "pinned") {
+		t.Errorf("scheduler did not log the scheduling-blocked transition; got:\n%s", logs)
 	}
 }
 

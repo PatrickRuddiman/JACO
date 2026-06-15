@@ -686,6 +686,57 @@ func newDeployClient(t *testing.T, c *twoNodeCluster) pb.DeployClient {
 	return pb.NewDeployClient(conn)
 }
 
+// TestDeploy_ApplyRejectsUnknownHost — a service pinned (placement: hosts) to
+// a host that is not a cluster member is rejected at apply with unknown_host.
+// Previously this slipped through and the scheduler silently parked the
+// deployment in PENDING with no obvious cause (the original report).
+func TestDeploy_ApplyRejectsUnknownHost(t *testing.T) {
+	c := setupTwoNodeCluster(t)
+	deploy := newDeployClient(t, c)
+	ctx := authContext(c.OperatorToken)
+
+	jacoYAML := `deployment: pinned
+services:
+  - name: web
+    replicas: 1
+    placement: hosts
+    hosts: [ghost-node]
+`
+	_, err := deploy.Apply(ctx, &pb.ApplyRequest{
+		JacoYaml:    []byte(jacoYAML),
+		ComposeYaml: []byte(statusComposeYAML),
+	})
+	if err == nil {
+		t.Fatalf("Apply with unknown host succeeded; want unknown_host")
+	}
+	sErr, _ := status.FromError(err)
+	if sErr.Code() != codes.InvalidArgument || !strings.Contains(sErr.Message(), "unknown_host") {
+		t.Errorf("err = %v (code %v); want InvalidArgument/unknown_host", sErr.Message(), sErr.Code())
+	}
+}
+
+// TestDeploy_ApplyAcceptsKnownHost — the membership check gates on cluster
+// membership, not readiness: a real member (node-a) must apply cleanly.
+func TestDeploy_ApplyAcceptsKnownHost(t *testing.T) {
+	c := setupTwoNodeCluster(t)
+	deploy := newDeployClient(t, c)
+	ctx := authContext(c.OperatorToken)
+
+	jacoYAML := `deployment: pinned
+services:
+  - name: web
+    replicas: 1
+    placement: hosts
+    hosts: [node-a]
+`
+	if _, err := deploy.Apply(ctx, &pb.ApplyRequest{
+		JacoYaml:    []byte(jacoYAML),
+		ComposeYaml: []byte(statusComposeYAML),
+	}); err != nil {
+		t.Fatalf("Apply with known host (node-a): %v", err)
+	}
+}
+
 // TestDeploy_ApplyRejectsRouteOnNetworkModeService — issue #121: an
 // ingress route targeting a service whose `network_mode:` is set
 // (none or service:<name>) is structurally unreachable — `none` has no

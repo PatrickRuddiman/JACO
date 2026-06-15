@@ -163,7 +163,7 @@ func (s *Scheduler) Reconcile(_ context.Context) {
 		if err != nil {
 			// Mark Deployment pending so the operator can see the failure
 			// in `jaco status`.
-			batch = append(batch, deploymentStatusPending(dep.GetName(),
+			batch = append(batch, s.markDeploymentPending(dep.GetName(),
 				fmt.Sprintf("compose parse failed: %v", err)))
 			continue
 		}
@@ -180,7 +180,7 @@ func (s *Scheduler) Reconcile(_ context.Context) {
 			// malformed compose never lands in raft with a zero hash.
 			specHash, err := compose.ServiceSpecHash(dep.GetComposeYaml(), svc.GetName())
 			if err != nil {
-				batch = append(batch, deploymentStatusPending(dep.GetName(),
+				batch = append(batch, s.markDeploymentPending(dep.GetName(),
 					fmt.Sprintf("service %q spec hash failed: %v", svc.GetName(), err)))
 				continue
 			}
@@ -215,7 +215,7 @@ func (s *Scheduler) Reconcile(_ context.Context) {
 func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, nodes []*pb.Node, project *composeProject, specHash []byte) []*pb.Command {
 	image := lookupImage(project, svc.GetName())
 	if image == "" {
-		return []*pb.Command{deploymentStatusPending(dep.GetName(),
+		return []*pb.Command{s.markDeploymentPending(dep.GetName(),
 			fmt.Sprintf("service %q not found in compose project", svc.GetName()))}
 	}
 
@@ -270,7 +270,7 @@ func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, no
 			if err != nil {
 				// Pinned-host placement failure → DeploymentStatusUpdate
 				// pending, place no replicas for this service this pass.
-				return []*pb.Command{deploymentStatusPending(dep.GetName(), err.Error())}
+				return []*pb.Command{s.markDeploymentPending(dep.GetName(), err.Error())}
 			}
 			desired = append(desired, desiredReplica{
 				id:    counter.ReplicaID(dep.GetName(), svc.GetName(), uint64(i)),
@@ -504,9 +504,13 @@ func stickyExistingHost(cur *pb.ReplicaDesired, svc *pb.ServiceSpec, eligibleSet
 	return h
 }
 
-// deploymentStatusPending builds a Command that flips a Deployment into
-// status=PENDING with the reason populated in details.
-func deploymentStatusPending(name, reason string) *pb.Command {
+// markDeploymentPending builds a Command that flips a Deployment into
+// status=PENDING with the reason populated in details, and logs the
+// transition so the cause is visible in the daemon log too — not just in
+// `jaco status`. Scheduling-blocked deployments were previously silent on
+// this path, so an unschedulable placement left no trace anywhere.
+func (s *Scheduler) markDeploymentPending(name, reason string) *pb.Command {
+	s.log().Warn("deployment scheduling blocked", "deployment", name, "reason", reason)
 	return &pb.Command{
 		Identity: "scheduler",
 		Ts:       timestamppb.Now(),

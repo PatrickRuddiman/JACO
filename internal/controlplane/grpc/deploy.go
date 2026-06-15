@@ -81,6 +81,25 @@ func (d *deployServer) Apply(ctx context.Context, req *pb.ApplyRequest) (*pb.App
 		return nil, errorStatus(codes.InvalidArgument, "validation_failed", err.Error())
 	}
 
+	// Reject host pins that don't resolve to a cluster member. placement=hosts
+	// is the only mode that names hosts, and an unknown host can never be
+	// scheduled — without this check the apply succeeds and the scheduler
+	// silently parks the deployment in PENDING (cannot_satisfy_host_placement)
+	// with no obvious cause. Gate on membership, not readiness: a member that
+	// is currently down / not READY still passes here, and the scheduler waits
+	// for it to return.
+	for _, s := range services {
+		if s.GetPlacement() != pb.ServiceSpec_PLACEMENT_MODE_HOSTS {
+			continue
+		}
+		for _, h := range s.GetHosts() {
+			if _, ok := d.state.Nodes.Get(h); !ok {
+				return nil, errorStatus(codes.InvalidArgument, "unknown_host",
+					fmt.Sprintf("service %q pins host %q which is not a cluster member", s.GetName(), h))
+			}
+		}
+	}
+
 	// Cross-validate routes against the merged service set, not just JACO.
 	// A route may legitimately reference a compose-only service that has no
 	// JACO override entry (issue #99). Unknown names still reject.
