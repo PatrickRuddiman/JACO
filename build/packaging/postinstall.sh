@@ -10,11 +10,9 @@
 # half-configured node would silently come up uninitialized.
 #
 # Exception (upgrades only): a node that already holds committed raft state
-# is a cluster member, so on a package upgrade we retroactively `systemctl
-# enable jaco` if it isn't already. That carries nodes initialized on a
-# pre-#151 release (when `cluster init` / `node join` did not flip the enable
-# bit) onto the fix, without re-introducing the fresh-install footgun — no
-# committed raft state means no enable. See the upgrade block below.
+# is a cluster member, so an upgrade retroactively re-enables jaco.service if
+# it was left disabled. Gated on raft state, so a fresh install never trips
+# it. Rationale + the #151 history live with the heal in the upgrade block.
 
 set -e
 
