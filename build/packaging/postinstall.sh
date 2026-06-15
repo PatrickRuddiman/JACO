@@ -8,6 +8,13 @@
 # /etc/jaco/jacod.yaml (cluster_addr / listen_addr / data_dir) and then
 # run `sudo systemctl enable --now jaco` explicitly. Auto-start on a
 # half-configured node would silently come up uninitialized.
+#
+# Exception (upgrades only): a node that already holds committed raft state
+# is a cluster member, so on a package upgrade we retroactively `systemctl
+# enable jaco` if it isn't already. That carries nodes initialized on a
+# pre-#151 release (when `cluster init` / `node join` did not flip the enable
+# bit) onto the fix, without re-introducing the fresh-install footgun — no
+# committed raft state means no enable. See the upgrade block below.
 
 set -e
 
@@ -54,15 +61,39 @@ install -d -m 0750 -o jaco -g jaco /var/lib/jaco
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload >/dev/null 2>&1 || true
 
-    # On upgrade only: pick up the freshly-installed binary + unit if the
-    # operator already had the service enabled and running. preremove.sh
-    # no longer stops the unit on upgrade, so "is-active" here reflects the
-    # pre-upgrade state. We never enable/start on a fresh install (issue
-    # #173 keeps the #151 footgun out of scope).
     if [ "$is_upgrade" = 1 ]; then
+        # Pick up the freshly-installed binary + unit if the operator already
+        # had the service enabled and running. preremove.sh no longer stops the
+        # unit on upgrade, so "is-active" here reflects the pre-upgrade state.
         if systemctl is-enabled --quiet jaco 2>/dev/null \
            && systemctl is-active --quiet jaco 2>/dev/null; then
             systemctl restart jaco >/dev/null 2>&1 || true
+        fi
+
+        # Retroactive #151 heal. A node that ran `cluster init` / `node join`
+        # on a release older than the CLI's auto-enable (issue #151) is a
+        # committed cluster member whose jaco.service is still *disabled* — and
+        # because upgrades deliberately preserve systemd state (preremove.sh),
+        # that node stays one reboot away from silently dropping out of the
+        # cluster forever. If it holds committed raft state but the unit is
+        # disabled, enable it now so the upgrade carries it onto the fix.
+        #
+        # Gated on raft state at $data_dir/raft/log.db — the exact marker jacod,
+        # the bootstrapper, and `cluster init` all treat as "this node is a
+        # cluster member" — so it can NEVER fire on a fresh or half-configured
+        # install: no committed state, no enable. The deliberate "don't
+        # auto-start an uninitialized node" posture (see header) is untouched.
+        data_dir=/var/lib/jaco
+        if [ -f /etc/jaco/jacod.yaml ]; then
+            cfg_dir=$(sed -n 's/^[[:space:]]*data_dir:[[:space:]]*\([^[:space:]]*\).*/\1/p' \
+                      /etc/jaco/jacod.yaml 2>/dev/null | head -n1)
+            [ -n "$cfg_dir" ] && data_dir=$cfg_dir
+        fi
+        if [ -f "$data_dir/raft/log.db" ] \
+           && ! systemctl is-enabled --quiet jaco 2>/dev/null; then
+            if systemctl enable jaco >/dev/null 2>&1; then
+                echo "JACO: re-enabled jaco.service on this committed cluster node so it survives reboot (issue #151)."
+            fi
         fi
     fi
 fi
