@@ -28,6 +28,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	"github.com/PatrickRuddiman/jaco/internal/daemon/admission"
+	"github.com/PatrickRuddiman/jaco/internal/daemon/config"
 	dnsmgr "github.com/PatrickRuddiman/jaco/internal/discovery/dns"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/firewall"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/ipam"
@@ -38,7 +39,6 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/ingress/stagefirst"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/storage"
 	"github.com/PatrickRuddiman/jaco/internal/logging"
-	"github.com/PatrickRuddiman/jaco/internal/daemon/config"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/cgroupv2"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/health"
@@ -945,7 +945,16 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 					iss.EmitStageFailure(domain, err)
 				},
 			}
-			acme.StagingDomains = ctrl.StagingDomains
+			// StagingDomains is consulted by the config builder on every
+			// rebuild. On the leader it unions the controller's in-flight
+			// in-memory staging set with the set derived from replicated
+			// cert-blob state; on followers (node.IsLeader() == false) it is
+			// the replicated-state set alone, so a follower renders the
+			// staging-vs-prod policy and serves the replicated leaf without
+			// ever running the leader-gated promotion controller (issue #182).
+			acme.StagingDomains = func() map[string]bool {
+				return stagingDomainsForBuilder(st, ctrl.StagingDomains, node.IsLeader)
+			}
 			// Seed the staging set BEFORE the reloader's initial render so a
 			// brand-new domain's first rendered policy already points at the
 			// staging directory — otherwise the initial Rebuild would render a
@@ -953,8 +962,13 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 			// the reconcile loop's first tick (issue #41). Routes present at
 			// startup are typically empty (raft resume populates them via
 			// watch events shortly after), so this is mostly defensive; the
-			// reconcile loop catches domains that appear later.
-			ctrl.Reconcile(ctx, tlsAutoDomains(st))
+			// reconcile loop catches domains that appear later. Leader-gated
+			// (issue #182): a follower must not seed/run the controller — its
+			// builder derives the staging policy from replicated state, and
+			// whichever node holds leadership seeds via its reconcile loop.
+			if node.IsLeader() {
+				ctrl.Reconcile(ctx, tlsAutoDomains(st))
+			}
 		}
 
 		rl := rebuild.New(brokers, ingressBuilder(st, acme, ingressLog), ingressLoader(ingressLog))
@@ -967,14 +981,17 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 			}
 		}()
 
-		// Stage-first reconcile loop: periodically decides which new domains
-		// to stage and promotes ones whose staging chain passed the
-		// self-check, forcing a rebuild so the issuer flips staging↔prod.
+		// Stage-first reconcile loop: on the leader it periodically decides
+		// which new domains to stage and promotes ones whose staging chain
+		// passed the self-check, forcing a rebuild so the issuer flips
+		// staging↔prod. On followers it only evicts a stale cached staging
+		// leaf once a promotion replicates; the promotion itself is
+		// leader-gated (issue #182).
 		if ctrl != nil {
 			s.subsystemsWG.Add(1)
 			go func() {
 				defer s.subsystemsWG.Done()
-				s.runStageFirst(ctx, ctrl, st, brokers, rl)
+				s.runStageFirst(ctx, node.IsLeader, ctrl, st, brokers, rl)
 			}()
 		}
 	} else {

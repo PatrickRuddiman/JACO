@@ -3,6 +3,7 @@ package grpc
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/bridge"
+	"github.com/PatrickRuddiman/jaco/internal/ingress/cachepoke"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/config"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/rebuild"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/stagefirst"
@@ -50,8 +52,14 @@ type ingressACMEOpts struct {
 	// non-prod or acme_skip_staging is set).
 	StagingCA string
 	// StagingDomains, when non-nil, is consulted on every rebuild for the set
-	// of domains currently in their staging dry-run. The stage-first
-	// controller owns this; nil means no stage-first controller is running.
+	// of domains currently in their staging dry-run — the builder points those
+	// domains' automation policy at the staging directory. On the leader this
+	// unions the stage-first controller's in-flight in-memory set with the set
+	// derived from replicated cert-blob state; on followers (which never run
+	// the controller) it is the replicated-state set alone, so a follower
+	// renders the staging policy and serves the replicated staging leaf during
+	// the transient staging window (issue #182). nil means no stage-first
+	// controller is running.
 	StagingDomains func() map[string]bool
 }
 
@@ -85,19 +93,48 @@ func embeddedIngress() bool { return os.Getenv("JACO_INGRESS_EXEC") != "1" }
 const stageFirstInterval = 5 * time.Second
 
 // runStageFirst drives the stage-first reconcile loop until ctx cancellation.
-// It reconciles on a ticker (to pick up landed staging chains) AND on every
-// Routes event (so a brand-new tls:auto domain is staged BEFORE the debounced
-// reload loop would otherwise render it against prod). On any staging-set
-// change it forces a config rebuild so the issuer flips a domain's automation
-// policy between the staging and prod directories.
-func (s *Server) runStageFirst(ctx context.Context, ctrl *stagefirst.Controller, st *state.State, brokers *watch.Registry, rl *rebuild.Reloader) {
+// It reconciles on a ticker (to pick up landed staging chains), on every Routes
+// event (so a brand-new tls:auto domain is staged BEFORE the debounced reload
+// loop would otherwise render it against prod), and on every CertBlobs event
+// (so a follower flips its automation policy the moment a promotion replicates).
+//
+// The promotion controller is leader-gated (issue #182): only the raft leader
+// stages new domains, runs the self-check, clears the cluster's staging cert
+// blobs, and promotes. Followers must never run the promotion or they would
+// wipe the replicated staging cert and break prod issuance cluster-wide; they
+// instead render the staging-vs-prod policy from replicated state (see
+// stagingDomainsForBuilder) and serve the replicated leaf. On any staging-set
+// change the leader forces a config rebuild so the issuer flips a domain's
+// automation policy between the staging and prod directories.
+func (s *Server) runStageFirst(ctx context.Context, isLeader func() bool, ctrl *stagefirst.Controller, st *state.State, brokers *watch.Registry, rl *rebuild.Reloader) {
 	routes := brokers.Routes.Subscribe()
 	defer routes.Cancel()
+	certBlobs := brokers.CertBlobs.Subscribe()
+	defer certBlobs.Cancel()
 
 	t := time.NewTicker(stageFirstInterval)
 	defer t.Stop()
 
+	// seenStaging tracks domains this node has observed in their staging window
+	// (staging blob present, no prod blob) so the follower cache-eviction pass
+	// can fire exactly once per promotion. See reconcileStagingCache.
+	seenStaging := map[string]bool{}
+
 	reconcile := func() {
+		leader := isLeader()
+
+		// Cache reconcile runs on every tick regardless of role: on followers
+		// it drops a stale cached staging leaf once a promotion replicates. The
+		// leader evicts precisely via ClearStagingCert, so this only tracks
+		// (does not evict) on the leader.
+		s.reconcileStagingCache(st, seenStaging, leader)
+
+		// Promotion is leader-only (issue #182). Followers re-render from
+		// replicated CertBlobs via the rebuild Reloader's CertBlobs
+		// subscription; they must not run the controller.
+		if !leader {
+			return
+		}
 		if ctrl.Reconcile(ctx, tlsAutoDomains(st)) {
 			if err := rl.Rebuild(ctx); err != nil {
 				s.logger.Error("stagefirst rebuild after staging change failed",
@@ -114,6 +151,89 @@ func (s *Server) runStageFirst(ctx context.Context, ctrl *stagefirst.Controller,
 			reconcile()
 		case <-routes.Events():
 			reconcile()
+		case <-certBlobs.Events():
+			reconcile()
+		}
+	}
+}
+
+// stagingDomainsFromState derives the set of `tls: auto` domains currently in
+// their staging window from replicated cert-blob state: a domain that has a
+// staging-issued cert blob but no prod cert blob. Every node (leader and
+// follower) renders the staging automation policy for these so it can serve the
+// replicated staging leaf; once the leader promotes (clears the staging blob,
+// lands a prod blob) the domain drops out of this set cluster-wide. See issue
+// #182.
+func stagingDomainsFromState(st *state.State) map[string]bool {
+	out := map[string]bool{}
+	for _, domain := range tlsAutoDomains(st) {
+		if prodCertIssued(st, domain) {
+			continue
+		}
+		if _, ok := loadStagingChain(st, domain); ok {
+			out[domain] = true
+		}
+	}
+	return out
+}
+
+// stagingDomainsForBuilder computes the staging-policy domain set the config
+// builder consults on each rebuild. It unions:
+//   - the replicated-state set (stagingDomainsFromState) — served on every
+//     node, and
+//   - the stage-first controller's in-flight in-memory set, but ONLY on the
+//     leader. The leader needs the in-memory set to bootstrap a brand-new
+//     domain into staging before any staging blob has landed in raft;
+//     followers never run the controller, so their in-memory set is always
+//     empty and must be ignored (issue #182).
+func stagingDomainsForBuilder(st *state.State, staging func() map[string]bool, isLeader func() bool) map[string]bool {
+	out := stagingDomainsFromState(st)
+	if staging != nil && isLeader() {
+		for d := range staging() {
+			out[d] = true
+		}
+	}
+	return out
+}
+
+// reconcileStagingCache drops this node's cached staging leaf for any domain
+// just promoted cluster-wide — a domain this node previously observed in its
+// staging window (tracked in seen) that has left the staging-derived set and
+// now has a prod cert blob in replicated state. Followers never run the
+// promotion controller, so without this a follower that served the staging leaf
+// during the window would keep serving it from Caddy's cert cache (which
+// outlives caddy.Load — the reason cachepoke/#163 exists) after the prod cert
+// lands. Eviction is skipped on the leader, which already evicts precisely via
+// ClearStagingCert. The seen map is pruned so it stays bounded to live
+// in-flight domains. See issue #182.
+func (s *Server) reconcileStagingCache(st *state.State, seen map[string]bool, leader bool) {
+	staging := stagingDomainsFromState(st)
+	for d := range staging {
+		seen[d] = true
+	}
+	live := map[string]bool{}
+	for _, d := range tlsAutoDomains(st) {
+		live[d] = true
+	}
+	for d := range seen {
+		if staging[d] {
+			continue // still in its staging window
+		}
+		if prodCertIssued(st, d) {
+			// Promotion landed: drop the (possibly stale) staging leaf so the
+			// next handshake reloads the prod leaf from replicated storage.
+			if !leader {
+				if err := cachepoke.EvictManaged(d); err != nil && !errors.Is(err, cachepoke.ErrCacheUninitialized) {
+					s.logger.Warn("stagefirst follower cache evict failed",
+						"subsystem", "stagefirst", "domain", d, "error", err)
+				}
+			}
+			delete(seen, d)
+			continue
+		}
+		if !live[d] {
+			// Domain no longer tls:auto and no prod cert — stop tracking.
+			delete(seen, d)
 		}
 	}
 }

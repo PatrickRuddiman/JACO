@@ -108,9 +108,15 @@ failure instead of a prod rate-limit hit. Disable end-to-end with
 [`acme_skip_staging: true`](../configuration.md) in `jacod.yaml`.
 
 The controller lives at `internal/ingress/stagefirst/controller.go`
-and is owned by the leader's daemon (followers neither stage nor
-promote; on leader change the new leader picks up via raft state).
-On every ~10 s tick the controller walks each `tls: auto` domain:
+and is owned by the **raft leader's** daemon. The promotion loop
+(`runStageFirst` in `internal/daemon/grpc/ingress.go`) self-gates on a
+dynamic `node.IsLeader()` check every tick — the same self-gating
+pattern as the scheduler/rebalance loops — so followers never stage,
+self-check, clear the staging blob, or promote (issue #182). On leader
+change the new leader picks up in-flight domains from replicated raft
+state on its first leader tick. On every ~10 s tick (and on every
+Routes / CertBlobs event) the leader's controller walks each
+`tls: auto` domain:
 
 1. **Not yet staged, no prod cert in raft** → add to the `staging`
    set. Next rebuild renders the domain's automation policy with the
@@ -136,6 +142,46 @@ re-staged the domain, flipped the policy back to staging-CA, and
 forced Caddy to abandon the in-flight prod issuance — repeating
 indefinitely. The window holds the domain out of the re-stage
 decision long enough for a real prod issuance to complete.
+
+### Leader-gating and follower serving (issue #182)
+
+Only the leader runs the promotion controller — but **every** node
+must serve TLS, including during the transient staging window. So the
+staging-vs-prod automation policy each node renders is derived from
+**replicated** state, not from the leader's in-memory controller:
+
+- `stagingDomainsFromState` (`internal/daemon/grpc/ingress.go`) returns
+  the `tls: auto` domains that have a staging cert blob but no prod
+  cert blob in `state.CertBlobs` — i.e. the domains currently in their
+  staging window, cluster-wide.
+- The config builder's staging set
+  (`stagingDomainsForBuilder`) unions that replicated-state set with
+  the controller's in-flight in-memory set **only on the leader** (the
+  leader needs the in-memory entry to render the staging policy for a
+  brand-new domain *before* any staging blob has landed in raft).
+  Followers use the replicated-state set alone, so they render the
+  staging policy and serve the replicated staging leaf during the
+  window, then flip to prod when the promotion replicates.
+- The rebuild reloader subscribes to `CertBlobs`, so a follower
+  re-renders the moment a promotion replicates (staging blob removed,
+  prod blob added).
+
+Because Caddy's cert cache outlives `caddy.Load` (see
+*Forcing fresh prod issuance* below), a follower that served the
+staging leaf during the window would keep serving it from cache after
+the prod cert lands. `runStageFirst` therefore runs a per-node
+cache-reconcile pass on every tick that, on followers, calls
+`cachepoke.EvictManaged(domain)` exactly once when a domain leaves the
+staging-derived set and a prod blob is present. The leader does not
+need this pass — it evicts precisely via `ClearStagingCert` at promote
+time.
+
+Before this gating (the bug #182 fixed), every node ran the promotion:
+a follower would `ClearStagingCert` the cluster's staging blob from
+raft, evict only its own cache, flip its own policy to prod, and then
+fail to obtain a prod cert because the single-flight issue-lock is held
+by the leader — so only the leader served TLS and HTTPS through a load
+balancer was flaky.
 
 ### Forcing fresh prod issuance on promote
 
