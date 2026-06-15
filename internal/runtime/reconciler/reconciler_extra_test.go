@@ -186,28 +186,49 @@ func TestWatcher_AccessorReturnsNonNil(t *testing.T) {
 	}
 }
 
-// TestResolveDNSServers_PicksGatewayPerKnownSubnet — the per-bridge
-// DNS gateway IPs (the per-network resolvers running on the local
-// node). Networks the daemon doesn't yet know a CIDR for are skipped.
+// TestReconciler_FirstReplicaOnFreshBridgeGetsBridgeDNS is the regression test
+// for #181. The first replica scheduled onto a fresh (host, deployment,
+// network) bridge must still receive the per-bridge gateway as its DNS server,
+// even though that subnet hasn't yet replicated into local state.Subnets.
 //
-// resolveDNSServers is unexported so we exercise it via the reconciler
-// startReplica path. Easier: seed Subnets and let lifecycle.Start
-// observe the resulting spec.DNSServers via the fake docker's
-// containerCreate config.
-//
-// Here we just confirm the indirect plumbing works end-to-end: with a
-// Subnet present, the started container has a DNS entry; without, it
-// doesn't.
-func TestResolveDNSServers_PopulatesContainerDNSWhenSubnetKnown(t *testing.T) {
-	t.Skip("the fakeDocker in this package doesn't capture HostConfig.DNS; covered indirectly by integration tests")
+// seedAll seeds cluster/node/deployment but never state.Subnets, and
+// okEnsureSubnet hands back 10.244.0.0/24 without writing state — exactly the
+// "fresh bridge, replication lag" condition from the bug. The reconciler now
+// derives the gateway (10.244.0.1) from the cidr ensureSubnet returns instead
+// of re-reading state.Subnets, so HostConfig.DNS is populated. Pre-fix it was
+// empty and docker fell back to the host resolver.
+func TestReconciler_FirstReplicaOnFreshBridgeGetsBridgeDNS(t *testing.T) {
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	f := fsm.New(st, brokers)
+	d := newFakeDocker()
+	var raftIdx uint64
+	seedAll(t, f, &raftIdx)
 
-	// Left as a marker — the reason this isn't covered:
-	// reconciler.startReplica calls resolveDNSServers and writes
-	// spec.DNSServers into the lifecycle.ContainerSpec, which passes
-	// through to docker via HostConfig.DNS. The package's fakeDocker in
-	// reconciler_test.go doesn't capture HostConfig (it ignores the
-	// argument). Adding capture would require modifying fakeDocker
-	// signature; the function is small enough that the build-tag
-	// integration test exercises it on a real docker engine.
-	_ = state.SubnetKey
+	rec := reconciler.New(d, st, brokers, "host-a", noopSubmit, okEnsureSubnet, silentLogger())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- rec.Run(ctx) }()
+
+	raftIdx++
+	apply(t, f, &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_ReplicaDesiredUpsert{
+		ReplicaDesiredUpsert: &pb.ReplicaDesiredUpsert{Replica: &pb.ReplicaDesired{
+			Id: "smoke-web-0", Deployment: "smoke", Service: "web", Index: 0, Host: "host-a", Image: "nginx:1.27",
+		}},
+	}}, raftIdx)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if dns, ok := d.dnsForReplica("smoke-web-0"); ok {
+			cancel()
+			<-done
+			if len(dns) != 1 || dns[0] != "10.244.0.1" {
+				t.Fatalf("HostConfig.DNS = %v, want [10.244.0.1]", dns)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("container for replica smoke-web-0 never created")
 }

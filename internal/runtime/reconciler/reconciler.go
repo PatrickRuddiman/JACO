@@ -341,6 +341,17 @@ func (r *Reconciler) runStart(workCtx, watchCtx context.Context, rep *pb.Replica
 	// Bug 007: ensure each declared docker network exists on the local
 	// engine before lifecycle.Start tries to NetworkConnect.
 	// Idempotent; safe to call on every reconcile.
+	//
+	// Per-bridge DNS resolvers (#181): in the same pass, compute each
+	// network's gateway IP — where the daemon's discovery/dns Manager binds —
+	// from the cidr ensureSubnet returns, rather than re-reading
+	// r.state.Subnets. ensureSubnet yields the authoritative, leader-applied
+	// cidr (the same value bridge.Ensure consumes just below), so the gateway
+	// is derivable immediately. Re-reading replicated state instead loses the
+	// DNS server for the first replica scheduled onto a fresh bridge — its
+	// subnet hasn't replicated into local raft state yet — leaving an empty
+	// HostConfig.DNS that silently falls back to the host resolver.
+	var dnsServers []string
 	for _, netname := range spec.Networks {
 		netSuffix := bridge.NetworkNameFromDockerName(netname)
 		if netSuffix == "" {
@@ -367,31 +378,15 @@ func (r *Reconciler) runStart(workCtx, watchCtx context.Context, rep *pb.Replica
 			r.logger.Error("bridge.Ensure failed",
 				logging.KeyReplicaID, rep.GetId(), logging.KeyDeployment, rep.GetDeployment(), "network", netSuffix, "error", ensErr)
 		}
-	}
-
-	// Per-bridge DNS resolvers (task 27 deferral). For each declared
-	// network, look up the subnet CIDR in state.Subnets and compute the
-	// gateway IP; that's where the daemon's discovery/dns Manager binds.
-	// host is the local node — the per-host subnet whose gateway the local
-	// container resolves against. Networks the daemon doesn't yet know a
-	// CIDR for are silently skipped.
-	var dnsServers []string
-	for _, netname := range spec.Networks {
-		// Network names in spec are docker-network names (jaco_<dep>_<net>);
-		// state.Subnets keys by (deployment, network, host) — pull just the
-		// network suffix from the docker name.
-		net := bridge.NetworkNameFromDockerName(netname)
-		if net == "" {
+		// Point the container's resolv.conf at this bridge's gateway, where the
+		// per-bridge DNS responder listens.
+		gw, gwErr := bridge.GatewayIP(cidr)
+		if gwErr != nil {
+			r.logger.Error("compute bridge gateway for DNS failed",
+				logging.KeyReplicaID, rep.GetId(), logging.KeyDeployment, rep.GetDeployment(), "network", netSuffix, "cidr", cidr, "error", gwErr)
 			continue
 		}
-		sn, ok := r.state.Subnets.Get(state.SubnetKey(rep.GetDeployment(), net, r.hostname))
-		if !ok {
-			continue
-		}
-		gw, err := bridge.GatewayIP(sn.GetCidr())
-		if err == nil {
-			dnsServers = append(dnsServers, gw)
-		}
+		dnsServers = append(dnsServers, gw)
 	}
 	spec.DNSServers = dnsServers
 
