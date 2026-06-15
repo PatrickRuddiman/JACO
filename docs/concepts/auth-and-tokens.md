@@ -3,8 +3,11 @@ sources:
   - internal/controlplane/admission/
   - internal/controlplane/grpc/token.go
   - internal/controlplane/grpc/cluster.go
+  - internal/controlplane/grpc/registry_credential.go
   - internal/controlplane/ca/
+  - internal/controlplane/state/registry_credentials.go
   - internal/daemon/admission/
+  - internal/runtime/pull/auth.go
 ---
 
 # Auth and tokens
@@ -108,8 +111,18 @@ lookup key — so `ghcr.io/personal/repo:tag` selects `ghcr.io/personal`
 when present, falling back to a bare `ghcr.io` entry only when no
 namespace-scoped key matches. The chosen credential becomes the
 base64-encoded `X-Registry-Auth` blob threaded into
-`image.PullOptions.RegistryAuth`. A missing credential is not an
-error — the pull proceeds anonymously.
+`image.PullOptions.RegistryAuth`.
+
+When no key is a prefix of the lookup, a **sole-credential host fallback**
+applies (issue #172): if the image's host has exactly one configured
+credential, that credential authenticates every path on the host — so a
+single `ghcr.io/personal` login still covers `ghcr.io/other/repo:tag`,
+matching the pre-namespace behavior where one login served the whole
+host. The fallback fires only for a single credential; once a host
+carries two or more namespace-scoped credentials, an image on an
+unconfigured sibling namespace pulls anonymously rather than guessing
+between them. A missing credential is not an error — the pull proceeds
+anonymously.
 
 **At-rest posture.** Registry secrets sit in raft unencrypted, behind
 the same filesystem-permission + WireGuard-transport trust boundary

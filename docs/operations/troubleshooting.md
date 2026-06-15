@@ -420,6 +420,33 @@ increments the deployment revision, resetting attempt counts and
 states cleanly. Repeating the *same* revision will not unstick a
 replica past `restart_exhausted`.
 
+### Sibling-namespace image pulls anonymously (issue #172)
+
+A replica stuck in `PENDING` with `image_pull_failed … 401 Unauthorized`
+— while a sibling service on the *same* registry host pulls fine — points
+at a per-namespace credential gap. When a host carries **two or more**
+namespace-scoped credentials (e.g. `ghcr.io/team-a` and `ghcr.io/team-b`),
+an image under a *third*, unconfigured namespace (`ghcr.io/team-c/app`)
+has no matching key and no unambiguous fallback, so it pulls anonymously
+and the private registry rejects it. The pull retries forever, the
+container is never created (`container_id` stays empty), and any
+`depends_on` dependent is gated behind it indefinitely.
+
+The single-credential case is covered automatically by the sole-credential
+host fallback (see [`jaco registry` → Sole-credential host
+fallback](../cli/registry.md#sole-credential-host-fallback-issue-172)); the
+multi-credential case needs an explicit key. Add a credential for the
+missing namespace, or a bare-host `ghcr.io` fallback to cover every
+unconfigured path:
+
+```sh
+jaco registry login ghcr.io/team-c -u svc-c --password-stdin < token
+# or a catch-all for the host:
+jaco registry login ghcr.io -u fallback --password-stdin < token
+```
+
+Then `jaco apply` the manifest again to reset the stuck replica.
+
 ## `cert_failed`
 
 ACME issuance for a `tls: auto` domain failed past the backoff cap (1 h).

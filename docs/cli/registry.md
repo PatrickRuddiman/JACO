@@ -48,14 +48,36 @@ At pull time the resolver picks the **longest-prefix match** against
 the image's `host[:port]/<repository-path>`:
 
 - `ghcr.io/personal/repo:tag` → uses `ghcr.io/personal` if present;
-  otherwise falls back to `ghcr.io` if that's stored; otherwise pulls
-  anonymously.
+  otherwise falls back to `ghcr.io` if that's stored.
 - `ghcr.io/company/app:tag` → uses `ghcr.io/company`.
-- `ghcr.io/orphan/x:tag` → uses bare `ghcr.io` only (no namespace
-  match).
+- `ghcr.io/orphan/x:tag` → uses bare `ghcr.io` when stored (no
+  namespace match).
 
 More-specific keys always win over the bare-host key, so it is safe to
 keep a fallback `ghcr.io` credential alongside namespace-scoped ones.
+
+#### Sole-credential host fallback (issue #172)
+
+When the longest-prefix match finds nothing — neither a namespace-scoped
+key nor a bare-host key matches the image — the resolver applies a
+backward-compatible fallback: **if the image's host has exactly one
+configured credential, that credential authenticates every path on the
+host.** So a single `ghcr.io/personal` login covers
+`ghcr.io/anything/else:tag`, exactly as a bare `ghcr.io` login would.
+
+This restores pre-#171 behavior, where a `host/namespace` login was
+collapsed to the bare host and authenticated the whole host. Without the
+fallback, registering one namespace-scoped credential silently left
+sibling-path images to pull anonymously — a registry `401` that left the
+replica stuck in `PENDING` forever (see
+[Troubleshooting → `image_pull_failed`](../operations/troubleshooting.md#image_pull_failed)).
+
+The fallback fires **only** when the host has a single credential. Once a
+host carries two or more namespace-scoped credentials (the multi-tenant
+case above), an image on an unconfigured sibling namespace stays
+anonymous — no single credential is unambiguously correct, so the
+resolver will not guess. Add an explicit key (a bare-host fallback or a
+namespace-scoped credential) to cover that path.
 
 ## `jaco registry login`
 
