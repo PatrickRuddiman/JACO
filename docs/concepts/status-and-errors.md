@@ -42,7 +42,7 @@ constructors.
 | `token_revoked`                       | matching token, but `revoked_at` is set                                               |
 | `validation_failed`                   | manifest schema violation; details include `field`                                    |
 | `unknown_service`                     | jaco service not present in compose                                                   |
-| `unknown_host`                        | `hosts[*]` not a cluster member                                                       |
+| `unknown_host`                        | `hosts[*]` not a cluster member; rejected at `jaco apply` (membership, not readiness — a down-but-joined node still passes) |
 | `unknown_network`                     | service-level network not in top-level `networks:`                                    |
 | `reserved_port`                       | compose service publishes 80 or 443                                                   |
 | `legacy_compose_field`                | compose file uses a v1/v2 spelling dropped from the modern spec; `details.field` names the offender, `details.modern_equivalent` names the replacement |
@@ -84,7 +84,9 @@ backoff).
 
 A `failed` replica is not retried automatically beyond the
 3-consecutive-restart budget; it requires a fresh `Deploy.Apply`
-(which increments revision and resets state).
+(which increments revision and resets state). The failure `code` and
+`message` (and `details`, e.g. `exit_code`) surface in the `jaco status`
+`REASON` column and in `jaco get replica <id>`.
 
 ## Deployment status
 
@@ -92,7 +94,7 @@ A `failed` replica is not retried automatically beyond the
 
 | status     | meaning                                                                                  |
 |------------|------------------------------------------------------------------------------------------|
-| `pending`  | scheduling cannot proceed; `status_details` carries `reason` and supporting fields       |
+| `pending`  | scheduling cannot proceed; `status_details` carries `reason` and supporting fields, surfaced in the `jaco status` `DETAILS` column |
 | `active`   | every desired replica has converged                                                      |
 
 ## Node status

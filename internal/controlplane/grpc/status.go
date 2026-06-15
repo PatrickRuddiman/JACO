@@ -35,9 +35,9 @@ func (d *deployServer) Status(_ context.Context, req *pb.DeployStatusRequest) (*
 		desiredByID[r.GetId()] = r
 	}
 	for _, r := range d.state.ReplicasObserved.List() {
+		rd, hasDesired := desiredByID[r.GetId()]
 		if depFilter != "" || svcFilter != "" {
-			rd, ok := desiredByID[r.GetId()]
-			if !ok {
+			if !hasDesired {
 				continue
 			}
 			if depFilter != "" && rd.GetDeployment() != depFilter {
@@ -46,6 +46,15 @@ func (d *deployServer) Status(_ context.Context, req *pb.DeployStatusRequest) (*
 			if svcFilter != "" && rd.GetService() != svcFilter {
 				continue
 			}
+		}
+		// The health-watcher submits observations without a Host
+		// (internal/runtime/health), so a FAILED replica frequently lands
+		// here with an empty Host and `jaco status` shows a blank column.
+		// Fall back to the scheduled (desired) host so the operator still
+		// sees where it ran. List() already returned a defensive clone, so
+		// mutating it here does not touch shared state.
+		if r.GetHost() == "" && hasDesired {
+			r.Host = rd.GetHost()
 		}
 		resp.Replicas = append(resp.Replicas, r)
 	}
