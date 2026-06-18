@@ -3,6 +3,7 @@ package grpc
 import (
 	"bytes"
 	"context"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -120,6 +121,12 @@ func (s *Server) runStageFirst(ctx context.Context, isLeader func() bool, ctrl *
 	// can fire exactly once per promotion. See reconcileStagingCache.
 	seenStaging := map[string]bool{}
 
+	// loadedProd latches tls:auto domains whose replicated prod leaf this
+	// follower has confirmed Caddy is serving, so the level-triggered reload
+	// stops once the cert is actually loaded (not merely after one reload
+	// attempt). See ensureFollowerProdCerts.
+	loadedProd := map[string]bool{}
+
 	reconcile := func() {
 		leader := isLeader()
 
@@ -133,6 +140,15 @@ func (s *Server) runStageFirst(ctx context.Context, isLeader func() bool, ctrl *
 		// replicated CertBlobs via the rebuild Reloader's CertBlobs
 		// subscription; they must not run the controller.
 		if !leader {
+			// A follower's automation policy is prod from the start (the
+			// staging window is leader-only), so when the leader's prod leaf
+			// replicates the follower's re-rendered config is byte-identical
+			// and the debounced Reloader skips caddy.Load — Caddy never re-runs
+			// certmagic's Manage to load the new leaf, so the follower serves
+			// no TLS until a daemon restart. Force reloads (level-triggered,
+			// retried until the cache actually serves the leaf) so Manage loads
+			// the replicated prod cert from storage.
+			s.ensureFollowerProdCerts(ctx, st, loadedProd, rl)
 			return
 		}
 		if ctrl.Reconcile(ctx, tlsAutoDomains(st)) {
@@ -155,6 +171,161 @@ func (s *Server) runStageFirst(ctx context.Context, isLeader func() bool, ctrl *
 			reconcile()
 		}
 	}
+}
+
+// ensureFollowerProdCerts makes a follower serve the prod leaf the leader
+// obtained and replicated, with no daemon restart. The leader issues the cert
+// and certmagic caches it in-process on the issuing node only; a follower must
+// load it from replicated storage via certmagic's Manage, which runs during
+// Caddy provisioning. But a follower's automation policy is prod-from-the-start
+// (the staging window is leader-only, issue #182), so when the prod blob
+// replicates the follower's re-rendered config is byte-identical and the
+// debounced Reloader skips caddy.Load — Manage never re-runs and the follower
+// serves no TLS until a restart.
+//
+// This drives a LEVEL-triggered forced reload: on every reconcile tick, for
+// each tls:auto domain whose COMPLETE prod resource (leaf .crt AND key .key,
+// non-staging) has replicated but whose leaf is not yet in Caddy's cert cache,
+// it forces one caddy.Load so Manage loads the leaf from storage. A domain is
+// latched done only once the cache actually serves that exact leaf
+// (followerServesProdLeaf) — so a single attempt that loses the race with
+// replication (certmagic finds the blob half-written and falls back to a
+// leader-locked, doomed ACME obtain) is retried next tick instead of giving up
+// forever. Gating on the complete resource keeps certmagic on the load path,
+// never the obtain path, so a follower never starts ACME itself.
+func (s *Server) ensureFollowerProdCerts(ctx context.Context, st *state.State, loaded map[string]bool, rl *rebuild.Reloader) {
+	targets := followerProdReloadTargets(st, loaded, func(d string) bool {
+		return followerServesProdLeaf(st, d)
+	})
+	if len(targets) == 0 {
+		return
+	}
+	if err := rl.ForceReload(ctx); err != nil {
+		// Leave targets unlatched so the next tick retries.
+		s.logger.Error("stagefirst follower force-reload to load replicated prod cert failed",
+			"subsystem", "stagefirst", "domains", targets, "error", err)
+		return
+	}
+	// Do NOT latch here: a later tick confirms via the cert cache that certmagic
+	// actually loaded each leaf before marking it done. That confirmation is
+	// what turns a one-shot edge trigger into a self-healing loop.
+	s.logger.Info("stagefirst follower force-reloading to load replicated prod cert",
+		"subsystem", "stagefirst", "domains", targets)
+}
+
+// followerProdReloadTargets is the pure core of ensureFollowerProdCerts: given
+// replicated state, the per-promotion latch map, and a probe reporting whether
+// the follower's TLS cache already serves a domain's replicated prod leaf, it
+// returns the tls:auto domains still needing a forced reload and updates loaded
+// in place — latching domains the cache now serves and re-arming (dropping)
+// domains whose complete prod resource isn't present yet. Split out so the
+// level-trigger semantics are unit-testable without a provisioned Caddy.
+func followerProdReloadTargets(st *state.State, loaded map[string]bool, serves func(domain string) bool) []string {
+	live := map[string]bool{}
+	var targets []string
+	for _, d := range tlsAutoDomains(st) {
+		live[d] = true
+		if !prodCertResourceComplete(st, d) {
+			// New domain, mid-replication, or cleared for re-issue: forget any
+			// prior latch so the next complete landing reloads again.
+			delete(loaded, d)
+			continue
+		}
+		if loaded[d] {
+			continue // already confirmed serving this promotion's leaf
+		}
+		if serves(d) {
+			loaded[d] = true // cache now serves the replicated leaf — done
+			continue
+		}
+		targets = append(targets, d)
+	}
+	// Drop domains no longer tls:auto so the map stays bounded.
+	for d := range loaded {
+		if !live[d] {
+			delete(loaded, d)
+		}
+	}
+	return targets
+}
+
+// followerServesProdLeaf reports whether Caddy's in-process cert cache already
+// serves the exact prod leaf for domain that has replicated into state — the
+// confirmation that lets the follower stop force-reloading. A nil cache (Caddy
+// not yet provisioned) or a missing / non-matching cached leaf reads as "not
+// yet", so the caller keeps retrying.
+func followerServesProdLeaf(st *state.State, domain string) bool {
+	want := prodLeafDER(st, domain)
+	if want == nil {
+		return false
+	}
+	have, err := cachepoke.LeafDERs(domain)
+	if err != nil {
+		return false
+	}
+	return leafDERMatches(have, want)
+}
+
+// leafDERMatches reports whether any DER in have equals want.
+func leafDERMatches(have [][]byte, want []byte) bool {
+	for _, der := range have {
+		if bytes.Equal(der, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// prodCertResourceComplete reports whether BOTH halves of a non-staging cert
+// resource — the leaf (.crt) and its private key (.key) — have replicated for
+// domain. certmagic can only LOAD (never needs to OBTAIN) a cert whose full
+// resource is in storage, so gating the follower's forced reload on this keeps
+// it strictly on the load path and never starts ACME from a follower.
+func prodCertResourceComplete(st *state.State, domain string) bool {
+	var haveCrt, haveKey bool
+	seg := "/" + domain + "/"
+	for _, b := range st.CertBlobs.List() {
+		key := b.GetKey()
+		if strings.Contains(key, "staging") || !strings.Contains(key, seg) {
+			continue
+		}
+		switch {
+		case strings.HasSuffix(key, ".crt"):
+			haveCrt = true
+		case strings.HasSuffix(key, ".key"):
+			haveKey = true
+		}
+	}
+	return haveCrt && haveKey
+}
+
+// prodLeafDER returns the DER bytes of the leaf certificate from the
+// non-staging (prod) .crt blob for domain — the first CERTIFICATE block of the
+// stored PEM chain (certmagic stores the chain leaf-first). Returns nil when no
+// prod leaf has replicated or the blob can't be decoded.
+func prodLeafDER(st *state.State, domain string) []byte {
+	seg := "/" + domain + "/"
+	for _, b := range st.CertBlobs.List() {
+		key := b.GetKey()
+		if !strings.HasSuffix(key, ".crt") || strings.Contains(key, "staging") {
+			continue
+		}
+		if !strings.Contains(key, seg) {
+			continue
+		}
+		rest := b.GetValue()
+		for {
+			var blk *pem.Block
+			blk, rest = pem.Decode(rest)
+			if blk == nil {
+				break
+			}
+			if blk.Type == "CERTIFICATE" {
+				return blk.Bytes
+			}
+		}
+	}
+	return nil
 }
 
 // stagingDomainsFromState derives the set of `tls: auto` domains currently in
@@ -467,7 +638,7 @@ func ingressBuilder(st *state.State, acme ingressACMEOpts, logger *slog.Logger) 
 // deferral). JACO_INGRESS_EXEC=1 falls back to the v0 path that writes
 // /etc/caddy/jaco.json + execs `caddy reload`, useful when the operator
 // wants caddy crashes to stay isolated from jacod.
-func ingressLoader(logger *slog.Logger) func(ctx context.Context, cfg []byte) error {
+func ingressLoader(logger *slog.Logger) func(ctx context.Context, cfg []byte, force bool) error {
 	if os.Getenv("JACO_INGRESS_EXEC") == "1" {
 		return ingressLoaderExec()
 	}
@@ -498,15 +669,15 @@ func shouldLoad(started bool, cfg []byte) bool {
 // ingressLoaderEmbedded calls caddy.Load on configs that carry at least one
 // forwarding route (HTTP reverse_proxy or TCP layer4), and on route-less
 // configs once caddy is already running (to drain removed listeners).
-func ingressLoaderEmbedded(logger *slog.Logger) func(ctx context.Context, cfg []byte) error {
+func ingressLoaderEmbedded(logger *slog.Logger) func(ctx context.Context, cfg []byte, force bool) error {
 	var started atomic.Bool
-	return func(_ context.Context, cfg []byte) error {
+	return func(_ context.Context, cfg []byte, force bool) error {
 		if !shouldLoad(started.Load(), cfg) {
 			logger.Debug("skipping caddy.Load (no reverse_proxy or layer4 route yet)")
 			return nil
 		}
-		if err := caddy.Load(cfg, false); err != nil {
-			logger.Error("caddy.Load failed", "error", err)
+		if err := caddy.Load(cfg, force); err != nil {
+			logger.Error("caddy.Load failed", "force", force, "error", err)
 			return fmt.Errorf("caddy.Load: %w", err)
 		}
 		if started.CompareAndSwap(false, true) {
@@ -517,10 +688,12 @@ func ingressLoaderEmbedded(logger *slog.Logger) func(ctx context.Context, cfg []
 }
 
 // ingressLoaderExec is the v0 fallback: write the config to disk + exec
-// `caddy reload`. Skips silently when caddy isn't on PATH.
-func ingressLoaderExec() func(ctx context.Context, cfg []byte) error {
+// `caddy reload`. Skips silently when caddy isn't on PATH. The exec path always
+// re-applies the on-disk config, so the force flag (used by the embedded path
+// to defeat caddy.Load's identical-config short-circuit) is a no-op here.
+func ingressLoaderExec() func(ctx context.Context, cfg []byte, force bool) error {
 	caddyBin, _ := exec.LookPath("caddy")
-	return func(ctx context.Context, cfg []byte) error {
+	return func(ctx context.Context, cfg []byte, _ bool) error {
 		if caddyBin == "" {
 			return nil
 		}

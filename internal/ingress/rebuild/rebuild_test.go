@@ -24,7 +24,7 @@ func TestRebuild_LoadsWhenConfigChanges(t *testing.T) {
 
 	loaded := make([][]byte, 0)
 	var loadMu sync.Mutex
-	load := func(_ context.Context, cfg []byte) error {
+	load := func(_ context.Context, cfg []byte, _ bool) error {
 		loadMu.Lock()
 		loaded = append(loaded, append([]byte(nil), cfg...))
 		loadMu.Unlock()
@@ -51,7 +51,7 @@ func TestRebuild_LoadsWhenConfigChanges(t *testing.T) {
 func TestRebuild_SkipsLoadWhenConfigIdentical(t *testing.T) {
 	build := func() ([]byte, error) { return []byte("static-config"), nil }
 	var loadCount atomic.Int64
-	load := func(_ context.Context, _ []byte) error {
+	load := func(_ context.Context, _ []byte, _ bool) error {
 		loadCount.Add(1)
 		return nil
 	}
@@ -72,9 +72,44 @@ func TestRebuild_SkipsLoadWhenConfigIdentical(t *testing.T) {
 	}
 }
 
+func TestForceReload_LoadsEvenWhenConfigIdentical(t *testing.T) {
+	// Regression: a follower that must load a newly-replicated prod leaf calls
+	// ForceReload. The rendered config is byte-identical (its automation policy
+	// was prod all along), so a plain Rebuild would skip the load and Caddy
+	// would never re-run Manage. ForceReload must load anyway, with force=true.
+	build := func() ([]byte, error) { return []byte("static-config"), nil }
+	var loads, forces atomic.Int64
+	load := func(_ context.Context, _ []byte, force bool) error {
+		loads.Add(1)
+		if force {
+			forces.Add(1)
+		}
+		return nil
+	}
+	r := rebuild.New(watch.NewRegistry(), build, load)
+	if err := r.Rebuild(context.Background()); err != nil { // initial load
+		t.Fatalf("initial Rebuild: %v", err)
+	}
+	if err := r.Rebuild(context.Background()); err != nil { // identical → skipped
+		t.Fatalf("identical Rebuild: %v", err)
+	}
+	if err := r.ForceReload(context.Background()); err != nil { // identical → forced
+		t.Fatalf("ForceReload: %v", err)
+	}
+	if got := loads.Load(); got != 2 {
+		t.Errorf("load called %d times; want 2 (initial + forced; the identical Rebuild is skipped)", got)
+	}
+	if got := forces.Load(); got != 1 {
+		t.Errorf("force=true passed %d times; want exactly 1 (the ForceReload)", got)
+	}
+	if got := r.Loads(); got != 2 {
+		t.Errorf("Loads counter = %d, want 2", got)
+	}
+}
+
 func TestRebuild_PropagatesBuildError(t *testing.T) {
 	build := func() ([]byte, error) { return nil, errors.New("build failed") }
-	load := func(context.Context, []byte) error { return nil }
+	load := func(context.Context, []byte, bool) error { return nil }
 	r := rebuild.New(watch.NewRegistry(), build, load)
 	err := r.Rebuild(context.Background())
 	if err == nil {
@@ -84,7 +119,7 @@ func TestRebuild_PropagatesBuildError(t *testing.T) {
 
 func TestRebuild_PropagatesLoadError(t *testing.T) {
 	build := func() ([]byte, error) { return []byte("cfg"), nil }
-	load := func(context.Context, []byte) error { return errors.New("caddy boom") }
+	load := func(context.Context, []byte, bool) error { return errors.New("caddy boom") }
 	r := rebuild.New(watch.NewRegistry(), build, load)
 	if err := r.Rebuild(context.Background()); err == nil {
 		t.Errorf("expected load error")
@@ -102,7 +137,7 @@ func TestRun_DebouncesBurstsIntoSingleRebuild(t *testing.T) {
 		rebuilds.Add(1)
 		return []byte(fmt.Sprintf("v%d", rebuilds.Load())), nil
 	}
-	load := func(context.Context, []byte) error { return nil }
+	load := func(context.Context, []byte, bool) error { return nil }
 	r := rebuild.New(brokers, build, load)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -145,7 +180,7 @@ func TestRun_TCPRouteEventTriggersRebuild(t *testing.T) {
 		rebuilds.Add(1)
 		return []byte(fmt.Sprintf("v%d", rebuilds.Load())), nil
 	}
-	load := func(context.Context, []byte) error { return nil }
+	load := func(context.Context, []byte, bool) error { return nil }
 	r := rebuild.New(brokers, build, load)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -172,7 +207,7 @@ func TestRun_HandlesRoutesObservedCertsTokens(t *testing.T) {
 		rebuilds.Add(1)
 		return []byte(fmt.Sprintf("v%d", rebuilds.Load())), nil
 	}
-	load := func(context.Context, []byte) error { return nil }
+	load := func(context.Context, []byte, bool) error { return nil }
 	r := rebuild.New(brokers, build, load)
 
 	ctx, cancel := context.WithCancel(context.Background())

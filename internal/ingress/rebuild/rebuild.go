@@ -26,8 +26,11 @@ const DebounceWindow = 200 * time.Millisecond
 type Builder func() ([]byte, error)
 
 // Loader hands the rebuilt config to Caddy. The daemon wires this to
-// `caddy.Load(cfg, false)`.
-type Loader func(ctx context.Context, cfg []byte) error
+// `caddy.Load(cfg, force)`. When force is true Caddy re-provisions even if the
+// config is byte-identical to what's running, so certmagic re-runs Manage and
+// loads any cert that appeared in storage since the last load — the path a
+// follower needs to pick up a newly-replicated prod leaf (see ForceReload).
+type Loader func(ctx context.Context, cfg []byte, force bool) error
 
 // Reloader is the goroutine that ties watch events to caddy.Load.
 type Reloader struct {
@@ -71,6 +74,27 @@ func (r *Reloader) log() *slog.Logger {
 // issued) or when the load completes; returns the build / load error
 // otherwise.
 func (r *Reloader) Rebuild(ctx context.Context) error {
+	return r.rebuild(ctx, false)
+}
+
+// ForceReload rebuilds and loads UNCONDITIONALLY, bypassing the byte-identical
+// short-circuit and asking Caddy to re-provision even when the rendered config
+// hasn't changed. It exists for the one effect the rendered config can't
+// express: a follower must re-run certmagic's Manage to load a
+// newly-replicated prod leaf into Caddy's in-memory cache, but because the
+// leader (not the follower) obtained that cert, the follower's automation
+// policy — and thus its rendered config — is byte-identical before and after
+// the leaf lands. Without a forced reload Manage never re-runs and the follower
+// serves no TLS until a daemon restart.
+func (r *Reloader) ForceReload(ctx context.Context) error {
+	return r.rebuild(ctx, true)
+}
+
+// rebuild is the shared build→compare→load→store core. When force is false it
+// skips the load if the new config is byte-identical to the last-loaded one;
+// when force is true it always loads and passes force through to the Loader so
+// caddy.Load re-provisions even on an identical config.
+func (r *Reloader) rebuild(ctx context.Context, force bool) error {
 	r.rebuildMu.Lock()
 	defer r.rebuildMu.Unlock()
 	r.rebuilds.Add(1)
@@ -81,18 +105,18 @@ func (r *Reloader) Rebuild(ctx context.Context) error {
 	r.mu.Lock()
 	identical := bytes.Equal(cfg, r.lastCfg)
 	r.mu.Unlock()
-	if identical {
+	if identical && !force {
 		return nil
 	}
-	if err := r.load(ctx, cfg); err != nil {
-		r.log().Error("caddy config reload failed", "bytes", len(cfg), "error", err)
+	if err := r.load(ctx, cfg, force); err != nil {
+		r.log().Error("caddy config reload failed", "bytes", len(cfg), "force", force, "error", err)
 		return fmt.Errorf("caddy load: %w", err)
 	}
 	r.mu.Lock()
 	r.lastCfg = cfg
 	r.mu.Unlock()
 	r.loads.Add(1)
-	r.log().Info("caddy config reloaded", "bytes", len(cfg))
+	r.log().Info("caddy config reloaded", "bytes", len(cfg), "force", force)
 	return nil
 }
 

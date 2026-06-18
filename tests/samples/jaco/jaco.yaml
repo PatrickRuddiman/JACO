@@ -32,11 +32,11 @@ services:
   - name: web
     replicas: 2
     networks: [stack]
-# Single ingress route: jaco.sh → web:80. The web tier (nginx) reverse-proxies
+# Single ingress route: jaco.prcs.xyz → web:80. The web tier (nginx) reverse-proxies
 # /api/* to the api service itself, so no path-based route is needed here — the
 # same single-route shape ports cleanly to k8s/k3s/swarm ingress.
 routes:
-  - domain: jaco.sh
+  - domain: jaco.prcs.xyz
     service: web
     port: 80
     tls: auto

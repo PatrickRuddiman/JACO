@@ -10,13 +10,14 @@ are compared on identical hardware and network.
   no Tailscale, no VPN, no mesh assumed at provisioning time. This is what lets
   the same bed serve every orchestrator fairly.
 - **A persistent Standard Load Balancer** fronts 80 + 443 across all VMs at one
-  stable IP (`jaco-lb-pip` in the `jaco-net` RG). Point the `jaco.sh` A record
+  stable IP (`jaco-lb-pip` in the `jaco-net` RG). Point the `*.jaco.prcs.xyz`
+  (and apex `jaco.prcs.xyz`) A record
   at it once; it survives teardowns.
 
 ```
                           Internet
              ┌───────────────┴────────────────┐
-        per-VM PIP (SSH 22)            LB PIP (80/443, jaco.sh)
+        per-VM PIP (SSH 22)            LB PIP (80/443, jaco.prcs.xyz)
         ┌────┬────┬────┐                       │
       jaco-1 jaco-2 jaco-3  ◄── LB backend pool (80/443) ──┘
         └─── VNet 172.16.0.0/24 (private mesh/CNI traffic) ───┘

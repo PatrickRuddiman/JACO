@@ -2,9 +2,17 @@ package grpc
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"io"
 	"log/slog"
+	"math/big"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -108,6 +116,15 @@ func stagingBlobKey(domain string) string {
 }
 func prodBlobKey(domain string) string {
 	return "certificates/acme-v02.api.letsencrypt.org-directory/" + domain + "/" + domain + ".crt"
+}
+
+// prodKeyBlobKey / stagingKeyBlobKey build the matching private-key (.key)
+// storage keys, so tests can assert prodCertResourceComplete needs BOTH halves.
+func prodKeyBlobKey(domain string) string {
+	return "certificates/acme-v02.api.letsencrypt.org-directory/" + domain + "/" + domain + ".key"
+}
+func stagingKeyBlobKey(domain string) string {
+	return "certificates/acme-staging-v02.api.letsencrypt.org-directory/" + domain + "/" + domain + ".key"
 }
 
 func tlsAutoRoute(domain string) *pb.Route {
@@ -224,5 +241,162 @@ func TestReconcileStagingCache_PrunesVanishedDomain(t *testing.T) {
 	s.reconcileStagingCache(st, seen, false)
 	if seen["gone.example.com"] {
 		t.Errorf("expected vanished domain pruned, seen=%v", seen)
+	}
+}
+
+// makeCertPEM mints a throwaway self-signed leaf for cn and returns its PEM
+// encoding plus the raw DER, so tests can store a certmagic-style .crt blob and
+// assert prodLeafDER recovers exactly that leaf.
+func makeCertPEM(t *testing.T, cn string) (pemBytes, der []byte) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("genkey: %v", err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatalf("serial: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: cn},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	der, err = x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("createcert: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), der
+}
+
+// TestProdCertResourceComplete: the follower's level-trigger only fires once
+// BOTH halves of a non-staging resource (leaf .crt AND key .key) have
+// replicated — the gate that keeps certmagic on the load path (never obtain).
+func TestProdCertResourceComplete(t *testing.T) {
+	st := state.New(watch.NewRegistry())
+
+	// crt only -> incomplete (certmagic would try to OBTAIN -> never gate true).
+	st.CertBlobs.Apply(&pb.CertBlob{Key: prodBlobKey("crt-only.example.com"), Value: []byte("x")}, 1)
+	if prodCertResourceComplete(st, "crt-only.example.com") {
+		t.Errorf("crt-only must be incomplete")
+	}
+
+	// crt + key -> complete.
+	st.CertBlobs.Apply(&pb.CertBlob{Key: prodBlobKey("full.example.com"), Value: []byte("x")}, 2)
+	st.CertBlobs.Apply(&pb.CertBlob{Key: prodKeyBlobKey("full.example.com"), Value: []byte("k")}, 3)
+	if !prodCertResourceComplete(st, "full.example.com") {
+		t.Errorf("crt+key must be complete")
+	}
+
+	// A staging crt+key must NOT count as a complete prod resource.
+	st.CertBlobs.Apply(&pb.CertBlob{Key: stagingBlobKey("staging.example.com"), Value: []byte("x")}, 4)
+	st.CertBlobs.Apply(&pb.CertBlob{Key: stagingKeyBlobKey("staging.example.com"), Value: []byte("k")}, 5)
+	if prodCertResourceComplete(st, "staging.example.com") {
+		t.Errorf("staging resource must not count as complete prod")
+	}
+
+	// No domain-segment overlap: a subdomain's resource must not satisfy the parent.
+	st.CertBlobs.Apply(&pb.CertBlob{Key: prodBlobKey("sub.parent.example.com"), Value: []byte("x")}, 6)
+	st.CertBlobs.Apply(&pb.CertBlob{Key: prodKeyBlobKey("sub.parent.example.com"), Value: []byte("k")}, 7)
+	if prodCertResourceComplete(st, "parent.example.com") {
+		t.Errorf("subdomain resource must not satisfy parent")
+	}
+}
+
+// TestProdLeafDER: prodLeafDER returns the leaf (first CERTIFICATE block,
+// certmagic stores chains leaf-first) of the non-staging .crt blob, ignoring
+// any staging blob, so followerServesProdLeaf compares against the right cert.
+func TestProdLeafDER(t *testing.T) {
+	st := state.New(watch.NewRegistry())
+
+	leafPEM, leafDER := makeCertPEM(t, "web.example.com")
+	interPEM, _ := makeCertPEM(t, "intermediate")
+	chain := append(append([]byte{}, leafPEM...), interPEM...)
+
+	// A staging blob for the same domain must be ignored.
+	stagingPEM, stagingDER := makeCertPEM(t, "web.example.com staging")
+	st.CertBlobs.Apply(&pb.CertBlob{Key: stagingBlobKey("web.example.com"), Value: stagingPEM}, 1)
+	st.CertBlobs.Apply(&pb.CertBlob{Key: prodBlobKey("web.example.com"), Value: chain}, 2)
+
+	got := prodLeafDER(st, "web.example.com")
+	if !bytes.Equal(got, leafDER) {
+		t.Errorf("prodLeafDER returned the wrong cert (leaf mismatch)")
+	}
+	if bytes.Equal(got, stagingDER) {
+		t.Errorf("prodLeafDER must not return the staging leaf")
+	}
+
+	// No prod blob -> nil.
+	if prodLeafDER(st, "missing.example.com") != nil {
+		t.Errorf("prodLeafDER for absent domain must be nil")
+	}
+}
+
+// TestFollowerProdReloadTargets exercises the level-trigger core: a complete
+// prod resource the cache doesn't yet serve is a reload target and is NOT
+// latched (so it retries); once the cache serves it, it latches and stops being
+// a target; an incomplete resource is re-armed; and a domain that left tls:auto
+// is pruned from the latch map.
+func TestFollowerProdReloadTargets(t *testing.T) {
+	st := state.New(watch.NewRegistry())
+	st.Routes.Apply(tlsAutoRoute("serve.example.com"), 1)
+	st.Routes.Apply(tlsAutoRoute("need.example.com"), 2)
+	st.Routes.Apply(tlsAutoRoute("incomplete.example.com"), 3)
+
+	// serve + need have complete prod resources; incomplete has only a .crt.
+	st.CertBlobs.Apply(&pb.CertBlob{Key: prodBlobKey("serve.example.com"), Value: []byte("x")}, 10)
+	st.CertBlobs.Apply(&pb.CertBlob{Key: prodKeyBlobKey("serve.example.com"), Value: []byte("k")}, 11)
+	st.CertBlobs.Apply(&pb.CertBlob{Key: prodBlobKey("need.example.com"), Value: []byte("x")}, 12)
+	st.CertBlobs.Apply(&pb.CertBlob{Key: prodKeyBlobKey("need.example.com"), Value: []byte("k")}, 13)
+	st.CertBlobs.Apply(&pb.CertBlob{Key: prodBlobKey("incomplete.example.com"), Value: []byte("x")}, 14)
+
+	// Pre-seed the latch with a stale (no-longer-tls:auto) domain and the
+	// incomplete one, to assert pruning + re-arming.
+	loaded := map[string]bool{"stale.example.com": true, "incomplete.example.com": true}
+	serves := func(d string) bool { return d == "serve.example.com" }
+
+	targets := followerProdReloadTargets(st, loaded, serves)
+
+	if len(targets) != 1 || targets[0] != "need.example.com" {
+		t.Fatalf("targets = %v, want [need.example.com]", targets)
+	}
+	if !loaded["serve.example.com"] {
+		t.Errorf("serving domain must be latched")
+	}
+	if loaded["need.example.com"] {
+		t.Errorf("not-yet-serving domain must NOT be latched (so it retries)")
+	}
+	if loaded["incomplete.example.com"] {
+		t.Errorf("incomplete domain must be re-armed (dropped from latch)")
+	}
+	if loaded["stale.example.com"] {
+		t.Errorf("domain no longer tls:auto must be pruned from latch")
+	}
+
+	// Next tick: the cache now serves need.example.com -> it latches and drops
+	// out of the target set (the self-heal converges).
+	serves2 := func(d string) bool { return d == "serve.example.com" || d == "need.example.com" }
+	targets = followerProdReloadTargets(st, loaded, serves2)
+	if len(targets) != 0 {
+		t.Fatalf("after serving, targets = %v, want none", targets)
+	}
+	if !loaded["need.example.com"] {
+		t.Errorf("need.example.com must latch once served")
+	}
+}
+
+// TestLeafDERMatches guards the exact-match used to confirm the cache serves
+// the replicated leaf.
+func TestLeafDERMatches(t *testing.T) {
+	a, b, c := []byte("aaa"), []byte("bbb"), []byte("ccc")
+	if !leafDERMatches([][]byte{a, b}, b) {
+		t.Errorf("expected match when want is present")
+	}
+	if leafDERMatches([][]byte{a, b}, c) {
+		t.Errorf("expected no match when want is absent")
+	}
+	if leafDERMatches(nil, a) {
+		t.Errorf("empty cache must not match")
 	}
 }

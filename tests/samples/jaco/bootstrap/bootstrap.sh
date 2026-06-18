@@ -67,7 +67,9 @@ for i in "${!PUB[@]}"; do
   pub="${PUB[$i]}"
   echo "[bootstrap] installing node$((i+1)) ($pub)"
   scp "${SSH_OPTS[@]}" "$DEB" "$HERE/install-node.sh" "$SSH_USER@$pub:/tmp/"
-  ssh_node "$pub" "sudo bash /tmp/install-node.sh /tmp/$(basename "$DEB") '$REGISTRY' '$VNET_CIDR'"
+  # Forward ACME_CA (when set) through sudo so the operator can pick the prod
+  # LE directory; install-node.sh otherwise defaults it to staging.
+  ssh_node "$pub" "sudo ${ACME_CA:+ACME_CA='$ACME_CA'} bash /tmp/install-node.sh /tmp/$(basename "$DEB") '$REGISTRY' '$VNET_CIDR'"
 done
 
 # --- 3. in-cluster registry + image build/push (on node-1) ------------------
@@ -143,5 +145,5 @@ echo "[bootstrap] applying the workload (interpolating from ~/bench/.env)"
 ssh_node "${PUB[0]}" "cd ~/bench && sudo jaco apply jaco.yaml --compose docker-compose.yml"
 
 echo
-echo "[bootstrap] done. Ingress is served at the LB public IP (jaco.sh) on 80/443."
+echo "[bootstrap] done. Ingress is served at the LB public IP (jaco.prcs.xyz) on 80/443."
 echo "[bootstrap] check rollout:  ssh $SSH_USER@${PUB[0]} 'sudo jaco status'"
