@@ -255,10 +255,10 @@ func TestController_PromotedDomainNotReStagedDuringPendingWindow(t *testing.T) {
 
 // TestController_PendingWindowExpiresWithoutProdCertReStages pins the
 // other half of the #154 contract: if Caddy genuinely fails to complete
-// the prod ACME order within PendingProdWindow, the controller MUST let
-// ShouldStage retry the dry-run from scratch — otherwise a real prod
-// failure would never get a fresh attempt and the domain would silently
-// stay on staging-only forever.
+// the prod ACME order within PendingProdWindow, the controller MUST enter
+// a prodBackoff window (issue #189) and re-stage after that window expires.
+// Without the backoff the pendingProd-expire→re-stage→re-promote loop would
+// fire a prod ACME order every ~5 min, extending LE's failed-auth window.
 func TestController_PendingWindowExpiresWithoutProdCertReStages(t *testing.T) {
 	now := time.Now()
 	clock := func() time.Time { return now }
@@ -281,15 +281,26 @@ func TestController_PendingWindowExpiresWithoutProdCertReStages(t *testing.T) {
 		t.Fatalf("setup: expected one promote, got %d", len(promoted))
 	}
 
-	// Jump past the pending window. Next Reconcile MUST clear the marker
-	// and let ShouldStage re-decide. Since IssuedProd is still false and
-	// the domain has no backoff, ShouldStage returns Stage=true and the
-	// dry-run retries — which is the right behavior on a real prod
-	// failure (DNS regressed, CA outage, etc.).
+	// Jump past the pending window. The controller enters prodBackoff (#189)
+	// and must NOT immediately re-stage.
 	now = now.Add(stagefirst.PendingProdWindow + time.Minute)
+	ctrl.Reconcile(ctx, domains) // window expires → prodBackoff starts
+	if ctrl.StagingDomains()["expired.example.com"] {
+		t.Errorf("domain re-staged immediately after prod failure; want prodBackoff active (#189)")
+	}
+
+	// While prodBackoff is active, the domain stays out of staging.
+	now = now.Add(stagefirst.ProdBackoffBase - 2*time.Minute)
+	ctrl.Reconcile(ctx, domains)
+	if ctrl.StagingDomains()["expired.example.com"] {
+		t.Errorf("domain re-staged while prodBackoff active (#189)")
+	}
+
+	// After prodBackoff expires, ShouldStage retries the dry-run from scratch.
+	now = now.Add(stagefirst.ProdBackoffBase + time.Minute)
 	ctrl.Reconcile(ctx, domains)
 	if !ctrl.StagingDomains()["expired.example.com"] {
-		t.Errorf("after expired window: expected re-stage, but domain not in staging set")
+		t.Errorf("after prodBackoff expired: expected re-stage, but domain not in staging set (#189)")
 	}
 }
 
@@ -427,6 +438,71 @@ func TestController_OnProdIssuedFiresOnceWhenProdLands(t *testing.T) {
 	}
 }
 
+// TestController_ProdRaceConvergesLeaderOffStaging pins the #189 follower
+// race: a domain is still in this node's staging set when a PEER (rendering
+// the prod CA behind an L4 load balancer) wins prod issuance. The next
+// Reconcile MUST observe IssuedProd=true, drop the domain from staging,
+// fire OnProdIssued exactly once, and never re-stage it — otherwise the
+// leader stays pinned to the staging CA forever and never serves the prod
+// leaf that already exists cluster-wide.
+func TestController_ProdRaceConvergesLeaderOffStaging(t *testing.T) {
+	now := time.Now()
+	clock := func() time.Time { return now }
+	prodIssued := false
+	var prodHookCalls []string
+	ctrl := &stagefirst.Controller{
+		// Staging cert never lands — only the peer's prod cert does.
+		LoadStagingChain: func(string) ([]byte, bool) { return nil, false },
+		IssuedProd:       func(string) bool { return prodIssued },
+		OnPromote:        func(string) { t.Errorf("unexpected OnPromote: no staging self-check happened") },
+		OnProdIssued:     func(d string) { prodHookCalls = append(prodHookCalls, d) },
+		Now:              clock,
+	}
+	ctx := context.Background()
+	domains := []string{"new.example.com"}
+
+	// First reconcile stages the new domain.
+	if !ctrl.Reconcile(ctx, domains) {
+		t.Fatalf("first reconcile should stage the domain")
+	}
+	if !ctrl.StagingDomains()["new.example.com"] {
+		t.Fatalf("domain not in staging set after first reconcile")
+	}
+
+	// Staging cert never lands; ticks while staging produce no change.
+	for i := 0; i < 3; i++ {
+		now = now.Add(10 * time.Second)
+		if ctrl.Reconcile(ctx, domains) {
+			t.Fatalf("reconcile changed while staging cert absent and prod not yet landed")
+		}
+	}
+
+	// Peer wins prod issuance behind the LB → next tick converges off staging.
+	prodIssued = true
+	now = now.Add(10 * time.Second)
+	if !ctrl.Reconcile(ctx, domains) {
+		t.Fatalf("reconcile should converge off staging when prod cert lands (changed=true)")
+	}
+	if ctrl.StagingDomains()["new.example.com"] {
+		t.Errorf("domain still staging after prod cert observed")
+	}
+	if got, want := prodHookCalls, []string{"new.example.com"}; len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("OnProdIssued calls = %v, want %v (#189)", got, want)
+	}
+
+	// And NEVER re-stages or re-fires: ShouldStage(AlreadyIssued=true) keeps
+	// it out of staging permanently and OnProdIssued stays at one.
+	for i := 0; i < 5; i++ {
+		now = now.Add(10 * time.Second)
+		if ctrl.Reconcile(ctx, domains) {
+			t.Errorf("reconcile re-staged a domain that already holds a prod cert (#189)")
+		}
+	}
+	if len(prodHookCalls) != 1 {
+		t.Errorf("OnProdIssued re-fired (%d total); want exactly 1 (#189)", len(prodHookCalls))
+	}
+}
+
 // TestController_PendingWindowExpiryDoesNotFireOnProdIssued pins the
 // negative of #147: if the prod ACME order genuinely fails (window
 // expires without prodCertIssued flipping true), OnProdIssued MUST NOT
@@ -454,5 +530,128 @@ func TestController_PendingWindowExpiryDoesNotFireOnProdIssued(t *testing.T) {
 
 	if prodHookCalls != 0 {
 		t.Errorf("OnProdIssued fired %d times after window expiry; want 0 (#147)", prodHookCalls)
+	}
+}
+
+// TestController_ProdFailureBacksOff verifies issue #189 fix B: after the
+// PendingProdWindow expires without a prod cert, the controller backs off
+// exponentially (15m base), suppresses re-staging during that window, then
+// re-stages when the backoff expires.
+func TestController_ProdFailureBacksOff(t *testing.T) {
+	now := time.Now()
+	clock := func() time.Time { return now }
+	stagingChain := makeLeaf(t, "stuck.example.com")
+
+	var prodFailDomains []string
+	var prodFailDurations []time.Duration
+	ctrl := &stagefirst.Controller{
+		LoadStagingChain: func(string) ([]byte, bool) { return stagingChain, true },
+		IssuedProd:       func(string) bool { return false }, // prod never lands
+		OnPromote:        func(string) {},
+		OnStageFail:      func(string, error) { t.Errorf("unexpected stage fail") },
+		OnProdFail: func(domain string, retryAfter time.Duration) {
+			prodFailDomains = append(prodFailDomains, domain)
+			prodFailDurations = append(prodFailDurations, retryAfter)
+		},
+		Now: clock,
+	}
+	ctx := context.Background()
+	domains := []string{"stuck.example.com"}
+
+	// Tick 1: stage; tick 2: promote → pendingProd.
+	ctrl.Reconcile(ctx, domains)
+	ctrl.Reconcile(ctx, domains)
+
+	// Advance past PendingProdWindow — window expires this tick.
+	now = now.Add(stagefirst.PendingProdWindow + time.Second)
+	ctrl.Reconcile(ctx, domains)
+
+	// OnProdFail must have fired exactly once with 15m (#189).
+	if len(prodFailDomains) != 1 || prodFailDomains[0] != "stuck.example.com" {
+		t.Fatalf("OnProdFail calls = %v, want [stuck.example.com]", prodFailDomains)
+	}
+	if prodFailDurations[0] != stagefirst.ProdBackoffBase {
+		t.Errorf("OnProdFail duration = %v, want %v (#189)", prodFailDurations[0], stagefirst.ProdBackoffBase)
+	}
+
+	// Domain must NOT be re-staged within the prodBackoff window.
+	if ctrl.StagingDomains()["stuck.example.com"] {
+		t.Errorf("domain re-staged immediately after prod failure (#189 regression)")
+	}
+	now = now.Add(stagefirst.ProdBackoffBase - 2*time.Minute)
+	ctrl.Reconcile(ctx, domains)
+	if ctrl.StagingDomains()["stuck.example.com"] {
+		t.Errorf("domain re-staged while prodBackoff still active (#189 regression)")
+	}
+
+	// After the prodBackoff window expires, the domain re-stages.
+	now = now.Add(stagefirst.ProdBackoffBase + time.Minute)
+	if !ctrl.Reconcile(ctx, domains) {
+		t.Errorf("expected re-stage after prodBackoff expires (#189)")
+	}
+	if !ctrl.StagingDomains()["stuck.example.com"] {
+		t.Errorf("domain not re-staged after prodBackoff expires (#189)")
+	}
+}
+
+// TestController_ProdSuccessResetsProdBackoff verifies that a successful prod
+// cert resets the failure counter — a subsequent failure restarts at 15m, not
+// 30m. Issue #189.
+func TestController_ProdSuccessResetsProdBackoff(t *testing.T) {
+	now := time.Now()
+	clock := func() time.Time { return now }
+	stagingChain := makeLeaf(t, "eventual.example.com")
+	prodIssued := false
+
+	var prodFailDurations []time.Duration
+	ctrl := &stagefirst.Controller{
+		LoadStagingChain: func(string) ([]byte, bool) { return stagingChain, true },
+		IssuedProd:       func(string) bool { return prodIssued },
+		OnPromote:        func(string) {},
+		OnStageFail:      func(string, error) { t.Errorf("unexpected stage fail") },
+		OnProdFail: func(_ string, d time.Duration) {
+			prodFailDurations = append(prodFailDurations, d)
+		},
+		Now: clock,
+	}
+	ctx := context.Background()
+	domains := []string{"eventual.example.com"}
+
+	// First attempt: stage → promote → window expires → OnProdFail(15m).
+	ctrl.Reconcile(ctx, domains)
+	ctrl.Reconcile(ctx, domains)
+	now = now.Add(stagefirst.PendingProdWindow + time.Second)
+	ctrl.Reconcile(ctx, domains)
+	if len(prodFailDurations) != 1 || prodFailDurations[0] != stagefirst.ProdBackoffBase {
+		t.Fatalf("setup: want first fail=15m, got %v", prodFailDurations)
+	}
+
+	// Let prodBackoff expire; re-stage + re-promote; this time prod cert lands.
+	now = now.Add(stagefirst.ProdBackoffBase + time.Minute)
+	ctrl.Reconcile(ctx, domains) // re-stage
+	ctrl.Reconcile(ctx, domains) // re-promote → pending
+
+	// Prod cert lands within the window.
+	prodIssued = true
+	now = now.Add(10 * time.Second)
+	ctrl.Reconcile(ctx, domains) // prod issued → resets prodFails
+
+	// Now simulate another failure cycle — prodFails must have been reset,
+	// so the next failure should backoff for 15m again, not 30m.
+	prodIssued = false
+	// With prodIssued now false and no staging/pending/backoff entry,
+	// ShouldStage returns true → domain re-stages.
+	now = now.Add(time.Second)
+	ctrl.Reconcile(ctx, domains) // stage
+	ctrl.Reconcile(ctx, domains) // promote
+	now = now.Add(stagefirst.PendingProdWindow + time.Second)
+	ctrl.Reconcile(ctx, domains) // window expires → OnProdFail
+
+	if len(prodFailDurations) != 2 {
+		t.Fatalf("expected 2 OnProdFail calls, got %d", len(prodFailDurations))
+	}
+	// After the reset, the second failure must be 15m (base), not 30m.
+	if prodFailDurations[1] != stagefirst.ProdBackoffBase {
+		t.Errorf("second failure = %v, want %v (counter not reset on prod success, #189)", prodFailDurations[1], stagefirst.ProdBackoffBase)
 	}
 }

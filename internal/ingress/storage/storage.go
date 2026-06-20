@@ -83,7 +83,21 @@ type JacoStorage struct {
 	// renewers tracks active auto-renew goroutines keyed by lock name.
 	renewersMu sync.Mutex
 	renewers   map[string]context.CancelFunc
+
+	// onChallengeStore, when set, is invoked with the raw value bytes every
+	// time Store writes a CertMagic challenge-token blob (key contains
+	// "/challenge_tokens/"). The daemon wires this to republish the token
+	// through the CA-agnostic raft ChallengeToken path (issue #189) so a
+	// follower rendering a different CA policy than the order leader can still
+	// serve the HTTP-01 validation. nil disables the tap. Set once at startup
+	// before Caddy issues, so no lock is needed.
+	onChallengeStore func(value []byte)
 }
+
+// challengeTokenKeyMarker identifies CertMagic's distributed HTTP-01 solver
+// storage keys (".../challenge_tokens/<domain>.json"). Kept in sync with
+// certmagic's distributedSolver.challengeTokensPrefix.
+const challengeTokenKeyMarker = "/challenge_tokens/"
 
 // New constructs a JacoStorage with the disk fallback cache disabled.
 // lessee is the local node's hostname (used as the lock identity in raft);
@@ -200,6 +214,13 @@ func (s *JacoStorage) renewLoop(ctx context.Context, name string) {
 
 // --- Store / Load / Delete / Exists / List / Stat ------------------------
 
+// SetChallengePublisher installs a hook invoked with the raw value bytes of
+// every challenge-token blob CertMagic stores (see onChallengeStore). Call
+// once at daemon startup before issuance begins. fn == nil disables the tap.
+func (s *JacoStorage) SetChallengePublisher(fn func(value []byte)) {
+	s.onChallengeStore = fn
+}
+
 // Store raft-Applies CertBlobUpsert{key, value}. The FSM writes the blob
 // into state.CertBlobs on every node, so Load on any peer sees the
 // payload after replication catches up.
@@ -214,6 +235,12 @@ func (s *JacoStorage) Store(_ context.Context, key string, value []byte) error {
 	}
 	// Write-through to the disk fallback (best-effort; raft is authoritative).
 	s.cacheWrite(key, cp)
+	// Republish CertMagic's challenge tokens through the CA-agnostic raft
+	// ChallengeToken path so any node can serve the HTTP-01 validation
+	// regardless of which CA policy it renders (issue #189).
+	if s.onChallengeStore != nil && strings.Contains(key, challengeTokenKeyMarker) {
+		s.onChallengeStore(cp)
+	}
 	return nil
 }
 

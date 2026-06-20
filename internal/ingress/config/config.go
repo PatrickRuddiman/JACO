@@ -184,6 +184,18 @@ func BuildCaddyConfig(routes []Route, tcpRoutes []TCPRoute, replicas []ReplicaOb
 
 	tlsPolicies := buildTLSPolicies(sortedRoutes, opts)
 
+	// Issue #189: prepend a CA-agnostic HTTP-01 responder ahead of the user
+	// routes on :80. CertMagic's own distributed solver keys challenge storage
+	// by issuer (CA), so a node rendering a different CA policy than the
+	// order-initiating leader — the stage-first staging window (#182) and prod
+	// promotion both create that split behind an L4 load balancer — misses the
+	// token and 404s the validation. This route serves the key authorization
+	// keyed purely by token from the replicated raft ChallengeToken set, so any
+	// node can answer. Only emitted when there are tls:auto domains to issue for.
+	if len(tlsPolicies) > 0 {
+		httpRoutes = append([]any{challengeRoute()}, httpRoutes...)
+	}
+
 	// automatic_https policy, shared by both servers:
 	//   - policies present → keep Caddy's issuance + ACME-challenge serving on
 	//     :80, but disable ITS redirects (we emit explicit, testable 308s and
@@ -303,10 +315,27 @@ func redirectDomainSet(routes []Route, opts BuildOpts) map[string]bool {
 // HTTP. Matches challenge.ChallengePath; duplicated here to avoid an import.
 const acmeChallengePathGlob = "/.well-known/acme-challenge/*"
 
+// challengeRoute is the :80 route that serves HTTP-01 ACME validations from
+// JACO's CA-agnostic raft ChallengeToken set (issue #189). Matched on the
+// challenge path for ANY host and prepended ahead of every user route so it
+// wins over the per-domain redirect/proxy routes; it is terminal (never
+// proxies the challenge path to a backend). The handler 404s an unknown or
+// expired token so the CA retries against another node.
+func challengeRoute() any {
+	return map[string]any{
+		"match": []any{map[string]any{
+			"path": []any{acmeChallengePathGlob},
+		}},
+		"handle": []any{map[string]any{
+			"handler": "jaco_acme_challenge",
+		}},
+	}
+}
+
 // redirectRoute is the :80 route for a tls:auto domain: a 308 to the same host
 // over https, preserving path + query. The acme-challenge path is excluded so
-// HTTP-01 validation is served plainly (belt-and-suspenders alongside Caddy's
-// own challenge handler, which runs ahead of user routes).
+// HTTP-01 validation is served plainly by the prepended challengeRoute (issue
+// #189) rather than redirected to https.
 func redirectRoute(domain string) any {
 	return map[string]any{
 		"match": []any{map[string]any{
@@ -582,11 +611,19 @@ func tlsPolicy(domains []string, ca, email string) any {
 	for _, d := range domains {
 		subjects = append(subjects, d)
 	}
+	// Issue #189: behind an L4 load-balancer that fans :443 across every
+	// node, TLS-ALPN-01 key-auth lives only on the order-initiating node
+	// (CertMagic distributed=false). LE's multi-perspective validation opens
+	// connections that land on other backends which cannot answer →
+	// "remote error: tls: internal error" → challenge fails. Disable it
+	// explicitly so CertMagic falls through to HTTP-01, which is distributed
+	// via raft-backed shared storage and works across all nodes.
 	issuer := map[string]any{
 		"module": "acme",
 		"ca":     ca,
 		"challenges": map[string]any{
-			"http": map[string]any{},
+			"http":     map[string]any{},
+			"tls-alpn": map[string]any{"disabled": true},
 		},
 	}
 	if email != "" {
