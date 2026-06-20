@@ -7,7 +7,7 @@ Bootstrap a 3-node JACO cluster on the [testbed](../../testbed) and deploy the
 
 ```
 jaco/
-├── jaco.yaml            # deployment, replicas, single ingress route (jaco.sh → web)
+├── jaco.yaml            # deployment, replicas, single ingress route (jaco.prcs.xyz → web)
 ├── docker-compose.yml   # service shapes + per-service resource limits
 └── bootstrap/
     ├── bootstrap.sh     # operator-side: install, form cluster, build/push, apply
@@ -47,11 +47,11 @@ private VNet; only Caddy ingress (80/443) is public, via the LB.
 ## Verify
 
 ```sh
-curl -s https://jaco.sh/                      # UX HTML (or use the LB IP + Host header)
-curl -s https://jaco.sh/api/notes             # JSON list (reads a redis replica)
-curl -s -XPOST https://jaco.sh/api/notes \
+curl -sk https://jaco.prcs.xyz/                # UX HTML (or use the LB IP + Host header)
+curl -sk https://jaco.prcs.xyz/api/notes       # JSON list (reads a redis replica)
+curl -sk -XPOST https://jaco.prcs.xyz/api/notes \
      -H 'content-type: application/json' -d '{"text":"hello"}'   # writes the primary
-curl -s https://jaco.sh/api/metrics           # Prometheus metrics from an api replica
+curl -sk https://jaco.prcs.xyz/api/metrics     # Prometheus metrics from an api replica
 ```
 
 ## Known caveat: multi-node TLS readiness

@@ -54,6 +54,31 @@ var caddyCertCache *certmagic.Cache
 // cached cert to evict if the cache itself doesn't exist yet.
 var ErrCacheUninitialized = errors.New("cachepoke: caddytls cert cache not yet provisioned")
 
+// LeafDERs returns the raw DER bytes of every certificate in Caddy's
+// in-process cert cache whose subject matches domain (exact or wildcard).
+// The stage-first follower path uses it to confirm — before it stops
+// force-reloading — that certmagic has actually loaded the replicated prod
+// leaf into the cache, rather than trusting that a forced caddy.Load
+// "succeeded" (it returns nil even when certmagic then schedules an async
+// obtain that fails, which is exactly the race the level-triggered reload
+// must survive). Returns ErrCacheUninitialized when Caddy has not yet
+// provisioned its TLS app (cache pointer still nil) — the caller treats that
+// as "not serving yet" and keeps retrying.
+func LeafDERs(domain string) ([][]byte, error) {
+	cache := caddyCertCache
+	if cache == nil {
+		return nil, ErrCacheUninitialized
+	}
+	matches := cache.AllMatchingCertificates(domain)
+	out := make([][]byte, 0, len(matches))
+	for _, c := range matches {
+		if c.Leaf != nil && len(c.Leaf.Raw) > 0 {
+			out = append(out, c.Leaf.Raw)
+		}
+	}
+	return out, nil
+}
+
 // EvictManaged removes ALL managed certificates from Caddy's in-process
 // cert cache whose Subject matches the given domain, regardless of issuer.
 // This is exactly the operation the stage-first promote path needs: after

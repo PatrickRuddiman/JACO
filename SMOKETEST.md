@@ -39,8 +39,8 @@ Subscription + tenant come from `tests/testbed/.env.local` (gitignored —
 `AZ_SUBSCRIPTION` / `AZ_TENANT`); never commit those IDs. The bed is **3 nodes**
 (`parameters.bicepparam` defaults `vmCount=3`); each gets its own public IP for
 SSH, and a persistent Standard LB fronts 80/443 across all three at one stable
-address (`jaco-lb-pip` in the separate `jaco-net` RG — point the `jaco.sh` A
-record at it once).
+address (`jaco-lb-pip` in the separate `jaco-net` RG — point the wildcard
+`*.jaco.prcs.xyz` (and apex `jaco.prcs.xyz`) A record at it once).
 
 From the repo root in PowerShell:
 
@@ -126,15 +126,15 @@ them agree — one green surface is not a pass:
   **distributed across nodes** (not all stacked on the leader). `jaco get
   replicas` must agree: every replica RUNNING, spread across hostnames, and the
   pinned `pg-primary` / `pg-replica` landing on `jaco-2` / `jaco-3` respectively.
-- **Ingress, end-to-end** — through the LB public IP (the `jaco.sh` A record) the
+- **Ingress, end-to-end** — through the LB public IP (the `jaco.prcs.xyz` A record) the
   deployed app actually answers:
   ```bash
-  curl -sk https://jaco.sh/                       # web HTML (or LB IP + -H 'Host: jaco.sh')
-  curl -sk https://jaco.sh/api/notes              # JSON list (api reads a redis replica)
-  curl -sk -XPOST https://jaco.sh/api/notes -H 'content-type: application/json' -d '{"text":"hi"}'
-  curl -sk https://jaco.sh/api/metrics            # Prometheus metrics from an api replica
+  curl -sk https://jaco.prcs.xyz/                 # web HTML (or LB IP + -H 'Host: jaco.prcs.xyz')
+  curl -sk https://jaco.prcs.xyz/api/notes        # JSON list (api reads a redis replica)
+  curl -sk -XPOST https://jaco.prcs.xyz/api/notes -H 'content-type: application/json' -d '{"text":"hi"}'
+  curl -sk https://jaco.prcs.xyz/api/metrics      # Prometheus metrics from an api replica
   ```
-  `jaco get route jaco.sh` shows **READY n/n non-zero** — real running upstreams.
+  `jaco get route jaco.prcs.xyz` shows **READY n/n non-zero** — real running upstreams.
   `0/0` means no backend is up (the silent-503 indicator) and is a **fail**.
 - **Audit log** — `jaco audit` shows the expected event type(s) and records **no
   secret material**.
@@ -147,17 +147,66 @@ them agree — one green surface is not a pass:
   confirm it serves byte-identical replicated state. The FSM `Apply` is
   deterministic on every node, so a leader write must land on followers verbatim.
 
-### Multi-node TLS readiness caveat
+### Multi-node TLS (cross-host cert propagation)
 
-The LB fronts `:443` on all three nodes, but the ACME cert is obtained by the
-raft **leader**; followers serve TLS only once it propagates. On a freshly
-(re)initialized cluster, expect a window where the leader answers HTTPS while
-followers still fail the handshake, so LB-fronted requests are intermittently
-rejected until propagation completes (observed to take minutes — and to never
-complete if a cluster's raft state was wiped without also clearing each node's
-Caddy storage). Wait for a **stable streak** of successes (not a single 200)
-before judging ingress. If followers never serve TLS, that's a JACO cross-host
-cert-propagation bug, not a workload issue.
+The LB fronts `:443` on all three nodes, but a `tls: auto` cert is obtained by
+the raft **leader** only; followers must serve the *same* leaf from replicated
+storage. Two behaviours matter here, both validated live on the bed:
+
+- **Follower self-heal.** When the leader's prod leaf replicates, a follower's
+  re-rendered Caddy config is byte-identical, so the debounced reloader would
+  skip `caddy.Load` and the follower would serve no TLS until a restart. `jacod`
+  drives a **level-triggered** forced reload instead: each reconcile tick, any
+  `tls: auto` domain whose **complete** prod resource (`.crt` *and* `.key`,
+  non-staging) has replicated but whose leaf the follower isn't yet serving gets
+  one forced `caddy.Load`; the domain is latched only once the follower's cert
+  cache actually serves that exact leaf, so a reload that loses the race with
+  replication is retried, never abandoned (and the completeness gate keeps
+  certmagic on the load path — a follower never starts ACME). Follower log
+  marker: `stagefirst follower force-reloading to load replicated prod cert`,
+  which **stops** once the node serves the leaf.
+
+- **Challenge distribution gap (open — issuance only).** ACME challenge tokens
+  are *not* replicated in embedded mode, so only the issuing (leader) node can
+  answer a validation request (`"distributed":false` in the certmagic log).
+  Behind the round-robin LB (all three NICs, TCP:80 probe) Let's Encrypt's
+  multi-perspective validation lands on followers → 404 → issuance fails by luck
+  of the draw. **Workaround:** temporarily shrink the LB backend pool to the
+  **current leader's** NIC so every challenge reaches the issuer, then restore
+  the pool. Find the leader via the most recent `entering leader state` in
+  `journalctl -u jaco.service`.
+
+Validate the whole path with a **fresh promotion** under the wildcard DNS, so the
+cert appears while the followers are already running the build under test — a node
+restart would mask the self-heal by loading the cert on the normal startup path:
+
+```bash
+# 1. shrink the LB to the leader's NIC (issuance workaround), e.g. leader = jaco-3:
+az network nic ip-config address-pool remove -g JACO --lb-name jaco-lb \
+  --address-pool lbBackendPool --nic-name jaco-1-nic --ip-config-name ipconfig1
+az network nic ip-config address-pool remove -g JACO --lb-name jaco-lb \
+  --address-pool lbBackendPool --nic-name jaco-2-nic --ip-config-name ipconfig1
+# 2. add a NEW tls:auto route under *.jaco.prcs.xyz (a fresh LE order) and apply —
+#    e.g. append `note.jaco.prcs.xyz -> web` to the bench routes, `sudo jaco apply`.
+#    (Reconstruct the apply dir from `sudo jaco get deployment bench -o yaml` if the
+#    original manifest isn't on the node — it embeds jaco_yaml + the resolved compose.)
+# 3. watch the leader obtain (issuer acme-v02) and EACH follower self-heal, no restart:
+sudo journalctl -u jaco.service -f | grep -E 'obtain|stagefirst|note\.jaco\.prcs\.xyz'
+# 4. per-node proof: identical leaf on all three (same serial) under prod trust:
+for ip in <n1> <n2> <n3>; do echo | openssl s_client -connect $ip:443 \
+  -servername note.jaco.prcs.xyz 2>/dev/null | openssl x509 -noout -serial -issuer; done
+# 5. restore the pool (add jaco-1-nic + jaco-2-nic back) and confirm round-robin trust:
+for i in $(seq 1 6); do curl -s -o /dev/null \
+  -w 'http=%{http_code} ssl_verify=%{ssl_verify_result}\n' https://note.jaco.prcs.xyz/; done
+```
+
+`ssl_verify=0` on a plain `curl` (no `-k`) proves the prod chain is publicly
+trusted; **identical serials across all three nodes** prove every follower serves
+the leader's replicated leaf, not a self-signed fallback. With staging ACME the
+leaf isn't trusted — use `curl -k` and read the issuer instead. If a follower
+never converges (the `stagefirst` reload line keeps firing and its served serial
+never matches the leader's), that's a cross-host propagation regression, not a
+workload issue.
 
 ## Worked example — per-namespace registry credentials
 
@@ -227,7 +276,7 @@ az group delete --name JACO --yes        # destroys all VMs/disks/NICs/PIPs/NSG/
 
 `tests/testbed/scripts/teardown.sh --yes` does the same and also drops the
 ephemeral SSH key. Both **preserve** the persistent LB public IP `jaco-lb-pip`
-in the separate `jaco-net` RG (the `jaco.sh` A record stays valid). Pass
+in the separate `jaco-net` RG (the `jaco.prcs.xyz` A record stays valid). Pass
 `--purge-ip` to teardown.sh only if you really want that gone too. Remove local
 artifacts: `dist/package`, `dist/staging`, `dist/smoke`, `tests/testbed/.ssh/jaco*`,
 `tests/testbed/.env.local`.
