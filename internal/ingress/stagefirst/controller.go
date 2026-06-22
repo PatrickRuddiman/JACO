@@ -45,6 +45,12 @@ type Controller struct {
 	// reports the right environment as soon as the prod cert is real.
 	// See issue #147.
 	OnProdIssued func(domain string)
+	// OnProdFail is called when PendingProdWindow expires without a prod cert
+	// landing. The domain enters prodBackoff and the daemon emits
+	// CERTIFICATE_FAILED(prod, failure_class=rate_limit). retryAfter is the
+	// computed backoff duration (15m first failure, doubling to 1h cap).
+	// nil → no-op. Issue #189.
+	OnProdFail func(domain string, retryAfter time.Duration)
 	// OnStageFail is called when a staging chain is present but fails the
 	// self-check. The daemon emits CERTIFICATE_FAILED{stage_failed_at:staging}.
 	OnStageFail func(domain string, err error)
@@ -65,6 +71,14 @@ type Controller struct {
 	// backoff tracks a per-domain window during which we won't re-stage after
 	// a rate-limit (issuing-node-local, not raft-replicated).
 	backoff map[string]time.Time
+	// prodFails counts consecutive prod-issuance failures (window expired
+	// without IssuedProd flipping true) per domain. Used to compute the
+	// exponential backoff. Issuing-node-local, not raft-replicated — a
+	// failover to a new leader restarts the counter (v1 limitation, #189).
+	prodFails map[string]int
+	// prodBackoff tracks the earliest time the controller will re-stage a
+	// domain after a prod-issuance failure. Issuing-node-local (#189).
+	prodBackoff map[string]time.Time
 	// pendingProd tracks domains that were just promoted from staging→prod
 	// and are now waiting for Caddy's prod ACME order to complete. Without
 	// this, the next Reconcile tick (10s later) would see prodCertIssued
@@ -90,6 +104,20 @@ const BackoffWindow = time.Hour
 // issuance retries the dry-run promptly. See issue #154.
 const PendingProdWindow = 5 * time.Minute
 
+// ProdBackoffBase is the initial backoff after a prod-issuance failure.
+// Issue #189: without this, the pendingProd-expire→re-stage→re-promote loop
+// fires a fresh prod ACME order every ~5 min. Each order is HTTP-429-rejected,
+// which EXTENDS LE's failed-auth window so the limit never clears. LE's
+// Retry-After header is not observable here (the controller only sees prod
+// success/failure via the cert landing in raft), so we use exponential-capped
+// backoff instead.
+const ProdBackoffBase = 15 * time.Minute
+
+// ProdBackoffMax is the ceiling for the exponential prod-issuance backoff.
+// After 3 consecutive failures the domain waits at most 1h between attempts,
+// matching LE's failed-auth rate-limit reset window.
+const ProdBackoffMax = time.Hour
+
 func (c *Controller) now() time.Time {
 	if c.Now != nil {
 		return c.Now()
@@ -102,6 +130,20 @@ func (c *Controller) logger() *slog.Logger {
 		return c.Logger
 	}
 	return slog.New(slog.DiscardHandler)
+}
+
+// prodBackoffFor returns the backoff duration for n consecutive prod-issuance
+// failures: 15m, 30m, 1h, 1h, ... (doubles each time, capped at ProdBackoffMax).
+// n ≤ 0 returns ProdBackoffBase. Issue #189.
+func prodBackoffFor(n int) time.Duration {
+	if n <= 0 {
+		return ProdBackoffBase
+	}
+	d := ProdBackoffBase << uint(n-1)
+	if d <= 0 || d > ProdBackoffMax { // overflow guard + cap
+		return ProdBackoffMax
+	}
+	return d
 }
 
 // StagingDomains returns a snapshot of the domains currently in their staging
@@ -138,6 +180,12 @@ func (c *Controller) Reconcile(_ context.Context, domains []string) (changed boo
 	if c.pendingProd == nil {
 		c.pendingProd = map[string]time.Time{}
 	}
+	if c.prodFails == nil {
+		c.prodFails = map[string]int{}
+	}
+	if c.prodBackoff == nil {
+		c.prodBackoff = map[string]time.Time{}
+	}
 	now := c.now()
 
 	live := map[string]bool{}
@@ -154,6 +202,29 @@ func (c *Controller) Reconcile(_ context.Context, domains []string) (changed boo
 
 	for _, domain := range domains {
 		if c.staging[domain] {
+			// A prod cert already exists for a domain we're still staging.
+			// Behind an L4 load balancer a peer node rendering the prod CA
+			// can win the issuance race (its distributed HTTP-01 challenge
+			// now succeeds — issue #189) while this node is mid-staging.
+			// Without converging here the node stays pinned to the staging
+			// CA forever, waiting for a staging cert that will never land,
+			// and never serves the prod leaf. Drop staging, clear any
+			// pending/backoff bookkeeping, and fire OnProdIssued once so the
+			// daemon emits CERTIFICATE_ISSUED(prod) and the rebuild renders
+			// the prod policy. Issue #189.
+			if c.issuedProd(domain) {
+				delete(c.staging, domain)
+				delete(c.pendingProd, domain)
+				delete(c.prodFails, domain)
+				delete(c.prodBackoff, domain)
+				c.logger().Info("prod cert observed while staging; converging to prod",
+					"domain", domain)
+				if c.OnProdIssued != nil {
+					c.OnProdIssued(domain)
+				}
+				changed = true
+				continue
+			}
 			// Already staging: check whether the staging cert has landed.
 			pem, ok := c.loadStagingChain(domain)
 			if !ok {
@@ -216,6 +287,10 @@ func (c *Controller) Reconcile(_ context.Context, domains []string) (changed boo
 				// this `jaco status` reports `staging` forever because the
 				// only ISSUED audit event ever emitted was the staging one).
 				delete(c.pendingProd, domain)
+				// Reset the failure counter so a future renewal failure
+				// restarts the backoff schedule at ProdBackoffBase (#189).
+				delete(c.prodFails, domain)
+				delete(c.prodBackoff, domain)
 				if c.OnProdIssued != nil {
 					c.OnProdIssued(domain)
 				}
@@ -223,12 +298,23 @@ func (c *Controller) Reconcile(_ context.Context, domains []string) (changed boo
 				// Prod ACME order is still in flight; do NOT re-stage.
 				continue
 			default:
-				// Window expired without a prod cert landing. Treat as a
-				// failed promotion: clear the marker and let ShouldStage
-				// retry the dry-run from scratch on this same tick.
+				// Window expired without a prod cert landing — treat as a
+				// failed prod-issuance attempt. Apply exponential backoff
+				// (#189) to prevent the re-stage→re-promote loop from firing
+				// a fresh prod ACME order every ~5 min, which would EXTEND
+				// LE's failed-auth window and prevent recovery.
+				c.prodFails[domain]++
+				d := prodBackoffFor(c.prodFails[domain])
+				c.prodBackoff[domain] = now.Add(d)
 				c.logger().Warn("prod ACME issuance window expired without a cert landing",
-					"domain", domain, "window", PendingProdWindow)
+					"domain", domain, "window", PendingProdWindow,
+					"consecutive_failures", c.prodFails[domain], "retry_after", d)
 				delete(c.pendingProd, domain)
+				if c.OnProdFail != nil {
+					c.OnProdFail(domain, d)
+				}
+				// prodBackoff gate below will suppress re-staging this tick.
+				continue
 			}
 		}
 
@@ -241,6 +327,12 @@ func (c *Controller) Reconcile(_ context.Context, domains []string) (changed boo
 		})
 		if !dec.Stage {
 			continue
+		}
+		if until, inProdBackoff := c.prodBackoff[domain]; inProdBackoff {
+			if now.Before(until) {
+				continue // #189: prod-issuance backoff active; suppress re-stage
+			}
+			delete(c.prodBackoff, domain)
 		}
 		if until, inBackoff := c.backoff[domain]; inBackoff {
 			if now.Before(until) {

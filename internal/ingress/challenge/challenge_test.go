@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	hraft "github.com/hashicorp/raft"
 
@@ -112,5 +113,37 @@ func TestIssue_StampsEnvironmentOnRenewed(t *testing.T) {
 	}
 	if ev.GetPayload()["acme_environment"] != challenge.EnvStaging {
 		t.Errorf("acme_environment = %q, want staging", ev.GetPayload()["acme_environment"])
+	}
+}
+
+// TestIssuer_EmitProdFailure pins issue #189: EmitProdFailure must emit a
+// CERTIFICATE_FAILED audit event with domain, acme_environment=prod,
+// failure_class=rate_limit, and retry_after matching the backoff duration.
+func TestIssuer_EmitProdFailure(t *testing.T) {
+	apply, st := newHarness(t)
+	iss := challenge.NewIssuerForEnv(apply, challenge.EnvProd)
+	iss.EmitProdFailure("stuck.example.com", 15*time.Minute)
+
+	var ev *pb.AuditEvent
+	for _, e := range st.AuditEvents.List() {
+		if e.GetType() == pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_FAILED {
+			ev = e
+		}
+	}
+	if ev == nil {
+		t.Fatalf("no CERTIFICATE_FAILED event emitted")
+	}
+	p := ev.GetPayload()
+	if p["domain"] != "stuck.example.com" {
+		t.Errorf("domain = %q, want stuck.example.com", p["domain"])
+	}
+	if p["acme_environment"] != challenge.EnvProd {
+		t.Errorf("acme_environment = %q, want prod (#189)", p["acme_environment"])
+	}
+	if p["failure_class"] != string(challenge.FailureRateLimit) {
+		t.Errorf("failure_class = %q, want rate_limit (#189)", p["failure_class"])
+	}
+	if p["retry_after"] != (15 * time.Minute).String() {
+		t.Errorf("retry_after = %q, want %q (#189)", p["retry_after"], (15 * time.Minute).String())
 	}
 }

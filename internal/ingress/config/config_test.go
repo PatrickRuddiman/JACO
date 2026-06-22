@@ -185,8 +185,25 @@ func TestBuildCaddyConfig_TLSAutoRedirectsHTTP(t *testing.T) {
 	}
 	servers := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)
 
-	// :80 → 308 redirect for the domain.
-	red := servers["jaco_http"].(map[string]any)["routes"].([]any)[0].(map[string]any)
+	httpRoutes := servers["jaco_http"].(map[string]any)["routes"].([]any)
+	// :80 route[0] → CA-agnostic ACME HTTP-01 responder, matched on the
+	// challenge path for ANY host and ahead of the per-domain redirect so it
+	// serves the validation on every node behind an L4 LB (issue #189).
+	chal := httpRoutes[0].(map[string]any)
+	ch := chal["handle"].([]any)[0].(map[string]any)
+	if ch["handler"] != "jaco_acme_challenge" {
+		t.Fatalf(":80 first route is not the jaco_acme_challenge responder: %v", ch)
+	}
+	cm := chal["match"].([]any)[0].(map[string]any)
+	if cp := cm["path"].([]any)[0]; cp != "/.well-known/acme-challenge/*" {
+		t.Errorf("challenge route path match = %v; want acme-challenge glob", cp)
+	}
+	if _, hasHost := cm["host"]; hasHost {
+		t.Errorf("challenge route should match any host, got host match: %v", cm["host"])
+	}
+
+	// :80 route[1] → 308 redirect for the domain.
+	red := httpRoutes[1].(map[string]any)
 	h := red["handle"].([]any)[0].(map[string]any)
 	if h["handler"] != "static_response" || int(h["status_code"].(float64)) != 308 {
 		t.Fatalf(":80 route is not a 308 redirect: %v", h)
@@ -495,6 +512,24 @@ func TestBuildCaddyConfig_ACMEPolicyShape(t *testing.T) {
 	}
 	if got := issuer["ca"]; got != "https://acme-v02.api.letsencrypt.org/directory" {
 		t.Errorf("issuer ca = %v", got)
+	}
+	// Issue #189: TLS-ALPN-01 MUST be explicitly disabled so that behind an
+	// L4 load-balancer (where :443 fans across all nodes) CertMagic never
+	// attempts TLS-ALPN-01 — its key-auth lives only on the issuing node
+	// (distributed=false) and fails multi-perspective ACME validation.
+	challenges, ok := issuer["challenges"].(map[string]any)
+	if !ok {
+		t.Fatalf("issuer.challenges not a map; got %T", issuer["challenges"])
+	}
+	if _, httpOK := challenges["http"]; !httpOK {
+		t.Errorf("challenges.http absent; want it present (HTTP-01 stays enabled)")
+	}
+	tlsAlpn, tlsAlpnOK := challenges["tls-alpn"].(map[string]any)
+	if !tlsAlpnOK {
+		t.Fatalf("challenges.tls-alpn not a map; got %T", challenges["tls-alpn"])
+	}
+	if got := tlsAlpn["disabled"]; got != true {
+		t.Errorf("challenges.tls-alpn.disabled = %v, want true (#189)", got)
 	}
 }
 

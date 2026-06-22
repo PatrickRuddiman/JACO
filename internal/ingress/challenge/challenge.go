@@ -17,6 +17,7 @@ package challenge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -87,9 +88,37 @@ func NewIssuerForEnv(apply Applier, env string) *Issuer {
 // CERTIFICATE_FAILED on apply error. This is the closest signal we have
 // without an embedded certmagic + OnEvent hook (the daemon execs an
 // external caddy in v0).
-func (i *Issuer) Issue(_ context.Context, domain, token, keyAuth string) error {
+func (i *Issuer) Issue(ctx context.Context, domain, token, keyAuth string) error {
+	if applyErr := i.PublishToken(ctx, domain, token, keyAuth); applyErr != nil {
+		if auditErr := i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_FAILED, i.withEnv(map[string]string{
+			"domain": domain,
+			"reason": applyErr.Error(),
+		})); auditErr != nil {
+			i.log().Warn("cert audit emit failed",
+				"event", "certificate_failed", "domain", domain, "error", auditErr)
+		}
+		return applyErr
+	}
+	if auditErr := i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_RENEWED, i.withEnv(map[string]string{
+		"domain": domain,
+	})); auditErr != nil {
+		i.log().Warn("cert audit emit failed",
+			"event", "certificate_renewed", "domain", domain, "error", auditErr)
+	}
+	return nil
+}
+
+// PublishToken raft-Applies a ChallengeTokenStore WITHOUT emitting any audit
+// event. It is the cluster-distribution primitive behind the embedded
+// CertMagic path: the storage tap (internal/ingress/storage) calls it for
+// every challenge_tokens blob CertMagic writes, so the token reaches
+// state.ChallengeTokens on every node and any peer can serve the HTTP-01
+// validation. Audit emission is deliberately omitted — CertMagic writes one
+// blob per order attempt, and a CERTIFICATE_RENEWED per write would spam the
+// audit log. Use Issue when the single, intentional audit pair is wanted.
+func (i *Issuer) PublishToken(_ context.Context, domain, token, keyAuth string) error {
 	if domain == "" || token == "" || keyAuth == "" {
-		return fmt.Errorf("Issue: domain + token + keyAuth required")
+		return fmt.Errorf("PublishToken: domain + token + keyAuth required")
 	}
 	now := time.Now()
 	expiresAt := now.Add(TokenTTL)
@@ -109,23 +138,32 @@ func (i *Issuer) Issue(_ context.Context, domain, token, keyAuth string) error {
 	if err != nil {
 		return err
 	}
-	if applyErr := i.apply(data); applyErr != nil {
-		if auditErr := i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_FAILED, i.withEnv(map[string]string{
-			"domain": domain,
-			"reason": applyErr.Error(),
-		})); auditErr != nil {
-			i.log().Warn("cert audit emit failed",
-				"event", "certificate_failed", "domain", domain, "error", auditErr)
-		}
-		return applyErr
+	return i.apply(data)
+}
+
+// ParseHTTP01Blob extracts the (domain, token, keyAuth) triple from the JSON
+// CertMagic stores under its `.../challenge_tokens/<domain>.json` storage key
+// (a marshaled acmez acme.Challenge — see certmagic distributedSolver.Present).
+// ok is false for any non-http-01 challenge or a blob missing the token /
+// key-authorization / identifier, so the storage tap can ignore tls-alpn-01
+// and dns-01 writes. A local struct is used so the challenge package need not
+// import acmez; the JSON tags are the stable RFC 8555 field names.
+func ParseHTTP01Blob(value []byte) (domain, token, keyAuth string, ok bool) {
+	var chal struct {
+		Type             string `json:"type"`
+		Token            string `json:"token"`
+		KeyAuthorization string `json:"keyAuthorization"`
+		Identifier       struct {
+			Value string `json:"value"`
+		} `json:"identifier"`
 	}
-	if auditErr := i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_RENEWED, i.withEnv(map[string]string{
-		"domain": domain,
-	})); auditErr != nil {
-		i.log().Warn("cert audit emit failed",
-			"event", "certificate_renewed", "domain", domain, "error", auditErr)
+	if err := json.Unmarshal(value, &chal); err != nil {
+		return "", "", "", false
 	}
-	return nil
+	if chal.Type != "http-01" || chal.Token == "" || chal.KeyAuthorization == "" || chal.Identifier.Value == "" {
+		return "", "", "", false
+	}
+	return chal.Identifier.Value, chal.Token, chal.KeyAuthorization, true
 }
 
 // FailureClass buckets an ACME issuance error so audit consumers and the
@@ -191,6 +229,22 @@ func (i *Issuer) EmitStageFailure(domain string, err error) {
 	}
 }
 
+// EmitProdFailure records a CERTIFICATE_FAILED audit event for a failed prod
+// ACME issuance (PendingProdWindow expired without a cert landing). Stamps
+// failure_class=rate_limit and retry_after so operators can correlate with LE's
+// failed-auth rate-limit window. Issue #189.
+func (i *Issuer) EmitProdFailure(domain string, retryAfter time.Duration) {
+	if auditErr := i.emitAudit(pb.AuditEventType_AUDIT_EVENT_TYPE_CERTIFICATE_FAILED, map[string]string{
+		"domain":           domain,
+		"acme_environment": EnvProd,
+		"failure_class":    string(FailureRateLimit),
+		"retry_after":      retryAfter.String(),
+	}); auditErr != nil {
+		i.log().Warn("cert audit emit failed",
+			"event", "certificate_failed", "domain", domain, "error", auditErr)
+	}
+}
+
 // EmitIssued records a CERTIFICATE_ISSUED audit event tagged with the
 // environment the cert was issued against.
 func (i *Issuer) EmitIssued(domain, env string) {
@@ -234,6 +288,12 @@ func (i *Issuer) emitAudit(t pb.AuditEventType, payload map[string]string) error
 type Handler struct {
 	state *state.State
 }
+
+// NewHandler constructs a Handler that serves HTTP-01 key authorizations from
+// st.ChallengeTokens. The daemon shares one *state.State across every
+// subsystem, so a Handler built here serves any token replicated into raft —
+// including ones an order-initiating peer published moments ago.
+func NewHandler(st *state.State) *Handler { return &Handler{state: st} }
 
 // ServeHTTP responds 200 + plain text key_auth when the token matches a
 // live ChallengeToken; 404 otherwise.
