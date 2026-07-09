@@ -13,6 +13,20 @@
             {
               "handle": [
                 {
+                  "handler": "jaco_acme_challenge"
+                }
+              ],
+              "match": [
+                {
+                  "path": [
+                    "/.well-known/acme-challenge/*"
+                  ]
+                }
+              ]
+            },
+            {
+              "handle": [
+                {
                   "handler": "static_response",
                   "headers": {
                     "Location": [
@@ -119,7 +133,10 @@
               {
                 "ca": "https://acme-v02.api.letsencrypt.org/directory",
                 "challenges": {
-                  "http": {}
+                  "http": {},
+                  "tls-alpn": {
+                    "disabled": true
+                  }
                 },
                 "email": "ops@example.com",
                 "module": "acme"

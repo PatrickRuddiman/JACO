@@ -877,6 +877,28 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 		ingressLog.Info("ingress acme config",
 			"enabled", acme.Enabled, "ca", acme.CA, "email", acme.Email, "skip_staging", s.acmeSkipStaging)
 
+		// Issue #189: the embedded Caddy serves HTTP-01 validations through
+		// JACO's CA-agnostic raft ChallengeToken set so any node behind an L4
+		// load balancer can answer the CA, even when it renders a different CA
+		// policy than the order-initiating leader (the stage-first staging
+		// window / prod promotion split). Share the state singleton with the
+		// jaco_acme_challenge Caddy handler and tap CertMagic's challenge-token
+		// writes to republish them by token.
+		if acme.Enabled && embeddedIngress() {
+			challenge.SetDefaultChallengeState(st)
+			challengePub := challenge.NewIssuer(storageApply)
+			challengePub.Logger = ingressLog
+			jacoStorage.SetChallengePublisher(func(value []byte) {
+				domain, token, keyAuth, ok := challenge.ParseHTTP01Blob(value)
+				if !ok {
+					return
+				}
+				if err := challengePub.PublishToken(context.Background(), domain, token, keyAuth); err != nil {
+					ingressLog.Warn("challenge token republish failed", "domain", domain, "error", err)
+				}
+			})
+		}
+
 		// Stage-first issuance (issue #41, Q6 embedded-only): only when ACME is
 		// on, the configured CA is prod, the operator didn't opt out, and we're
 		// in embedded mode (an external caddy owns issuance under
@@ -943,6 +965,15 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 					iss := challenge.NewIssuerForEnv(storageApply, challenge.EnvStaging)
 					iss.Logger = ingressLog
 					iss.EmitStageFailure(domain, err)
+				},
+				// OnProdFail fires when PendingProdWindow expires without a
+				// prod cert landing. Emit CERTIFICATE_FAILED(prod, rate_limit)
+				// so operators can see the failure and the backoff duration
+				// in the audit log. Issue #189.
+				OnProdFail: func(domain string, retryAfter time.Duration) {
+					iss := challenge.NewIssuerForEnv(storageApply, challenge.EnvProd)
+					iss.Logger = ingressLog
+					iss.EmitProdFailure(domain, retryAfter)
 				},
 			}
 			// StagingDomains is consulted by the config builder on every

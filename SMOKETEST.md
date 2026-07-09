@@ -166,47 +166,67 @@ storage. Two behaviours matter here, both validated live on the bed:
   marker: `stagefirst follower force-reloading to load replicated prod cert`,
   which **stops** once the node serves the leaf.
 
-- **Challenge distribution gap (open — issuance only).** ACME challenge tokens
-  are *not* replicated in embedded mode, so only the issuing (leader) node can
-  answer a validation request (`"distributed":false` in the certmagic log).
-  Behind the round-robin LB (all three NICs, TCP:80 probe) Let's Encrypt's
-  multi-perspective validation lands on followers → 404 → issuance fails by luck
-  of the draw. **Workaround:** temporarily shrink the LB backend pool to the
-  **current leader's** NIC so every challenge reaches the issuer, then restore
-  the pool. Find the leader via the most recent `entering leader state` in
-  `journalctl -u jaco.service`.
+- **Challenge distribution (cluster-wide, #189).** ACME validation is HTTP-01
+  **only** — the rendered automation policy disables TLS-ALPN-01, whose key-auth
+  is node-local and therefore unanswerable behind an L4 (TCP-passthrough) LB.
+  CertMagic keys its distributed HTTP-01 tokens by **CA prefix**, so a node
+  rendering a different CA than the order initiator used to 404 the validation
+  request (`"distributed":false` and the wrong CA in the certmagic log). `jacod`
+  now taps storage for every `/challenge_tokens/` write and republishes the
+  key-auth through a **CA-agnostic, token-keyed** raft set, served by a
+  `jaco_acme_challenge` handler prepended to `:80`. The result: **any** node
+  answers **any** in-flight challenge, so Let's Encrypt's multi-perspective
+  validation succeeds no matter which backend the LB fans it to — the prod cert
+  issues behind the **full three-node pool with no LB-shrink workaround**. In the
+  log the issuing node serves `"distributed":false` and the followers serve the
+  *same* challenge `"distributed":true`. On repeated prod-issuance failure the
+  stage-first controller now backs off exponentially (15m -> 30m -> 1h cap) and
+  emits `CERTIFICATE_FAILED{acme_environment:prod}` instead of re-ordering every
+  ~5 min — the old cadence that self-sustained LE's failed-authorization limit.
 
-Validate the whole path with a **fresh promotion** under the wildcard DNS, so the
-cert appears while the followers are already running the build under test — a node
-restart would mask the self-heal by loading the cert on the normal startup path:
+Validate the whole path with a **fresh promotion** under the wildcard DNS, with the
+**full LB pool intact** (all three NICs), so the cert appears while the followers
+are already running the build under test — a node restart would mask the
+distribution + self-heal by loading the cert on the normal startup path. Reproducing
+#189 requires **prod** ACME (a non-prod `acme_ca` skips the stage-first -> prod
+promotion), so bring the bed up with
+`ACME_CA=https://acme-v02.api.letsencrypt.org/directory`:
 
 ```bash
-# 1. shrink the LB to the leader's NIC (issuance workaround), e.g. leader = jaco-3:
-az network nic ip-config address-pool remove -g JACO --lb-name jaco-lb \
-  --address-pool lbBackendPool --nic-name jaco-1-nic --ip-config-name ipconfig1
-az network nic ip-config address-pool remove -g JACO --lb-name jaco-lb \
-  --address-pool lbBackendPool --nic-name jaco-2-nic --ip-config-name ipconfig1
-# 2. add a NEW tls:auto route under *.jaco.prcs.xyz (a fresh LE order) and apply —
-#    e.g. append `note.jaco.prcs.xyz -> web` to the bench routes, `sudo jaco apply`.
-#    (Reconstruct the apply dir from `sudo jaco get deployment bench -o yaml` if the
-#    original manifest isn't on the node — it embeds jaco_yaml + the resolved compose.)
-# 3. watch the leader obtain (issuer acme-v02) and EACH follower self-heal, no restart:
-sudo journalctl -u jaco.service -f | grep -E 'obtain|stagefirst|note\.jaco\.prcs\.xyz'
-# 4. per-node proof: identical leaf on all three (same serial) under prod trust:
-for ip in <n1> <n2> <n3>; do echo | openssl s_client -connect $ip:443 \
-  -servername note.jaco.prcs.xyz 2>/dev/null | openssl x509 -noout -serial -issuer; done
-# 5. restore the pool (add jaco-1-nic + jaco-2-nic back) and confirm round-robin trust:
-for i in $(seq 1 6); do curl -s -o /dev/null \
-  -w 'http=%{http_code} ssl_verify=%{ssl_verify_result}\n' https://note.jaco.prcs.xyz/; done
+DOMAIN=jaco.prcs.xyz   # the bench route already exercises this; add another *.jaco.prcs.xyz
+                       # route + `sudo jaco apply` on the leader for an extra fresh order
+# 1. watch the order: staging then prod (issuer acme-v02), http-01 only (no tls-alpn),
+#    and challenges fanning across nodes — initiator distributed:false, a follower
+#    distributed:true (run on each node; the LB picks which nodes the CA perspectives hit):
+sudo journalctl -u jaco.service --no-pager \
+  | grep -E 'challenge|served key authentication|certificate|obtain' | tail -20
+# 2. per-node + LB proof: identical prod leaf (same serial) under public trust:
+for ip in <n1> <n2> <n3> <lb>; do echo | openssl s_client -connect $ip:443 \
+  -servername "$DOMAIN" 2>/dev/null | openssl x509 -noout -serial -issuer; done
+# 3. LB round-robin trust (full pool) — same serial every hit, chain publicly trusted:
+for i in $(seq 1 10); do curl -s -o /dev/null \
+  -w 'http=%{http_code} ssl_verify=%{ssl_verify_result}\n' "https://$DOMAIN/"; done
+# 4. audit records both promotions:
+sudo jaco audit | grep -E 'certificate_issued|certificate_failed'
 ```
 
 `ssl_verify=0` on a plain `curl` (no `-k`) proves the prod chain is publicly
-trusted; **identical serials across all three nodes** prove every follower serves
-the leader's replicated leaf, not a self-signed fallback. With staging ACME the
-leaf isn't trusted — use `curl -k` and read the issuer instead. If a follower
-never converges (the `stagefirst` reload line keeps firing and its served serial
-never matches the leader's), that's a cross-host propagation regression, not a
-workload issue.
+trusted; **identical serials across all three nodes and the LB** prove every
+follower serves the leader's replicated leaf, not a self-signed fallback, and that
+the LB never lands on a node without the cert. Expect `certificate_issued` for
+**both** `acme_environment=staging` and `acme_environment=prod`. If the order never
+completes (the initiator keeps logging `distributed:false` while the CA reports
+404s from other perspectives), that's a challenge-distribution regression of #189;
+if a follower serves a stale/self-signed leaf, that's the cross-host propagation
+regression of #188.
+
+Verified live on the Azure testbed (3 nodes behind the Standard L4 LB, prod LE,
+`jaco.prcs.xyz`): the order completed first try with the **full** backend pool —
+`http-01` only (zero `tls-alpn`), the initiator served `distributed:false` and a
+follower served the same challenge `distributed:true` across Let's Encrypt's
+multi-perspective source IPs; all three nodes **and** the LB served one identical
+prod leaf (`issuer=Let's Encrypt`, 10/10 LB handshakes the same serial); and
+`jaco audit` recorded `certificate_issued` for both `staging` and `prod`.
 
 ## Worked example — per-namespace registry credentials
 

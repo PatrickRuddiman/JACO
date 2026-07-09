@@ -235,6 +235,97 @@ The CLI's interpolation step rejected a malformed `${…}` reference
 — the line/column point at the offending site. Fix the reference
 and re-apply. CLI-side only.
 
+## Cluster stuck on `(STAGING)` cert behind L4 load-balancer (issue #189)
+
+**Symptom.** The cluster has been running for a while but every domain
+still serves a `(STAGING) Let's Encrypt` certificate. Logs show
+repeated entries like:
+
+```
+level=WARN challenge=tls-alpn-01 distributed=false ...
+level=WARN prod ACME issuance window expired without a cert landing domain=... window=5m
+```
+
+or HTTP 429 responses from Let's Encrypt with a `Retry-After` header
+that keeps moving forward in time. Running:
+
+```sh
+sudo jaco audit --type certificate_failed | grep acme_environment=prod
+```
+
+shows repeated `CERTIFICATE_FAILED` events for the same domain.
+
+**Root cause A — TLS-ALPN-01 left enabled (pre-issue #189 versions).**
+Behind an L4 / TCP-passthrough load-balancer that fans `:443` across
+every node, TLS-ALPN-01 cannot work. The key-auth material lives only
+on the ACME order-initiating node (`distributed=false`). Let's
+Encrypt's multi-perspective validation opens connections to the domain
+that land on *different* backends — none can answer — and the challenge
+fails with `remote error: tls: internal error`.
+
+**Root cause B — no backoff on prod failure (pre-issue #189 versions).**
+The `PendingProdWindow` (5 min) expires, the domain immediately
+re-stages → re-promotes → a fresh prod ACME order fires ~every 5–6 min.
+Each order is HTTP 429-rejected, which **extends** Let's Encrypt's
+failed-auth rate-limit window. The cluster self-sustains the limit;
+it never resets.
+
+**Root cause C — challenge token keyed by CA prefix (pre-issue #189
+versions).** Even with TLS-ALPN-01 disabled, HTTP-01 still deadlocked
+behind the LB. CertMagic's built-in distributed solver stores each
+challenge token under its **issuer/CA prefix**
+(`<ca-prefix>/challenge_tokens/<domain>.json`). A node rendering a
+different CA policy than the order-initiating node — a follower
+rendering prod during the leader's staging window (issue #182), or any
+node mid-promotion — looks the token up under the wrong prefix, gets
+`ErrNotExist`, and answers `404`. Logs show:
+```
+level=WARN looking up info for HTTP challenge ... error="no information found to solve challenge for identifier: ..."
+```
+The fix taps every challenge-token storage write and republishes it
+through a **CA-agnostic, token-keyed** raft set served by the
+`jaco_acme_challenge` handler, so any node answers regardless of which
+CA it renders. See *Distributed challenge serving* in
+[ingress concepts](../concepts/ingress.md).
+
+**Fix.** Upgrade to the release that includes issue #189. JACO renders
+`challenges.tls-alpn.disabled: true` in the Caddy automation policy
+(root cause A), applies exponential prod-issuance backoff 15m→30m→1h
+(root cause B), and republishes challenge tokens CA-agnostically via the
+`jaco_acme_challenge` handler so HTTP-01 validation succeeds on every
+backend behind the LB (root cause C).
+
+**Recovery after upgrading.**
+
+1. Wait for Let's Encrypt's failed-auth rate-limit to expire. LE resets
+   the 5-failed-auth-per-hostname window after ~1 hour from the *last*
+   failed attempt. Check when the most recent `CERTIFICATE_FAILED` event
+   was emitted:
+   ```sh
+   sudo jaco audit --type certificate_failed | tail -5
+   ```
+2. Once ~1 hour has passed since the last failure, restart the daemon
+   (or wait for the controller's `retry_after` window to expire —
+   whichever is later):
+   ```sh
+   sudo systemctl restart jaco
+   ```
+3. The stage-first controller will re-stage → re-promote → attempt the
+   prod order once the backoff expires. Observe:
+   ```sh
+   sudo journalctl -u jaco -f | grep -E 'promoting|prod cert|staging self-check'
+   ```
+4. Confirm with `jaco status` or a browser that the domain now serves a
+   real LE production certificate.
+
+**Affected versions.** Any version before the issue #189 fix. The
+symptoms appear only on clusters behind an L4 load-balancer; single-node
+clusters and clusters where `:443` is not fanned to multiple backends
+are not affected by root cause A (TLS-ALPN-01 would have landed on the
+same node every time). Root cause B (the rate-limit amplification loop)
+can appear in any topology if a prod order genuinely fails for any
+reason.
+
 ## `staging self-check passed; promoting to prod` (every 10 s, forever)
 
 Pre-v0.3.3 symptom. The stage-first controller's tick decision was

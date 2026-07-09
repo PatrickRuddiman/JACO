@@ -131,8 +131,13 @@ Routes / CertBlobs event) the leader's controller walks each
 3. **Pending prod** → if `prodCertIssued(domain)` returns true the
    marker clears (Caddy landed the prod cert; `OnProdIssued` fires
    to record a `CERTIFICATE_ISSUED(prod)` audit event). If the
-   deadline expires without prod landing, the marker clears and the
-   controller is allowed to re-stage from scratch on the next pass.
+   deadline expires without prod landing, the controller increments
+   the consecutive-failure counter, enters a **prod-issuance backoff**
+   window (15 m on first failure, doubling to 1 h cap; see below),
+   and fires `OnProdFail` to record a
+   `CERTIFICATE_FAILED(prod, failure_class=rate_limit)` audit event
+   (issue #189). The domain may re-stage only after that window
+   expires.
 
 The pending-prod window (issue #154) was added in v0.3.3 to break a
 10 s flip-flop loop: pre-fix, the same-tick decision "domain not in
@@ -142,6 +147,96 @@ re-staged the domain, flipped the policy back to staging-CA, and
 forced Caddy to abandon the in-flight prod issuance — repeating
 indefinitely. The window holds the domain out of the re-stage
 decision long enough for a real prod issuance to complete.
+
+#### Challenge method: HTTP-01 only (TLS-ALPN-01 disabled)
+
+The rendered Caddy automation policy **explicitly disables TLS-ALPN-01**
+(`challenges.tls-alpn.disabled: true`) and keeps only HTTP-01 enabled
+(issue #189). Behind an L4 / TCP-passthrough load-balancer that fans
+`:443` across every node, TLS-ALPN-01 cannot work: its key-auth
+material lives only on the order-initiating node
+(`distributed=false` in CertMagic). Let's Encrypt's multi-perspective
+validation opens several TLS connections that land on *different*
+backends, none of which can answer → `remote error: tls: internal
+error` → challenge fails.
+
+HTTP-01 is not affected by the L4 fan-out — **provided** the challenge
+key-auth is served CA-agnostically. This is the deeper half of issue
+\#189:
+
+##### Distributed challenge serving (the `jaco_acme_challenge` handler)
+
+CertMagic's built-in distributed HTTP-01 solver keys its challenge-token
+storage **by issuer/CA prefix**
+(`<ca-prefix>/challenge_tokens/<domain>.json`). Behind an L4 LB a node
+that renders a *different* CA policy than the order-initiating node — for
+example a follower rendering prod during the leader's staging window
+(issue #182), or any node mid-promotion — reads the challenge token under
+the wrong CA prefix, gets `ErrNotExist`, and answers `404`. Let's
+Encrypt's multi-perspective validation lands on those nodes and the
+authorization deadlocks. (This is why issuance still failed behind the LB
+even after TLS-ALPN-01 was disabled.)
+
+JACO closes the gap with a **CA-agnostic, token-keyed** republish path:
+
+1. **Storage tap** — `JacoStorage.Store` invokes a publisher hook for any
+   key containing `/challenge_tokens/`. The hook parses the CertMagic
+   `acme.Challenge` blob (`ParseHTTP01Blob`, HTTP-01 only) and calls
+   `challenge.PublishToken`, which writes the `<token → keyAuth>` pair to
+   raft's `ChallengeToken` set — keyed by the **token**, not by any CA.
+2. **`jaco_acme_challenge` Caddy handler** — a terminal handler registered
+   as `http.handlers.jaco_acme_challenge` and prepended to the `:80`
+   routes (ahead of the HTTP→HTTPS redirect) for every
+   `/.well-known/acme-challenge/*` request whenever `tls: auto` domains
+   exist. It looks the token up in the replicated `ChallengeToken` set and
+   serves the key-auth, or `404`s on a miss.
+
+Because the token is replicated through raft and served by token (not CA
+prefix), **any** node answers the challenge regardless of which CA policy
+it is currently rendering. `PublishToken` is deliberately **not** audited
+(CertMagic writes one challenge blob per order attempt; auditing each
+would spam the log) — the single `CERTIFICATE_ISSUED` audit pair stays on
+the issuance lifecycle.
+
+##### Leader prod-race convergence (issue #189)
+
+Once challenges are distributed, a follower rendering the prod CA can win
+the prod ACME order outright while the leader is still in that domain's
+staging window. The promotion controller therefore checks, on every
+`Reconcile` pass, whether a prod cert already exists for a domain it is
+still staging: if so it drops the domain from the staging set, clears any
+pending/backoff bookkeeping, and fires `OnProdIssued` once (emitting the
+`CERTIFICATE_ISSUED(prod)` audit) so the node converges to rendering and
+serving prod instead of waiting forever for a staging cert that the race
+made moot.
+
+#### Prod-issuance exponential backoff (issue #189)
+
+Without backoff, a failed prod order causes:
+`PendingProdWindow expires → re-stage → re-promote → fresh prod order`
+every ~5–6 min. Each new order is HTTP 429-rejected by Let's Encrypt,
+which **extends** the failed-auth rate-limit window — the cluster
+self-sustains the limit and it never resets.
+
+The controller backs off per domain:
+
+| Consecutive failures | Backoff window |
+| --- | --- |
+| 1 | 15 min |
+| 2 | 30 min |
+| 3+ | 60 min (cap) |
+
+The counter resets to zero when a prod cert successfully lands in raft,
+so a later renewal failure restarts the schedule at 15 min.
+
+> **Note:** Let's Encrypt's `Retry-After` header is not observable
+> here — the controller sees only "prod cert in raft: yes/no".
+> Exponential-capped backoff is a conservative approximation.
+> Backoff state is **issuing-node-local** (in-memory, not
+> raft-replicated). A leader failover restarts the counter on the new
+> leader; the new leader will retry within 5 min (first PendingProdWindow
+> expiry triggers the 15 min backoff), then back off normally.
+> Documented as a v1 limitation.
 
 ### Leader-gating and follower serving (issue #182)
 
