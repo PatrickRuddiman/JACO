@@ -88,6 +88,14 @@ Canonical entities held in the raft FSM (see
 The set is **closed**: there is no plugin mechanism for new entities in
 v1.
 
+Deployment revisions use replace-set semantics. Applying a revision
+prunes rollout plans for services that no longer exist, then the
+leader's scheduler removes their `ReplicaDesired` records during
+reconciliation. Each desired removal cascades to the matching
+`ReplicaObserved` and `RestartCounter`; the runtime consumes the removal
+event and stops and removes the container. `ReplicaCounter` records
+survive this cleanup so replica indexes are never reused.
+
 ## Per-node gossip
 
 Each daemon ticks `pressureHeartbeat` (cadence

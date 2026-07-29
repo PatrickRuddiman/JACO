@@ -1,10 +1,12 @@
 ---
 sources:
   - cmd/jaco/apply.go
+  - internal/controlplane/fsm/fsm.go
   - internal/controlplane/grpc/jaco_spec.go
   - internal/controlplane/admission/
   - internal/runtime/compose/validate.go
   - internal/runtime/compose/interpolate.go
+  - internal/scheduler/scheduler.go
 ---
 
 # `jaco apply`
@@ -87,8 +89,13 @@ Operator token (TCP) or unix-socket trust (local).
    `validation_failed`. Admitted privileged workloads write one
    `privileged_workload_admitted` audit event per gated service.
 5. The leader writes a new `Deployment{applied_revision: N+1}` through
-   raft. The scheduler reconciles `ReplicaDesired` and the runtime
-   converges containers.
+   raft. Each revision replaces the deployment's service and route sets;
+   it is not merged with the previous revision. The scheduler reconciles
+   `ReplicaDesired` and the runtime converges containers. If a compose
+   service is absent from the new revision, all of its desired replicas
+   are removed and their owning runtimes stop and remove the containers.
+   The same cleanup applies to healthy, pending, and terminal failed
+   replicas. Renaming a service is therefore a remove plus an add.
 6. The RPC returns `Applied revision: <N+1>` once the leader has
    committed the new revision. Container start + health is observed
    asynchronously; `jaco status -w` shows replicas moving through
@@ -136,6 +143,18 @@ Re-applying with a bumped image rolls one replica at a time:
 # edit ./hello/docker-compose.yml: image: nginx:1.28
 jaco apply --server $LEADER ./hello/jaco.yaml
 jaco status --server $LEADER hello -w        # observe the rollout
+```
+
+Removing a service from the compose file retires that service on the
+next apply. Also remove any `services:` override or route that refers to
+it:
+
+```sh
+# edit compose.yml and remove the legacy service
+# edit jaco.yaml and remove legacy overrides/routes
+jaco apply --server $LEADER ./hello/jaco.yaml
+jaco status --server $LEADER hello
+# only services in the new revision are listed
 ```
 
 If the apply rejects, the cluster state is unchanged. Re-edit and try
