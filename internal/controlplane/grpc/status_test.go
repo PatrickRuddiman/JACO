@@ -101,6 +101,30 @@ func TestStatus_FillsObservedHostFromDesired(t *testing.T) {
 	}
 }
 
+func TestStatus_DeploymentFilterExcludesObservationWithoutDesiredOwner(t *testing.T) {
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	st.Deployments.Apply(&pb.Deployment{Name: "sample"}, 1)
+	st.ReplicasDesired.Apply(&pb.ReplicaDesired{
+		Id: "sample-legacy-web-0", Deployment: "sample", Service: "legacy-web", Host: "node-a",
+	}, 2)
+	st.ReplicasObserved.Apply(&pb.ReplicaObserved{
+		Id:    "sample-legacy-web-0",
+		State: pb.ReplicaState_REPLICA_STATE_FAILED,
+		Code:  "restart_exhausted",
+	}, 3)
+	st.ReplicasDesired.Remove("sample-legacy-web-0", 4)
+
+	srv := grpcsrv.NewDeployServer(st, nil)
+	resp, err := srv.Status(context.Background(), &pb.DeployStatusRequest{DeploymentFilter: "sample"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if len(resp.GetReplicas()) != 0 {
+		t.Fatalf("replicas = %d, want 0 after desired ownership is removed", len(resp.GetReplicas()))
+	}
+}
+
 func TestStatus_ReturnsDeploymentAndRoutes(t *testing.T) {
 	c := setupTwoNodeCluster(t)
 	applyDeployment(t, c, statusJacoYAML, statusComposeYAML)

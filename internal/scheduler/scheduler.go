@@ -167,6 +167,25 @@ func (s *Scheduler) Reconcile(_ context.Context) {
 				fmt.Sprintf("compose parse failed: %v", err)))
 			continue
 		}
+		currentServices := make(map[string]struct{}, len(dep.GetServices()))
+		for _, svc := range dep.GetServices() {
+			currentServices[svc.GetName()] = struct{}{}
+		}
+		for _, replica := range s.state.ReplicasDesired.List() {
+			if replica.GetDeployment() != dep.GetName() {
+				continue
+			}
+			if _, ok := currentServices[replica.GetService()]; ok {
+				continue
+			}
+			batch = append(batch, &pb.Command{
+				Identity: "scheduler",
+				Ts:       timestamppb.Now(),
+				Payload: &pb.Command_ReplicaDesiredRemove{ReplicaDesiredRemove: &pb.ReplicaDesiredRemove{
+					Id: replica.GetId(),
+				}},
+			})
+		}
 		for _, svc := range dep.GetServices() {
 			// Per-service spec hash drives drift detection (issue #148): a
 			// change in env values, healthcheck command, mounts, labels, or

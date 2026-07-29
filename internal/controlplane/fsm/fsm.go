@@ -192,6 +192,19 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 			AcmeEmail:        da.GetAcmeEmail(),
 			UpdatedAt:        cmd.GetTs(),
 		}, idx)
+		desiredServices := make(map[string]struct{}, len(da.GetServices()))
+		for _, service := range da.GetServices() {
+			desiredServices[service.GetName()] = struct{}{}
+		}
+		for _, plan := range f.State.RolloutPlans.List() {
+			if plan.GetDeployment() != da.GetDeployment() {
+				continue
+			}
+			if _, ok := desiredServices[plan.GetService()]; ok {
+				continue
+			}
+			f.State.RolloutPlans.Remove(state.RolloutPlanKey(plan.GetDeployment(), plan.GetService()), idx)
+		}
 		// Replace-set the deployment's routes: prune any the new revision no
 		// longer declares, then apply the desired set. Upsert-only would leave a
 		// route (and its listener) serving after it was dropped from the manifest.
@@ -264,15 +277,12 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 		}
 		for _, rd := range f.State.ReplicasDesired.List() {
 			if rd.GetDeployment() == name {
-				f.State.ReplicasDesired.Remove(rd.GetId(), idx)
-				// Cascade observed records too. Without this, a later
-				// re-apply of the same deployment name (which reuses
-				// the same `<dep>-<svc>-<idx>` replica ids) reads stale
-				// observations from the prior incarnation — broke the
-				// depends_on gate (issue #130) when a redeploy
-				// satisfied the gate against a previous run's RUNNING
-				// records.
-				f.State.ReplicasObserved.Remove(rd.GetId(), idx)
+				f.removeReplicaDesired(rd.GetId(), idx)
+			}
+		}
+		for _, plan := range f.State.RolloutPlans.List() {
+			if plan.GetDeployment() == name {
+				f.State.RolloutPlans.Remove(state.RolloutPlanKey(plan.GetDeployment(), plan.GetService()), idx)
 			}
 		}
 		// Free every per-host /24 allocated for this deployment.
@@ -304,7 +314,7 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 		return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
 
 	case *pb.Command_ReplicaDesiredRemove:
-		f.State.ReplicasDesired.Remove(p.ReplicaDesiredRemove.GetId(), idx)
+		f.removeReplicaDesired(p.ReplicaDesiredRemove.GetId(), idx)
 		return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
 
 	case *pb.Command_ReplicaObservedUpdate:
@@ -572,6 +582,12 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 	// event but Apply returns nil so raft doesn't surface this as a hard
 	// error. Future Command variants must be added explicitly above.
 	return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
+}
+
+func (f *FSM) removeReplicaDesired(id string, idx uint64) {
+	f.State.ReplicasDesired.Remove(id, idx)
+	f.State.ReplicasObserved.Remove(id, idx)
+	f.State.RestartCounters.Remove(id, idx)
 }
 
 // commandOp returns a short operation label for the command's oneof variant,

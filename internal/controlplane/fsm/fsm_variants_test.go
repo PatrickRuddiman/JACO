@@ -269,13 +269,34 @@ func TestApply_DeploymentDelete_CascadesReplicasDesired(t *testing.T) {
 			Replica: &pb.ReplicaObserved{Id: "sample-web-0", State: pb.ReplicaState_REPLICA_STATE_RUNNING},
 		}},
 	})
+	applyCmd(t, f, 4, &pb.Command{
+		Payload: &pb.Command_RestartCounterUpdate{RestartCounterUpdate: &pb.RestartCounterUpdate{
+			ReplicaId: "sample-web-0",
+			Action:    pb.RestartCounterUpdate_ACTION_INCREMENT,
+		}},
+	})
+	applyCmd(t, f, 5, &pb.Command{
+		Payload: &pb.Command_RolloutPlanUpdate{RolloutPlanUpdate: &pb.RolloutPlanUpdate{
+			Plan: &pb.RolloutPlan{
+				Deployment: "sample",
+				Service:    "web",
+				State:      pb.RolloutState_ROLLOUT_STATE_IN_PROGRESS,
+			},
+		}},
+	})
 	if s.ReplicasDesired.Len() != 1 {
 		t.Fatalf("ReplicasDesired.Len = %d, want 1", s.ReplicasDesired.Len())
 	}
 	if s.ReplicasObserved.Len() != 1 {
 		t.Fatalf("ReplicasObserved.Len = %d, want 1", s.ReplicasObserved.Len())
 	}
-	applyCmd(t, f, 4, &pb.Command{
+	if s.RestartCounters.Len() != 1 {
+		t.Fatalf("RestartCounters.Len = %d, want 1", s.RestartCounters.Len())
+	}
+	if s.RolloutPlans.Len() != 1 {
+		t.Fatalf("RolloutPlans.Len = %d, want 1", s.RolloutPlans.Len())
+	}
+	applyCmd(t, f, 6, &pb.Command{
 		Payload: &pb.Command_DeploymentDelete{DeploymentDelete: &pb.DeploymentDelete{Deployment: "sample"}},
 	})
 	if s.ReplicasDesired.Len() != 0 {
@@ -283,6 +304,12 @@ func TestApply_DeploymentDelete_CascadesReplicasDesired(t *testing.T) {
 	}
 	if s.ReplicasObserved.Len() != 0 {
 		t.Errorf("ReplicasObserved.Len after delete = %d, want 0 (issue #130 cascade)", s.ReplicasObserved.Len())
+	}
+	if s.RestartCounters.Len() != 0 {
+		t.Errorf("RestartCounters.Len after delete = %d, want 0", s.RestartCounters.Len())
+	}
+	if s.RolloutPlans.Len() != 0 {
+		t.Errorf("RolloutPlans.Len after delete = %d, want 0", s.RolloutPlans.Len())
 	}
 }
 
@@ -332,10 +359,27 @@ func TestApply_ReplicaDesiredUpsertAndRemove(t *testing.T) {
 		t.Errorf("RaftIndex = %d, want 1", r.GetRaftIndex())
 	}
 	applyCmd(t, f, 2, &pb.Command{
+		Payload: &pb.Command_ReplicaObservedUpdate{ReplicaObservedUpdate: &pb.ReplicaObservedUpdate{
+			Replica: &pb.ReplicaObserved{Id: "r1", State: pb.ReplicaState_REPLICA_STATE_FAILED},
+		}},
+	})
+	applyCmd(t, f, 3, &pb.Command{
+		Payload: &pb.Command_RestartCounterUpdate{RestartCounterUpdate: &pb.RestartCounterUpdate{
+			ReplicaId: "r1",
+			Action:    pb.RestartCounterUpdate_ACTION_INCREMENT,
+		}},
+	})
+	applyCmd(t, f, 4, &pb.Command{
 		Payload: &pb.Command_ReplicaDesiredRemove{ReplicaDesiredRemove: &pb.ReplicaDesiredRemove{Id: "r1"}},
 	})
 	if s.ReplicasDesired.Len() != 0 {
 		t.Errorf("ReplicasDesired.Len after remove = %d, want 0", s.ReplicasDesired.Len())
+	}
+	if s.ReplicasObserved.Len() != 0 {
+		t.Errorf("ReplicasObserved.Len after remove = %d, want 0", s.ReplicasObserved.Len())
+	}
+	if s.RestartCounters.Len() != 0 {
+		t.Errorf("RestartCounters.Len after remove = %d, want 0", s.RestartCounters.Len())
 	}
 }
 
@@ -736,4 +780,3 @@ func timestampOf(sec int64) *timestamppb.Timestamp {
 }
 
 var _ = state.SubnetKey
-

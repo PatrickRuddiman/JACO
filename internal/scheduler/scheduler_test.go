@@ -42,6 +42,23 @@ const sampleCompose = `services:
     image: api:1.0
 `
 
+const multiServiceCompose = `services:
+  web:
+    image: nginx:1.27
+  legacy-web:
+    image: nginx:1.26
+`
+
+const webOnlyCompose = `services:
+  web:
+    image: nginx:1.27
+`
+
+const legacyOnlyCompose = `services:
+  legacy-web:
+    image: nginx:1.27
+`
+
 // fakeLeader lets tests flip leadership on/off.
 type fakeLeader struct{ leader bool }
 
@@ -102,6 +119,33 @@ func seedDeployment(t *testing.T, f *fsm.FSM, name string, replicas int32, compo
 	}}
 	data, _ := proto.Marshal(cmd)
 	f.Apply(&hraft.Log{Index: *raftIdx, Data: data})
+}
+
+func applyDeploymentRevision(
+	t *testing.T,
+	f *fsm.FSM,
+	raftIdx *uint64,
+	revision uint64,
+	composeYAML string,
+	services ...*pb.ServiceSpec,
+) {
+	t.Helper()
+	*raftIdx++
+	cmd := &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_DeploymentApply{
+		DeploymentApply: &pb.DeploymentApply{
+			Deployment:  "sample",
+			Revision:    revision,
+			ComposeYaml: []byte(composeYAML),
+			Services:    services,
+		},
+	}}
+	data, err := proto.Marshal(cmd)
+	if err != nil {
+		t.Fatalf("marshal DeploymentApply: %v", err)
+	}
+	if result := f.Apply(&hraft.Log{Index: *raftIdx, Data: data}); result != nil {
+		t.Fatalf("apply DeploymentApply: %v", result)
+	}
 }
 
 // seedDeploymentGlobal writes a Deployment whose single "web" service uses
@@ -543,6 +587,137 @@ func TestReconcile_RemovesReplicasWhenScalingDown(t *testing.T) {
 	s.Reconcile(context.Background())
 	if got := st.ReplicasDesired.Len(); got != 1 {
 		t.Errorf("after scale-down, ReplicasDesired = %d, want 1", got)
+	}
+}
+
+func TestRepro_RemovedServiceDesiredReplicaIsDeleted(t *testing.T) {
+	s, st, f, _ := newScheduler(t, true)
+	var raftIdx uint64
+	seedNode(t, f, "node-a", &raftIdx)
+
+	applyDeploymentRevision(t, f, &raftIdx, 1, multiServiceCompose,
+		&pb.ServiceSpec{Name: "web", Replicas: 1, Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD},
+		&pb.ServiceSpec{Name: "legacy-web", Replicas: 1, Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD},
+	)
+	s.Reconcile(context.Background())
+
+	if _, ok := st.ReplicasDesired.Get("sample-legacy-web-0"); !ok {
+		t.Fatal("precondition: legacy service replica was not created")
+	}
+
+	applyDeploymentRevision(t, f, &raftIdx, 2, webOnlyCompose,
+		&pb.ServiceSpec{Name: "web", Replicas: 1, Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD},
+	)
+	s.Reconcile(context.Background())
+
+	if replica, ok := st.ReplicasDesired.Get("sample-legacy-web-0"); ok {
+		t.Fatalf("removed service remains desired: id=%s service=%s", replica.GetId(), replica.GetService())
+	}
+}
+
+func TestReconcile_RemovedServiceCleansTerminalObservation(t *testing.T) {
+	s, st, f, _ := newScheduler(t, true)
+	var raftIdx uint64
+	seedNode(t, f, "node-a", &raftIdx)
+
+	applyDeploymentRevision(t, f, &raftIdx, 1, multiServiceCompose,
+		&pb.ServiceSpec{Name: "web", Replicas: 1, Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD},
+		&pb.ServiceSpec{Name: "legacy-web", Replicas: 1, Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD},
+	)
+	s.Reconcile(context.Background())
+
+	raftIdx++
+	cmd := &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_ReplicaObservedUpdate{
+		ReplicaObservedUpdate: &pb.ReplicaObservedUpdate{Replica: &pb.ReplicaObserved{
+			Id:      "sample-legacy-web-0",
+			State:   pb.ReplicaState_REPLICA_STATE_FAILED,
+			Code:    "restart_exhausted",
+			Message: "restart policy exhausted",
+		}},
+	}}
+	data, _ := proto.Marshal(cmd)
+	f.Apply(&hraft.Log{Index: raftIdx, Data: data})
+
+	applyDeploymentRevision(t, f, &raftIdx, 2, webOnlyCompose,
+		&pb.ServiceSpec{Name: "web", Replicas: 1, Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD},
+	)
+	s.Reconcile(context.Background())
+
+	if _, ok := st.ReplicasObserved.Get("sample-legacy-web-0"); ok {
+		t.Fatal("terminal observation remains after its service was removed")
+	}
+}
+
+func TestReconcile_ServiceRenamePrunesOldReplicaAndRolloutPlan(t *testing.T) {
+	s, st, f, _ := newScheduler(t, true)
+	var raftIdx uint64
+	seedNode(t, f, "node-a", &raftIdx)
+
+	applyDeploymentRevision(t, f, &raftIdx, 1, legacyOnlyCompose,
+		&pb.ServiceSpec{Name: "legacy-web", Replicas: 1, Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD},
+	)
+	s.Reconcile(context.Background())
+
+	raftIdx++
+	cmd := &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_RolloutPlanUpdate{
+		RolloutPlanUpdate: &pb.RolloutPlanUpdate{Plan: &pb.RolloutPlan{
+			Deployment: "sample",
+			Service:    "legacy-web",
+			State:      pb.RolloutState_ROLLOUT_STATE_IN_PROGRESS,
+		}},
+	}}
+	data, _ := proto.Marshal(cmd)
+	f.Apply(&hraft.Log{Index: raftIdx, Data: data})
+
+	applyDeploymentRevision(t, f, &raftIdx, 2, webOnlyCompose,
+		&pb.ServiceSpec{Name: "web", Replicas: 1, Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD},
+	)
+	s.Reconcile(context.Background())
+
+	if _, ok := st.ReplicasDesired.Get("sample-legacy-web-0"); ok {
+		t.Error("old service replica remains desired after rename")
+	}
+	if _, ok := st.ReplicasDesired.Get("sample-web-0"); !ok {
+		t.Error("renamed service replica was not created")
+	}
+	if _, ok := st.RolloutPlans.Get(state.RolloutPlanKey("sample", "legacy-web")); ok {
+		t.Error("old service rollout plan remains after rename")
+	}
+}
+
+func TestReconcile_RemovedServiceCleanupIsIdempotent(t *testing.T) {
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	f := fsm.New(st, brokers)
+	var raftIdx uint64
+	var applyCount int
+	applier := func(data []byte) error {
+		raftIdx++
+		applyCount++
+		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
+		return nil
+	}
+	s := scheduler.New(st, brokers, &fakeLeader{leader: true}, applier, nil)
+	seedNode(t, f, "node-a", &raftIdx)
+
+	applyDeploymentRevision(t, f, &raftIdx, 1, multiServiceCompose,
+		&pb.ServiceSpec{Name: "web", Replicas: 1, Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD},
+		&pb.ServiceSpec{Name: "legacy-web", Replicas: 1, Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD},
+	)
+	s.Reconcile(context.Background())
+
+	applyDeploymentRevision(t, f, &raftIdx, 2, webOnlyCompose,
+		&pb.ServiceSpec{Name: "web", Replicas: 1, Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD},
+	)
+	s.Reconcile(context.Background())
+	if _, ok := st.ReplicasDesired.Get("sample-legacy-web-0"); ok {
+		t.Fatal("removed service remains desired after cleanup")
+	}
+
+	afterCleanup := applyCount
+	s.Reconcile(context.Background())
+	if applyCount != afterCleanup {
+		t.Fatalf("second reconcile issued %d additional raft applies, want 0", applyCount-afterCleanup)
 	}
 }
 

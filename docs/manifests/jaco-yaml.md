@@ -1,6 +1,8 @@
 ---
 sources:
+  - internal/controlplane/fsm/fsm.go
   - internal/controlplane/grpc/jaco_spec.go
+  - internal/scheduler/scheduler.go
   - proto/jaco/v1/entities.proto
 ---
 
@@ -311,6 +313,28 @@ in this order:
 
 Every compose service produces a ServiceSpec, even without a matching
 jaco entry. The merged set is what the scheduler and the runtime see.
+
+## Revision replacement semantics
+
+Each successful apply replaces the deployment's resolved service set;
+JACO does not merge it with the previous revision. Because the compose
+file defines that set, omitting a service only from the optional
+`jaco.yaml` `services:` list does not retire it. Remove the service from
+the compose file and remove any override or route that still names it.
+
+On the next scheduler reconciliation, every desired replica belonging
+to a service absent from the new revision is removed. The FSM also
+removes the replica's observed state and restart counter, and the
+runtime that owns the replica stops and removes its container. This
+does not depend on whether the replica is running, pending, or failed.
+An in-progress rollout plan for the retired service is discarded when
+the revision is applied, so it cannot later time out and roll back the
+deployment.
+
+Renaming a compose service has the same semantics as removing the old
+name and adding the new one. By contrast, `replicas: 0` keeps the
+service in the revision and intentionally preserves the deployment and
+route configuration while running no containers.
 
 ## Cross-file validation
 

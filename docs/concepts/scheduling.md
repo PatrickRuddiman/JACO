@@ -2,6 +2,7 @@
 sources:
   - internal/scheduler/
   - internal/scheduler/rebalance/
+  - internal/controlplane/fsm/fsm.go
   - internal/runtime/cgroupv2/
   - internal/runtime/reconciler/
   - internal/runtime/pull/
@@ -63,6 +64,28 @@ Replicas are named `<deployment>-<service>-<index>` for `spread`,
 `global`, ids are `<deployment>-<service>-<host>`: hostname-keyed so a
 node's replica id survives membership churn. All forms are stable,
 sortable, and grep-friendly in logs.
+
+## Removing or renaming a service
+
+The resolved service list in each deployment revision is a replace-set.
+Before reconciling the services that remain, the scheduler compares that
+list with every `ReplicaDesired` owned by the deployment. A desired
+replica whose service is absent is removed in the same raft batch as the
+rest of the reconcile pass. The runtime receives the removal event and
+stops and removes the owning container.
+
+Desired-state removal also clears the matching `ReplicaObserved` and
+`RestartCounter`, including a terminal `restart_exhausted` observation.
+The FSM prunes an absent service's `RolloutPlan` as soon as the revision
+is applied, before rollout timeout processing can act on it. The
+per-service `ReplicaCounter` is intentionally retained so a later
+service with the same name does not reuse old replica indexes.
+
+The cleanup is state-independent and idempotent: running, pending, and
+failed replicas follow the same path, and a later safety tick emits no
+additional work. Renaming a service is handled as removal of the old
+name plus normal placement of the new name. Scaling down a service that
+still exists continues to use the per-service replica diff.
 
 ## Rolling updates
 
@@ -176,7 +199,9 @@ aborts with `pending: drain_timeout`.
 
 1. Snapshot current state from in-memory typed stores (Deployments,
    healthy Nodes, ReplicaDesired, ReplicaObserved).
-2. For each `Deployment.service`:
+2. For each deployment, remove `ReplicaDesired` entries whose service is
+   absent from the current revision.
+3. For each `Deployment.service`:
    a. Compute the desired replica set
       `D = {(id, host) for i in 0..replicas-1}` via placement.
    b. Diff against current `ReplicaDesired` for that service: adds,
@@ -187,7 +212,7 @@ aborts with `pending: drain_timeout`.
       step's replica reports `running` with recent health; advance to
       `current_step + 1`; complete when `current_step ==
       total_steps`.
-3. Submit all required mutations as one batched raft `Apply` so the
+4. Submit all required mutations as one batched raft `Apply` so the
    apply-to-steady-state stays under the 15 s bar.
 
 ## Per-service spec hash (drift detection)
@@ -314,9 +339,11 @@ exclusions:
 - **`placement: global`** replicas are never moved — daemonsets are
   one-per-host by definition and migration would double-place them
   on the target.
-- A replica whose **deployment / service spec is missing** (deleted
-  out from under it) is treated as having no anti-affinity
-  constraint — the rebalancer can still move it if a dst exists.
+- A replica whose **deployment / service spec is briefly missing**
+  before the placement reconcile removes it is treated as having no
+  anti-affinity constraint. The rebalancer can still move it during
+  that race, but the placement reconcile removes it rather than
+  preserving it.
 
 ### Scoring
 
