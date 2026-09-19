@@ -110,6 +110,7 @@ func (c *clusterServer) Init(_ context.Context, req *pb.ClusterInitRequest) (*pb
 		BindAddr:            bindAddr,
 		AdvertiseAddr:       advertiseAddr,
 		ListenAdvertiseAddr: c.server.TCPAdvertiseAddr(),
+		Keys:                c.server.keys,
 	})
 	if err != nil {
 		if errors.Is(err, errRaftExists) || isRaftExistsErr(err) {
@@ -209,15 +210,22 @@ func (c *clusterServer) Join(ctx context.Context, req *pb.ClusterJoinRequest) (*
 	// other node) to dial back via Internal.Submit. Resolved at startup by
 	// cmd/jacod via netdetect when listen_addr is unspecified; falls back
 	// to the bound address when explicit.
-	resp, err := pb.NewClusterClient(conn).NodeJoin(dialCtx, &pb.NodeJoinRequest{
+	joinRequest := &pb.NodeJoinRequest{
 		Name:          hostname,
 		JoinToken:     req.GetJoinToken(),
 		CsrPem:        csrPEM,
 		AdvertiseAddr: advertise,
 		GrpcAddress:   grpcAdvertise,
-	})
+	}
+	if err := c.server.keys.SignJoinRequest(joinRequest); err != nil {
+		return nil, status.Error(codes.Internal, "state_key_proof_failed")
+	}
+	resp, err := pb.NewClusterClient(conn).NodeJoin(dialCtx, joinRequest)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "node join rpc: %v", err)
+	}
+	if err := c.server.keys.VerifyJoinResponse(joinRequest, resp); err != nil {
+		return nil, status.Error(codes.PermissionDenied, "state_key_mismatch: enrollment response did not authenticate")
 	}
 
 	if err := persistJoin(c.dataDir, hostname, advertise, keyPEM, resp); err != nil {

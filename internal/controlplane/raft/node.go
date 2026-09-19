@@ -7,6 +7,7 @@
 package raftnode
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	hraft "github.com/hashicorp/raft"
 	boltdb "github.com/hashicorp/raft-boltdb/v2"
 
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/seal"
 	"github.com/PatrickRuddiman/jaco/internal/logging"
 )
 
@@ -35,6 +37,7 @@ type Config struct {
 	LocalID       string
 	Bootstrap     bool
 	FSM           hraft.FSM
+	Keys          *seal.Keyring
 	LogOutput     io.Writer
 	// Logger logs leadership transitions (INFO) and Apply commit errors
 	// (ERROR). nil → discard. The daemon passes a subsystem=raft logger.
@@ -49,12 +52,13 @@ type Node struct {
 	transport hraft.Transport
 	logger    *slog.Logger
 	stopCh    chan struct{}
+	keys      *seal.Keyring
 }
 
 // New constructs and starts a raft node. If cfg.Bootstrap is true the node
 // bootstraps a single-voter cluster (itself); otherwise it starts as a
 // follower expecting an existing cluster.
-func New(cfg Config) (*Node, error) {
+func New(cfg Config) (_ *Node, resultErr error) {
 	if cfg.FSM == nil {
 		return nil, fmt.Errorf("config: FSM is required")
 	}
@@ -67,6 +71,16 @@ func New(cfg Config) (*Node, error) {
 	if cfg.BindAddr == "" {
 		return nil, fmt.Errorf("config: BindAddr is required")
 	}
+	if cfg.Keys == nil {
+		return nil, fmt.Errorf("config: independently provisioned state encryption Keys are required")
+	}
+	if err := seal.ValidateRaftDataDir(cfg.DataDir, cfg.Keys); err != nil {
+		return nil, err
+	}
+	protectedFSM, err := seal.WrapFSM(cfg.FSM, cfg.Keys)
+	if err != nil {
+		return nil, err
+	}
 
 	logOut := cfg.LogOutput
 	if logOut == nil {
@@ -78,14 +92,40 @@ func New(cfg Config) (*Node, error) {
 		return nil, fmt.Errorf("mkdir raft data dir: %w", err)
 	}
 
-	store, err := boltdb.NewBoltStore(filepath.Join(raftDir, "log.db"))
+	logPath := filepath.Join(raftDir, "log.db")
+	_, statErr := os.Stat(logPath)
+	fresh := errors.Is(statErr, os.ErrNotExist)
+	if statErr != nil && !fresh {
+		return nil, fmt.Errorf("stat raft log: %w", statErr)
+	}
+	store, err := boltdb.NewBoltStore(logPath)
 	if err != nil {
 		return nil, fmt.Errorf("bolt store: %w", err)
 	}
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, store.Close())
+		}
+	}()
+	if fresh {
+		if err := cfg.Keys.MarkFreshStore(store); err != nil {
+			return nil, fmt.Errorf("mark encrypted raft store: %w", err)
+		}
+	} else if err := cfg.Keys.CheckStore(store); err != nil {
+		return nil, err
+	}
+	logs, err := seal.WrapLogs(store, cfg.Keys)
+	if err != nil {
+		return nil, fmt.Errorf("authenticate raft logs: %w", err)
+	}
 
-	snaps, err := hraft.NewFileSnapshotStore(raftDir, 3, logOut)
+	rawSnapshots, err := hraft.NewFileSnapshotStore(raftDir, 3, logOut)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot store: %w", err)
+	}
+	snaps, err := seal.WrapSnapshots(rawSnapshots, cfg.Keys)
+	if err != nil {
+		return nil, fmt.Errorf("authenticate raft snapshots: %w", err)
 	}
 
 	var advertise net.Addr
@@ -100,6 +140,11 @@ func New(cfg Config) (*Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tcp transport: %w", err)
 	}
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, trans.Close())
+		}
+	}()
 
 	raftCfg := hraft.DefaultConfig()
 	raftCfg.LocalID = hraft.ServerID(cfg.LocalID)
@@ -111,10 +156,15 @@ func New(cfg Config) (*Node, error) {
 	raftCfg.SnapshotThreshold = 8192
 	raftCfg.LogOutput = logOut
 
-	r, err := hraft.NewRaft(raftCfg, cfg.FSM, store, store, snaps, trans)
+	r, err := hraft.NewRaft(raftCfg, protectedFSM, logs, store, snaps, trans)
 	if err != nil {
 		return nil, fmt.Errorf("new raft: %w", err)
 	}
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, r.Shutdown().Error())
+		}
+	}()
 
 	if cfg.Bootstrap {
 		bc := hraft.Configuration{
@@ -140,6 +190,7 @@ func New(cfg Config) (*Node, error) {
 		transport: trans,
 		logger:    logger,
 		stopCh:    make(chan struct{}),
+		keys:      cfg.Keys,
 	}
 	go n.watchLeadership()
 	return n, nil
@@ -173,7 +224,11 @@ func (n *Node) Apply(cmd []byte, timeout time.Duration) (uint64, error) {
 	if timeout == 0 {
 		timeout = 5 * time.Second
 	}
-	f := n.Raft.Apply(cmd, timeout)
+	encrypted, err := n.keys.Seal(seal.CommandPurpose, cmd)
+	if err != nil {
+		return 0, err
+	}
+	f := n.Raft.Apply(encrypted, timeout)
 	if err := f.Error(); err != nil {
 		// ErrNotLeader is an expected control-flow signal (followers forward to
 		// the leader), so it stays at DEBUG; everything else is a genuine
@@ -185,8 +240,14 @@ func (n *Node) Apply(cmd []byte, timeout time.Duration) (uint64, error) {
 		}
 		return 0, err
 	}
+	if err, ok := f.Response().(error); ok {
+		n.logger.Error("raft FSM apply failed", "error", err)
+		return 0, err
+	}
 	return f.Index(), nil
 }
+
+func (n *Node) StateKeys() *seal.Keyring { return n.keys }
 
 // Leader returns the current leader's transport address, or empty if unknown.
 func (n *Node) Leader() hraft.ServerAddress {

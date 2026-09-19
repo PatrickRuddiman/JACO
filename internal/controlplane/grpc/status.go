@@ -6,23 +6,39 @@ import (
 	"encoding/pem"
 	"strings"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/admission"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
 // Status returns a snapshot of the (filtered) deployment(s), their observed
 // replicas, and their routes. Reads from local state; no leader required so
 // the CLI can hit any node.
-func (d *deployServer) Status(_ context.Context, req *pb.DeployStatusRequest) (*pb.DeployStatusResponse, error) {
+func (d *deployServer) Status(ctx context.Context, req *pb.DeployStatusRequest) (*pb.DeployStatusResponse, error) {
 	depFilter := req.GetDeploymentFilter()
 	svcFilter := req.GetServiceFilter()
+	if req.GetIncludeSecrets() {
+		identity := admission.IdentityFromContext(ctx)
+		token, ok := d.state.Tokens.Get(identity)
+		if identity == "" || (identity != admission.LocalIdentity && (!ok || token.GetRevokedAt() != nil)) {
+			return nil, errorStatus(codes.PermissionDenied, "operator_required", "secret export requires authenticated operator admission")
+		}
+		if depFilter == "" || svcFilter != "" {
+			return nil, errorStatus(codes.InvalidArgument, "deployment_required", "secret export requires one deployment_filter and no service_filter")
+		}
+	}
 
 	resp := &pb.DeployStatusResponse{}
 
 	for _, dep := range d.state.Deployments.List() {
 		if depFilter != "" && dep.GetName() != depFilter {
 			continue
+		}
+		if !req.GetIncludeSecrets() {
+			dep = redactDeployment(dep)
 		}
 		resp.Deployments = append(resp.Deployments, dep)
 	}
@@ -190,6 +206,17 @@ func (d *deployServer) Status(_ context.Context, req *pb.DeployStatusRequest) (*
 		}
 	}
 	return resp, nil
+}
+
+func redactDeployment(dep *pb.Deployment) *pb.Deployment {
+	if dep == nil {
+		return nil
+	}
+	public := proto.Clone(dep).(*pb.Deployment)
+	public.JacoYaml = nil
+	public.ComposeYaml = nil
+	public.ProtoReflect().SetUnknown(nil)
+	return public
 }
 
 // envFromCertKey classifies a certmagic blob key as "staging" or "prod"

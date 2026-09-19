@@ -3,13 +3,6 @@
 GO  ?= go
 BIN ?= jaco
 
-# Skipped test: TestExportImport_RoundTripPreservesBootstrapToken
-# has a known snapshot-rename timestamp-collision flake — the
-# underlying fix lives in a separate task. The skip flag is shared
-# between the local `make ci-test` target and the CI workflow so
-# results match.
-CI_TEST_SKIP := ^TestExportImport_RoundTripPreservesBootstrapToken$
-
 build:
 	$(GO) build -o $(BIN) ./cmd/jaco
 
@@ -19,7 +12,7 @@ test:
 # ci-test mirrors the test command run by .github/workflows/ci.yml so
 # devs can reproduce the CI signal locally before pushing.
 ci-test:
-	$(GO) test -race -coverprofile=coverage.out -skip '$(CI_TEST_SKIP)' ./...
+	$(GO) test -race -coverprofile=coverage.out ./...
 
 # test-isolation runs the privileged 3-node end-to-end isolation rig
 # (scripts/test/isolation-rig.sh). The rig requires CAP_NET_ADMIN +

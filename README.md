@@ -30,11 +30,17 @@ and `linux/arm64`, plus a `SHA256SUMS` manifest.
 Pick the snippet that matches your distro and swap `<arch>` for either
 `amd64` or `arm64`.
 
+Before starting a daemon, provision the same external state-encryption
+keyring on every member. See [key provisioning and offline migration](docs/operations/state-encryption.md).
+Missing keys and legacy plaintext state fail closed; this format transition
+is not a rolling upgrade.
+
 ### Debian / Ubuntu
 
 ```sh
 curl -fsSL -O https://github.com/PatrickRuddiman/JACO/releases/latest/download/jaco_<arch>.deb
 sudo dpkg -i jaco_<arch>.deb
+# Provision external state keys/service credentials before starting.
 sudo systemctl enable --now jaco
 ```
 
@@ -43,6 +49,7 @@ sudo systemctl enable --now jaco
 ```sh
 curl -fsSL -O https://github.com/PatrickRuddiman/JACO/releases/latest/download/jaco_<arch>.rpm
 sudo rpm -i jaco_<arch>.rpm        # or `sudo dnf install ./jaco_<arch>.rpm`
+# Provision external state keys/service credentials before starting.
 sudo systemctl enable --now jaco
 ```
 
@@ -68,6 +75,7 @@ sudo install -d -m 0755 /etc/jaco
 sudo install -m 0644 jacod.yaml /etc/jaco/jacod.yaml
 sudo install -m 0644 jaco.service /lib/systemd/system/jaco.service
 sudo systemctl daemon-reload
+# Provision external state keys/service credentials before starting.
 sudo systemctl enable --now jaco
 ```
 
@@ -91,7 +99,7 @@ After install, the layout is:
 - `/lib/systemd/system/jaco.service` — the systemd unit (daemon-reload
   runs automatically on package install).
 
-The daemon comes up in the uninitialized state — every RPC except
+With external keys provisioned, a fresh daemon comes up in the uninitialized state — every RPC except
 `Cluster.{Init,Join,Status}` returns `cluster_uninitialized` until one
 of those two transitions runs.
 

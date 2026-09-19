@@ -17,6 +17,7 @@ require (
 	github.com/miekg/dns v1.1.72
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/spf13/cobra v1.10.2
+	go.etcd.io/bbolt v1.4.3
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
 	google.golang.org/grpc v1.81.1
 	google.golang.org/protobuf v1.36.11
@@ -154,7 +155,6 @@ require (
 	github.com/yuin/goldmark v1.8.2 // indirect
 	github.com/yuin/goldmark-highlighting/v2 v2.0.0-20230729083705-37449abec8cc // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
-	go.etcd.io/bbolt v1.4.3 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/bridges/prometheus v0.68.0 // indirect
 	go.opentelemetry.io/contrib/exporters/autoexport v0.65.0 // indirect

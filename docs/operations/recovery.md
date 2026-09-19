@@ -73,16 +73,23 @@ Action:
 Symptoms: every node is gone (hardware loss, region outage). You
 have a backup.
 
+The independently retained state keyring is also required. Encrypted
+artifacts are unrecoverable without their wrapping keys; a CA certificate or
+operator token cannot replace them. See [state encryption](state-encryption.md)
+for key custody, legacy archive conversion and recovery drills.
+
 Action:
 
 1. Provision a fresh host, install JACO at a version compatible with
-   the backup.
+   the backup, and independently provision its matching external state
+   keyring.
 2. `sudo systemctl stop jaco` if the daemon auto-started.
-3. `sudo jaco restore --input <backup>.tar.gz --name $(hostname)`.
+3. `sudo jaco restore --input <backup>.tar.gz --name $(hostname) --key-file <external-keyring>`.
 4. `sudo systemctl start jaco`.
 5. `jaco cluster status` should show the restored cluster id, a
    single voter, and the deployments from the backup.
-6. Provision and join the remaining nodes via
+6. Independently provision the identical complete keyring on the remaining
+   nodes and join them via
    `jaco node issue-join-token` + `jaco node join`.
 7. Wait for `jaco node list` to report every node `READY`. Verify
    deployments converge: `jaco status -w`.

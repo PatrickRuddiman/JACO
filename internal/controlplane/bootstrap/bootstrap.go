@@ -22,6 +22,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/ca"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/fsm"
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/seal"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	"github.com/PatrickRuddiman/jaco/internal/daemon/netdetect"
@@ -33,6 +34,7 @@ type Options struct {
 	DataDir  string
 	Name     string
 	BindAddr string // raft transport bind; "" defaults to 127.0.0.1:0
+	Keys     *seal.Keyring
 	// AdvertiseAddr is the host:port peers will dial to reach this node's
 	// raft transport. Required when BindAddr is unspecified (0.0.0.0); when
 	// empty, raft derives advertise from BindAddr — fine for tests that
@@ -63,6 +65,12 @@ func Run(opts Options) (*Result, error) {
 	}
 	if opts.DataDir == "" {
 		return nil, fmt.Errorf("DataDir is required")
+	}
+	if opts.Keys == nil {
+		return nil, fmt.Errorf("independently provisioned state encryption Keys are required")
+	}
+	if err := seal.ValidateRaftDataDir(opts.DataDir, opts.Keys); err != nil {
+		return nil, err
 	}
 	if opts.BindAddr == "" {
 		opts.BindAddr = "127.0.0.1:0"
@@ -154,6 +162,7 @@ func Run(opts Options) (*Result, error) {
 		LocalID:       opts.Name,
 		Bootstrap:     true,
 		FSM:           f,
+		Keys:          opts.Keys,
 		LogOutput:     opts.LogOut,
 	})
 	if err != nil {

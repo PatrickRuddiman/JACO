@@ -50,6 +50,9 @@ func (c *clusterServer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*p
 	if exp := tok.GetExpiresAt(); exp != nil && exp.AsTime().Before(time.Now()) {
 		return nil, status.Error(codes.PermissionDenied, "join_token_expired")
 	}
+	if err := r.StateKeys().VerifyJoinRequest(req); err != nil {
+		return nil, status.Error(codes.PermissionDenied, "state_key_mismatch: provision the identical complete state keyring before joining")
+	}
 
 	meta := st.Cluster.Get()
 	if meta == nil || len(meta.GetCaCert()) == 0 || len(meta.GetCaKey()) == 0 {
@@ -140,10 +143,14 @@ func (c *clusterServer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*p
 		peerAddrs = append(peerAddrs, a)
 	}
 
-	return &pb.NodeJoinResponse{
+	resp := &pb.NodeJoinResponse{
 		ClusterId:  meta.GetClusterId(),
 		SignedCert: signedCertPEM,
 		CaCert:     meta.GetCaCert(),
 		PeerAddrs:  peerAddrs,
-	}, nil
+	}
+	if err := r.StateKeys().SignJoinResponse(req, resp); err != nil {
+		return nil, status.Error(codes.Internal, "state_key_proof_failed")
+	}
+	return resp, nil
 }

@@ -60,6 +60,7 @@ status flips to `superseded by ADR XXXX` — but the file stays.
 |---|---|---|---|
 | [0002](0002-pressure-based-scheduling.md) | Pressure-based scheduling and migration | proposed | #92 |
 | [0003](0003-orchestrator-comparison-benchmark.md) | Orchestrator comparison benchmark | proposed | #51 |
+| [0004](0004-external-state-encryption.md) | External-key state encryption and offline migration | proposed | Audit finding 2 |
 
 ADR 0001 (volume migration via stop-ship-start) was withdrawn during
 design review; see #135 for the replacement direction (remote-mounted

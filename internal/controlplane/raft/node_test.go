@@ -8,12 +8,13 @@ import (
 	hraft "github.com/hashicorp/raft"
 
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
+	"github.com/PatrickRuddiman/jaco/internal/testutil"
 )
 
 // noopFSM does nothing; sufficient for verifying that Apply returns indices.
 type noopFSM struct{}
 
-func (noopFSM) Apply(*hraft.Log) interface{}        { return nil }
+func (noopFSM) Apply(*hraft.Log) interface{}         { return nil }
 func (noopFSM) Snapshot() (hraft.FSMSnapshot, error) { return noopSnapshot{}, nil }
 func (noopFSM) Restore(io.ReadCloser) error          { return nil }
 
@@ -48,6 +49,7 @@ func TestNew_RequiredFields(t *testing.T) {
 
 func TestBootstrapSingleNodeAndApply(t *testing.T) {
 	n, err := raftnode.New(raftnode.Config{
+		Keys:      testutil.StateKeys(t),
 		DataDir:   t.TempDir(),
 		BindAddr:  "127.0.0.1:0",
 		LocalID:   "node-a",
@@ -82,6 +84,7 @@ func TestBootstrapSingleNodeAndApply(t *testing.T) {
 
 func TestApplyDefaultTimeout(t *testing.T) {
 	n, err := raftnode.New(raftnode.Config{
+		Keys:      testutil.StateKeys(t),
 		DataDir:   t.TempDir(),
 		BindAddr:  "127.0.0.1:0",
 		LocalID:   "node-a",

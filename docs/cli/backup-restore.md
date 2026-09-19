@@ -46,6 +46,14 @@ The snapshot is consistent at a single raft commit index, so the
 restored cluster will reflect every deployment committed before that
 index and none committed after.
 
+### Content encryption
+
+Schema-2 archives contain an authenticated encrypted `snapshot.bin`.
+Its envelope also authenticates `meta.json`; wrapping keys are never
+included. Export does not require handing the daemon's keyring to the
+CLI. Restore does require independent access to the matching external keys.
+See [state encryption and legacy conversion](../operations/state-encryption.md).
+
 ### Exit codes
 
 - `0` — backup written.
@@ -64,6 +72,7 @@ jaco backup --server $LEADER --output cluster-$(date +%F).tar.gz
 
 ```
 sudo jaco restore --input <file> --name <hostname>
+                  [--key-file <external-keyring>] [--data-dir <fresh-directory>]
 ```
 
 ### Flags
@@ -72,6 +81,8 @@ sudo jaco restore --input <file> --name <hostname>
 |-----------------------|-------------------------------|-----------------------------------------------|
 | `--input <file>`      | — (required)                  | backup tarball                                |
 | `--name <s>`          | — (required)                  | hostname / raft local-id for this node        |
+| `--key-file <path>`   | environment/service credential | independently provisioned external state keyring |
+| `--data-dir <path>`   | `JACO_DATA_DIR` or `/var/lib/jaco` | fresh destination; existing artifacts are not overwritten |
 
 `JACO_DATA_DIR` overrides the target data directory (default
 `/var/lib/jaco`).
@@ -83,10 +94,16 @@ the daemon. Run as root on the receiving host with `jacod` **stopped**.
 
 ### Behavior
 
-Primes the data directory from the backup: validates the metadata
-against the daemon's version, seeds a fresh raft store from
-`snapshot.bin`, and writes a marker so the daemon emits a
-`RESTORE_COMPLETED` audit event on its first boot.
+Authenticates metadata and snapshot before writing state, checks the
+version, and seeds a fresh encrypted Raft store. It retains local
+restoration metadata in `restore.txt`; this is not an automatic audit-event
+emission.
+
+Missing/wrong keys and tampering fail closed. Schema-1 plaintext archives
+must first be explicitly converted with `jaco state reencrypt-backup
+--allow-legacy-plaintext`; restore never silently accepts them. Failed
+filesystem copies retain an incomplete-state guard and cannot be started.
+The daemon must receive the same complete keyring before restart.
 
 After restore, start the daemon and confirm the cluster comes up as a
 single voter:
@@ -107,7 +124,8 @@ Additional nodes rejoin via the usual `jaco node join` flow.
 
 ```sh
 sudo systemctl stop jaco
-sudo jaco restore --input cluster-2026-05-25.tar.gz --name $(hostname)
+sudo jaco restore --input cluster-2026-05-25.tar.gz --name $(hostname) \
+  --key-file /etc/jaco/keys/cluster-v1.json
 sudo systemctl start jaco
 jaco cluster status
 ```
@@ -116,4 +134,5 @@ jaco cluster status
 
 - [Backups walkthrough](../operations/backups.md)
 - [Recovery](../operations/recovery.md)
+- [State encryption, key custody and migration](../operations/state-encryption.md)
 - [`jaco cluster init`](cluster.md)

@@ -52,8 +52,8 @@ func (w *watchServer) Subscribe(req *pb.SubscribeRequest, stream pb.Watch_Subscr
 			func(ev watch.Event[*pb.Deployment]) *pb.SubscribeEvent {
 				return &pb.SubscribeEvent{Payload: &pb.SubscribeEvent_Deployment{Deployment: &pb.DeploymentEvent{
 					Kind:      kindToProto(ev.Kind),
-					Before:    ev.Before,
-					After:     ev.After,
+					Before:    redactDeployment(ev.Before),
+					After:     redactDeployment(ev.After),
 					RaftIndex: ev.RaftIndex,
 				}}}
 			})

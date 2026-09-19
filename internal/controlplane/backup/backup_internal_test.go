@@ -5,6 +5,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"testing"
+
+	"github.com/PatrickRuddiman/jaco/internal/testutil"
+	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestMajor_StripsAfterFirstDot — drives both branches.
@@ -102,20 +106,17 @@ func TestUntar_RejectsCorruptGzip(t *testing.T) {
 // TestReadMeta_ParsesEmbeddedMeta — round-trips an archive's meta.json
 // without touching disk.
 func TestReadMeta_ParsesEmbeddedMeta(t *testing.T) {
-	const metaJSON = `{"schema_version":1,"cluster_id":"cx","snapshot_index":42,"snapshot_term":3,"jaco_version":"0.0.1","taken_at":"2025-01-01T00:00:00Z","leader_at_snapshot":"leader-1"}`
+	input := Meta{SchemaVersion: 2, ClusterID: "cx", SnapshotIndex: 42, SnapshotTerm: 3, JacoVersion: "0.0.1"}
 	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gz)
-	if err := writeTarFile(tw, "meta.json", []byte(metaJSON)); err != nil {
+	snapshot, err := proto.Marshal(&pb.FSMSnapshot{Cluster: &pb.ClusterMeta{ClusterId: "cx"}})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writeTarFile(tw, "snapshot.bin", []byte("snap")); err != nil {
+	if err := writeArchive(&buf, input, snapshot, testutil.StateKeys(t)); err != nil {
 		t.Fatal(err)
 	}
-	tw.Close()
-	gz.Close()
 
-	meta, err := ReadMeta(&buf)
+	meta, err := ReadMeta(&buf, testutil.StateKeys(t))
 	if err != nil {
 		t.Fatalf("ReadMeta: %v", err)
 	}
@@ -138,7 +139,7 @@ func TestReadMeta_RejectsMalformedJSON(t *testing.T) {
 	}
 	tw.Close()
 	gz.Close()
-	if _, err := ReadMeta(&buf); err == nil {
+	if _, err := ReadMeta(&buf, testutil.StateKeys(t)); err == nil {
 		t.Errorf("ReadMeta on malformed JSON returned nil err")
 	}
 }

@@ -38,13 +38,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      # TestExportImport_RoundTripPreservesBootstrapToken has a known
-      # snapshot-rename timestamp-collision flake (two snapshots created
-      # in the same wall-clock second collide on the renamed path). The
-      # underlying fix lives in a separate task; until then we skip it
-      # in CI to keep the signal clean.
       - name: go test
-        run: go test -race -coverprofile=coverage.out -skip '^TestExportImport_RoundTripPreservesBootstrapToken$' ./...
+        run: go test -race -coverprofile=coverage.out ./...
       - name: upload coverage
         uses: actions/upload-artifact@v4
         with:

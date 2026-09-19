@@ -18,6 +18,14 @@ jaco/
 
 From the operator host, with the testbed already deployed:
 
+First independently provision the identical owner-only
+`/etc/jaco/state-keys.json` on every testbed node. Follow the
+[state-key provisioning guide](../../../docs/operations/state-encryption.md).
+The bootstrap refuses to proceed without it; it does not generate or transfer
+wrapping keys. The installer delivers that root-readable file to the non-root
+daemon through a systemd credential. Existing plaintext testbeds require the
+same offline migration as other clusters.
+
 ```sh
 # nodes resolved from Azure (RESOURCE_GROUP + VM_NAME_PREFIX), or pass them:
 export BENCH_PUBLIC_IPS="<n1-pub> <n2-pub> <n3-pub>"   # node-1 first

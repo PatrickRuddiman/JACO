@@ -20,6 +20,9 @@ import (
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
+	"github.com/PatrickRuddiman/jaco/internal/testutil"
+	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 func freePort(t *testing.T) string {
@@ -96,6 +99,7 @@ func TestExportImport_RoundTripPreservesBootstrapToken(t *testing.T) {
 	aRaftAddr := freePort(t)
 	_, err := bootstrap.Run(bootstrap.Options{
 		DataDir:  aDir,
+		Keys:     testutil.StateKeys(t),
 		Name:     "node-a",
 		BindAddr: aRaftAddr,
 	})
@@ -110,6 +114,7 @@ func TestExportImport_RoundTripPreservesBootstrapToken(t *testing.T) {
 	fsmA := fsm.New(stA, brokersA)
 	rA, err := raftnode.New(raftnode.Config{
 		DataDir: aDir, BindAddr: aRaftAddr, LocalID: "node-a",
+		Keys:      testutil.StateKeys(t),
 		Bootstrap: false, FSM: fsmA, LogOutput: io.Discard,
 	})
 	if err != nil {
@@ -164,7 +169,7 @@ func TestExportImport_RoundTripPreservesBootstrapToken(t *testing.T) {
 	}
 
 	// 5. Inspect meta via the public reader.
-	meta, err := backup.ReadMeta(bytes.NewReader(tarBytes))
+	meta, err := backup.ReadMeta(bytes.NewReader(tarBytes), testutil.StateKeys(t))
 	if err != nil {
 		t.Fatalf("ReadMeta: %v", err)
 	}
@@ -174,14 +179,15 @@ func TestExportImport_RoundTripPreservesBootstrapToken(t *testing.T) {
 	if meta.SnapshotIndex == 0 {
 		t.Errorf("meta.snapshot_index = 0; expected non-zero post-bootstrap")
 	}
-	if meta.SchemaVersion != 1 {
-		t.Errorf("meta.schema_version = %d, want 1", meta.SchemaVersion)
+	if meta.SchemaVersion != 2 {
+		t.Errorf("meta.schema_version = %d, want 2", meta.SchemaVersion)
 	}
 
 	// 6. Import into a fresh data dir.
 	bDir := t.TempDir()
 	if err := backup.Import(backup.ImportOptions{
 		DataDir:     bDir,
+		Keys:        testutil.StateKeys(t),
 		Reader:      bytes.NewReader(tarBytes),
 		LocalID:     "node-a",
 		JacoVersion: "0.0.1-dev",
@@ -189,8 +195,7 @@ func TestExportImport_RoundTripPreservesBootstrapToken(t *testing.T) {
 		t.Fatalf("Import: %v", err)
 	}
 
-	// The restore.txt marker must be present so the daemon can emit
-	// RESTORE_COMPLETED on first boot (task 17).
+	// Preserve the local restoration metadata.
 	markerPath := filepath.Join(bDir, "restore.txt")
 	if _, err := os.Stat(markerPath); err != nil {
 		t.Errorf("restore.txt marker missing: %v", err)
@@ -203,6 +208,7 @@ func TestExportImport_RoundTripPreservesBootstrapToken(t *testing.T) {
 	bRaftAddr := freePort(t)
 	rB, err := raftnode.New(raftnode.Config{
 		DataDir: bDir, BindAddr: bRaftAddr, LocalID: "node-a",
+		Keys:      testutil.StateKeys(t),
 		Bootstrap: false, FSM: fsmB, LogOutput: io.Discard,
 	})
 	if err != nil {
@@ -234,6 +240,7 @@ func TestImport_RefusesExistingState(t *testing.T) {
 	}
 	err := backup.Import(backup.ImportOptions{
 		DataDir: dir,
+		Keys:    testutil.StateKeys(t),
 		Reader:  fakeTarball(t),
 		LocalID: "node-x",
 	})
@@ -264,6 +271,7 @@ func TestImport_RejectsSchemaMismatch(t *testing.T) {
 		DataDir: t.TempDir(),
 		Reader:  &buf,
 		LocalID: "node-x",
+		Keys:    testutil.StateKeys(t),
 	})
 	if err == nil {
 		t.Fatalf("expected schema mismatch error")
@@ -287,6 +295,7 @@ func TestImport_RejectsMissingEntries(t *testing.T) {
 		DataDir: t.TempDir(),
 		Reader:  &buf,
 		LocalID: "node-x",
+		Keys:    testutil.StateKeys(t),
 	})
 	if err == nil {
 		t.Fatalf("expected missing-snapshot error")
@@ -339,12 +348,22 @@ func fakeTarball(t *testing.T) io.Reader {
 		t.Fatal(err)
 	}
 	tw.Write(meta)
-	snap := []byte{}
+	snap, err := proto.Marshal(&pb.FSMSnapshot{Cluster: &pb.ClusterMeta{ClusterId: "x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := tw.WriteHeader(&tar.Header{Name: "snapshot.bin", Size: int64(len(snap))}); err != nil {
 		t.Fatal(err)
 	}
 	tw.Write(snap)
 	tw.Close()
 	gz.Close()
-	return &buf
+	var encrypted bytes.Buffer
+	if err := backup.Reencrypt(backup.ReencryptOptions{
+		Reader: &buf, Writer: &encrypted, SourceKeys: testutil.StateKeys(t),
+		TargetKeys: testutil.StateKeys(t), AllowLegacyPlaintext: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return &encrypted
 }

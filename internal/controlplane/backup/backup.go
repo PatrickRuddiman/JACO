@@ -1,21 +1,20 @@
 // Package backup implements Export (write a raft snapshot + metadata tarball)
 // and Import (untar + seed a fresh raft data dir) so a JACO cluster can be
-// reproduced on a new node from a single tar.gz file.
+// reproduced from an encrypted tar.gz and an independently held keyring.
 //
 // Export is called against a live raft node. Import operates on disk: it
-// preps a data dir that `jaco serve` can boot via hashicorp/raft's normal
-// snapshot-restore path; restore.txt is the marker the daemon entry (task 17)
-// reads to emit RESTORE_COMPLETED on first boot.
+// preps a data dir that jacod can boot via hashicorp/raft's normal
+// snapshot-restore path.
 package backup
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -26,6 +25,7 @@ import (
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/fsm"
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/seal"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	"github.com/PatrickRuddiman/jaco/internal/logging"
@@ -36,7 +36,7 @@ import (
 
 // schemaVersion identifies the on-disk backup format. Bump on any breaking
 // change to meta.json shape or snapshot encoding.
-const schemaVersion = 1
+const schemaVersion = 2
 
 // Meta is the JSON written as meta.json inside the tarball.
 type Meta struct {
@@ -102,29 +102,13 @@ func Export(opts ExportOptions) error {
 		TakenAt:          time.Now().UTC().Format(time.RFC3339),
 		LeaderAtSnapshot: string(opts.Raft.Leader()),
 	}
-	metaBytes, err := json.MarshalIndent(meta, "", "  ")
+	plain, err := opts.Raft.StateKeys().Open(seal.SnapshotPurpose, snapshotBytes)
 	if err != nil {
-		return fmt.Errorf("marshal meta: %w", err)
+		return fmt.Errorf("authenticate exported snapshot: %w", err)
 	}
-
-	gz := gzip.NewWriter(opts.Writer)
-	tw := tar.NewWriter(gz)
-	if err := writeTarFile(tw, "meta.json", metaBytes); err != nil {
-		_ = tw.Close()
-		_ = gz.Close()
+	defer clear(plain)
+	if err := writeArchive(opts.Writer, meta, plain, opts.Raft.StateKeys()); err != nil {
 		return err
-	}
-	if err := writeTarFile(tw, "snapshot.bin", snapshotBytes); err != nil {
-		_ = tw.Close()
-		_ = gz.Close()
-		return err
-	}
-	if err := tw.Close(); err != nil {
-		_ = gz.Close()
-		return fmt.Errorf("close tar: %w", err)
-	}
-	if err := gz.Close(); err != nil {
-		return fmt.Errorf("close gzip: %w", err)
 	}
 
 	// BACKUP_TAKEN audit event — best-effort. Failure to write the audit
@@ -158,16 +142,16 @@ type ImportOptions struct {
 	Reader      io.Reader
 	LocalID     string // hostname / raft local-id for the restoring node
 	JacoVersion string // running binary version for compatibility check
+	Keys        *seal.Keyring
 	// Logger logs restore start/finish at INFO (with bytes-written). nil →
 	// discard.
 	Logger *slog.Logger
 }
 
 // Import untars opts.Reader, validates meta.json's schema_version, primes a
-// fresh raft store at ${DataDir}/raft/ that will boot via RecoverCluster on
-// next `jaco serve`, and writes ${DataDir}/restore.txt as a marker for the
-// daemon to emit RESTORE_COMPLETED on first FSM apply.
-func Import(opts ImportOptions) error {
+// fresh encrypted Raft store at ${DataDir}/raft/ with RecoverCluster, and
+// writes ${DataDir}/restore.txt as local restoration metadata.
+func Import(opts ImportOptions) (resultErr error) {
 	if opts.DataDir == "" {
 		return fmt.Errorf("DataDir is required")
 	}
@@ -177,53 +161,56 @@ func Import(opts ImportOptions) error {
 	if opts.LocalID == "" {
 		return fmt.Errorf("LocalID is required")
 	}
+	if opts.Keys == nil {
+		return fmt.Errorf("external state encryption Keys are required")
+	}
 	logger := opts.Logger
 	if logger == nil {
 		logger = logging.Discard()
 	}
 	logger.Info("backup restore started", "data_dir", opts.DataDir, logging.KeyNode, opts.LocalID)
 
-	metaBytes, snapshotBytes, err := untar(opts.Reader)
+	meta, plain, err := readArchive(opts.Reader, opts.Keys, false)
 	if err != nil {
 		return err
 	}
-
-	var meta Meta
-	if err := json.Unmarshal(metaBytes, &meta); err != nil {
-		return fmt.Errorf("parse meta.json: %w", err)
-	}
-	if meta.SchemaVersion != schemaVersion {
-		return fmt.Errorf("backup schema_version %d != running %d", meta.SchemaVersion, schemaVersion)
-	}
+	defer clear(plain)
 	if !majorVersionsCompatible(meta.JacoVersion, opts.JacoVersion) {
 		return fmt.Errorf("backup jaco_version %q is incompatible with running %q", meta.JacoVersion, opts.JacoVersion)
 	}
 
+	snapshotBytes, err := opts.Keys.Seal(seal.SnapshotPurpose, plain)
+	if err != nil {
+		return err
+	}
+	if err := seal.BeginCopy(opts.DataDir, false); err != nil {
+		return err
+	}
 	raftDir := filepath.Join(opts.DataDir, "raft")
-	if err := os.MkdirAll(raftDir, 0o700); err != nil {
-		return fmt.Errorf("mkdir raft dir: %w", err)
-	}
-
-	// Refuse to overwrite an existing log store — the operator must point at
-	// a fresh data dir for restore.
-	if _, err := os.Stat(filepath.Join(raftDir, "log.db")); err == nil {
-		return fmt.Errorf("raft state already exists at %s; refusing to overwrite", raftDir)
-	}
-
 	logStore, err := boltdb.NewBoltStore(filepath.Join(raftDir, "log.db"))
 	if err != nil {
 		return fmt.Errorf("bolt store: %w", err)
 	}
-	defer logStore.Close()
-
-	snapStore, err := hraft.NewFileSnapshotStore(raftDir, 3, io.Discard)
+	defer func() {
+		if logStore != nil {
+			resultErr = errors.Join(resultErr, logStore.Close())
+		}
+	}()
+	logs, err := seal.WrapLogs(logStore, opts.Keys)
 	if err != nil {
-		return fmt.Errorf("file snapshot store: %w", err)
+		return err
+	}
+	// Recover in memory, then publish one disk snapshot. Creating both an
+	// input and a recovered file snapshot can collide on Raft's millisecond ID.
+	snapStore, err := seal.WrapSnapshots(hraft.NewInmemSnapshotStore(), opts.Keys)
+	if err != nil {
+		return err
 	}
 
-	// In-memory transport is sufficient for RecoverCluster — no network needed
-	// during recovery; the real TCP transport binds when `jaco serve` runs.
+	// In-memory transport is sufficient for recovery; jacod binds the network
+	// transport only when it starts against the completed state.
 	_, transport := hraft.NewInmemTransport(hraft.ServerAddress(opts.LocalID))
+	defer func() { resultErr = errors.Join(resultErr, transport.Close()) }()
 
 	configuration := hraft.Configuration{
 		Servers: []hraft.Server{{
@@ -247,25 +234,75 @@ func Import(opts ImportOptions) error {
 	}
 
 	// Spin up a throwaway FSM for RecoverCluster; the daemon's real FSM
-	// reloads the snapshot through FSM.Restore when `jaco serve` starts.
+	// reloads the snapshot through FSM.Restore when jacod starts.
 	brokers := watch.NewRegistry()
 	st := state.New(brokers)
-	recoveryFSM := fsm.New(st, brokers)
+	recoveryFSM, err := seal.WrapFSM(fsm.New(st, brokers), opts.Keys)
+	if err != nil {
+		return err
+	}
 
 	raftCfg := hraft.DefaultConfig()
 	raftCfg.LocalID = hraft.ServerID(opts.LocalID)
 	raftCfg.LogOutput = io.Discard
 
-	if err := hraft.RecoverCluster(raftCfg, recoveryFSM, logStore, logStore, snapStore, transport, configuration); err != nil {
+	if err := hraft.RecoverCluster(raftCfg, recoveryFSM, logs, logStore, snapStore, transport, configuration); err != nil {
 		return fmt.Errorf("RecoverCluster: %w", err)
 	}
 
-	// Marker for the daemon's first-boot audit emission.
+	recovered, err := snapStore.List()
+	if err != nil {
+		return err
+	}
+	if len(recovered) != 1 {
+		return errors.New("recovery did not produce exactly one snapshot")
+	}
+	recoveredMeta, reader, err := snapStore.Open(recovered[0].ID)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+	rawDisk, err := hraft.NewFileSnapshotStore(raftDir, 3, io.Discard)
+	if err != nil {
+		return err
+	}
+	diskSnapshots, err := seal.WrapSnapshots(rawDisk, opts.Keys)
+	if err != nil {
+		return err
+	}
+	diskSink, err := diskSnapshots.Create(recoveredMeta.Version, recoveredMeta.Index, recoveredMeta.Term,
+		recoveredMeta.Configuration, recoveredMeta.ConfigurationIndex, transport)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(diskSink, reader); err != nil {
+		return errors.Join(err, diskSink.Cancel())
+	}
+	if err := diskSink.Close(); err != nil {
+		return err
+	}
+	if err := logStore.SetUint64([]byte("CurrentTerm"), recoveredMeta.Term); err != nil {
+		return err
+	}
+	if err := opts.Keys.MarkFreshStore(logStore); err != nil {
+		return err
+	}
+	if err := seal.ValidateSnapshots(raftDir, opts.Keys); err != nil {
+		return err
+	}
 	markerPath := filepath.Join(opts.DataDir, "restore.txt")
 	markerContents := fmt.Sprintf("cluster_id=%s\nsnapshot_index=%d\ntaken_at=%s\nimported_at=%s\n",
 		meta.ClusterID, meta.SnapshotIndex, meta.TakenAt, time.Now().UTC().Format(time.RFC3339))
-	if err := os.WriteFile(markerPath, []byte(markerContents), 0o600); err != nil {
+	if err := seal.WriteFreshFile(markerPath, []byte(markerContents)); err != nil {
 		return fmt.Errorf("write restore marker: %w", err)
+	}
+	err = logStore.Close()
+	logStore = nil
+	if err != nil {
+		return err
+	}
+	if err := seal.FinishCopy(opts.DataDir); err != nil {
+		return err
 	}
 	logger.Info("backup restore finished",
 		"cluster_id", meta.ClusterID, "snapshot_index", meta.SnapshotIndex, "bytes", len(snapshotBytes))
@@ -275,16 +312,10 @@ func Import(opts ImportOptions) error {
 // ReadMeta untars opts.Reader and returns just the meta.json content,
 // without committing anything to disk. Useful for the CLI's `--dry-run` style
 // inspection (not exercised in v1 but cheap to expose).
-func ReadMeta(r io.Reader) (Meta, error) {
-	metaBytes, _, err := untar(r)
-	if err != nil {
-		return Meta{}, err
-	}
-	var meta Meta
-	if err := json.Unmarshal(metaBytes, &meta); err != nil {
-		return Meta{}, fmt.Errorf("parse meta.json: %w", err)
-	}
-	return meta, nil
+func ReadMeta(r io.Reader, keys *seal.Keyring) (Meta, error) {
+	meta, plain, err := readArchive(r, keys, false)
+	clear(plain)
+	return meta, err
 }
 
 func writeTarFile(tw *tar.Writer, name string, body []byte) error {
@@ -317,6 +348,12 @@ func untar(r io.Reader) (metaBytes, snapshotBytes []byte, err error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("tar next: %w", err)
 		}
+		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
+			return nil, nil, fmt.Errorf("backup entry %s must be a regular file", hdr.Name)
+		}
+		if (hdr.Name == "meta.json" && metaBytes != nil) || (hdr.Name == "snapshot.bin" && snapshotBytes != nil) {
+			return nil, nil, fmt.Errorf("duplicate backup entry: %s", hdr.Name)
+		}
 		buf, err := io.ReadAll(tr)
 		if err != nil {
 			return nil, nil, fmt.Errorf("tar read %s: %w", hdr.Name, err)
@@ -335,6 +372,13 @@ func untar(r io.Reader) (metaBytes, snapshotBytes []byte, err error) {
 	}
 	if snapshotBytes == nil {
 		return nil, nil, fmt.Errorf("backup is missing snapshot.bin")
+	}
+	trailing, err := io.ReadAll(gz)
+	if err != nil {
+		return nil, nil, fmt.Errorf("backup gzip checksum/trailer: %w", err)
+	}
+	if len(bytes.Trim(trailing, "\x00")) != 0 {
+		return nil, nil, errors.New("backup has unexpected trailing data")
 	}
 	return metaBytes, snapshotBytes, nil
 }

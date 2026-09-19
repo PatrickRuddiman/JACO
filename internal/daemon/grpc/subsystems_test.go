@@ -23,6 +23,7 @@ import (
 
 	dgrpc "github.com/PatrickRuddiman/jaco/internal/daemon/grpc"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
+	"github.com/PatrickRuddiman/jaco/internal/testutil"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -103,6 +104,7 @@ func TestSubsystems_RuntimeReconcilerCreatesContainerEndToEnd(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "jacod.sock")
 	s, err := dgrpc.New(dgrpc.Options{
 		UnixSocketPath: sock,
+		Keys:           testutil.StateKeys(t),
 		DataDir:        t.TempDir(),
 		Hostname:       "test-host",
 		ClusterAddr:    freePort(t),
