@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sync"
 	"time"
 
@@ -159,12 +160,28 @@ func (s *Scheduler) Reconcile(_ context.Context) {
 		if abortedThisTick[dep.GetName()] {
 			continue
 		}
+		deploymentConverged := true
+		blockedReason := ""
 		project, err := compose.LoadBytes(dep.GetComposeYaml(), "deploy-compose.yml")
 		if err != nil {
 			// Mark Deployment pending so the operator can see the failure
 			// in `jaco status`.
-			batch = append(batch, s.markDeploymentPending(dep.GetName(),
-				fmt.Sprintf("compose parse failed: %v", err)))
+			reason := fmt.Sprintf("compose parse failed: %v", err)
+			details := map[string]string{"reason": reason}
+			if dep.GetStatus() != pb.DeploymentStatus_DEPLOYMENT_STATUS_PENDING ||
+				!maps.Equal(dep.GetStatusDetails(), details) {
+				s.log().Warn("deployment scheduling blocked",
+					"deployment", dep.GetName(), "reason", reason)
+				batch = append(batch, &pb.Command{
+					Identity: "scheduler",
+					Ts:       timestamppb.Now(),
+					Payload: &pb.Command_DeploymentStatusUpdate{DeploymentStatusUpdate: &pb.DeploymentStatusUpdate{
+						Deployment: dep.GetName(),
+						Status:     pb.DeploymentStatus_DEPLOYMENT_STATUS_PENDING,
+						Details:    details,
+					}},
+				})
+			}
 			continue
 		}
 		currentServices := make(map[string]struct{}, len(dep.GetServices()))
@@ -199,12 +216,53 @@ func (s *Scheduler) Reconcile(_ context.Context) {
 			// malformed compose never lands in raft with a zero hash.
 			specHash, err := compose.ServiceSpecHash(dep.GetComposeYaml(), svc.GetName())
 			if err != nil {
-				batch = append(batch, s.markDeploymentPending(dep.GetName(),
-					fmt.Sprintf("service %q spec hash failed: %v", svc.GetName(), err)))
+				if blockedReason == "" {
+					blockedReason = fmt.Sprintf("service %q spec hash failed: %v", svc.GetName(), err)
+				}
+				deploymentConverged = false
 				continue
 			}
-			cmds := s.reconcileService(dep, svc, nodes, project, specHash)
+			cmds, reason, converged := s.reconcileService(dep, svc, nodes, project, specHash)
+			if blockedReason == "" {
+				blockedReason = reason
+			}
+			deploymentConverged = deploymentConverged && converged
 			batch = append(batch, cmds...)
+		}
+		if blockedReason != "" {
+			details := map[string]string{"reason": blockedReason}
+			if dep.GetStatus() != pb.DeploymentStatus_DEPLOYMENT_STATUS_PENDING ||
+				!maps.Equal(dep.GetStatusDetails(), details) {
+				s.log().Warn("deployment scheduling blocked",
+					"deployment", dep.GetName(), "reason", blockedReason)
+				batch = append(batch, &pb.Command{
+					Identity: "scheduler",
+					Ts:       timestamppb.Now(),
+					Payload: &pb.Command_DeploymentStatusUpdate{DeploymentStatusUpdate: &pb.DeploymentStatusUpdate{
+						Deployment: dep.GetName(),
+						Status:     pb.DeploymentStatus_DEPLOYMENT_STATUS_PENDING,
+						Details:    details,
+					}},
+				})
+			}
+			continue
+		}
+		status := pb.DeploymentStatus_DEPLOYMENT_STATUS_PENDING
+		details := map[string]string{"reason": "waiting for desired replicas to converge"}
+		if deploymentConverged {
+			status = pb.DeploymentStatus_DEPLOYMENT_STATUS_ACTIVE
+			details = nil
+		}
+		if dep.GetStatus() != status || !maps.Equal(dep.GetStatusDetails(), details) {
+			batch = append(batch, &pb.Command{
+				Identity: "scheduler",
+				Ts:       timestamppb.Now(),
+				Payload: &pb.Command_DeploymentStatusUpdate{DeploymentStatusUpdate: &pb.DeploymentStatusUpdate{
+					Deployment: dep.GetName(),
+					Status:     status,
+					Details:    details,
+				}},
+			})
 		}
 	}
 
@@ -230,12 +288,12 @@ func (s *Scheduler) Reconcile(_ context.Context) {
 
 // reconcileService computes the diff between current and desired
 // ReplicaDesired for one service. Returns the Command list (may be empty
-// when current already matches desired).
-func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, nodes []*pb.Node, project *composeProject, specHash []byte) []*pb.Command {
+// when current already matches desired), any scheduling-block reason, and
+// whether every target replica has a matching RUNNING observation.
+func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, nodes []*pb.Node, project *composeProject, specHash []byte) ([]*pb.Command, string, bool) {
 	image := lookupImage(project, svc.GetName())
 	if image == "" {
-		return []*pb.Command{s.markDeploymentPending(dep.GetName(),
-			fmt.Sprintf("service %q not found in compose project", svc.GetName()))}
+		return nil, fmt.Sprintf("service %q not found in compose project", svc.GetName()), false
 	}
 
 	eligible := placement.EligibleHosts(svc, nodes)
@@ -289,7 +347,7 @@ func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, no
 			if err != nil {
 				// Pinned-host placement failure → DeploymentStatusUpdate
 				// pending, place no replicas for this service this pass.
-				return []*pb.Command{s.markDeploymentPending(dep.GetName(), err.Error())}
+				return nil, err.Error(), false
 			}
 			desired = append(desired, desiredReplica{
 				id:    counter.ReplicaID(dep.GetName(), svc.GetName(), uint64(i)),
@@ -344,10 +402,12 @@ func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, no
 		}
 	}
 	desiredIDs := map[string]bool{}
+	converged := true
 	for _, d := range desired {
 		desiredIDs[d.id] = true
 		host := d.host
-		if cur, ok := currentByID[d.id]; ok {
+		cur, exists := currentByID[d.id]
+		if exists {
 			if stickyHost := stickyExistingHost(cur, svc, eligibleSet, hostsSet); stickyHost != "" {
 				host = stickyHost
 			}
@@ -361,15 +421,21 @@ func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, no
 			Image:      image,
 			SpecHash:   specHash,
 		}
-		if cur, ok := currentByID[d.id]; ok {
-			// Drift gate: Host/Image AND the per-service spec hash all
-			// match → no upsert (issue #148). The hash captures env values
-			// and every other compose field, so an env-only edit reliably
-			// trips this gate and the runtime reconciler recreates the
-			// container on the next tick.
-			if cur.GetHost() == host && cur.GetImage() == image && bytes.Equal(cur.GetSpecHash(), specHash) {
-				continue // already matches desired
+		// The current desired record and its observation must both match
+		// before this target contributes to deployment convergence.
+		matchesDesired := exists &&
+			cur.GetHost() == host &&
+			cur.GetImage() == image &&
+			bytes.Equal(cur.GetSpecHash(), specHash)
+		if matchesDesired {
+			observed, ok := s.state.ReplicasObserved.Get(d.id)
+			if !ok || observed.GetState() != pb.ReplicaState_REPLICA_STATE_RUNNING {
+				converged = false
 			}
+			continue
+		}
+		converged = false
+		if exists {
 			// Image-only change while rolling — gate by either the
 			// rollout-driven CurrentStep (when rollouts != nil) or the
 			// iter-29 one-at-a-time fallback (when nil).
@@ -407,7 +473,7 @@ func (s *Scheduler) reconcileService(dep *pb.Deployment, svc *pb.ServiceSpec, no
 		})
 	}
 
-	return cmds
+	return cmds, "", converged
 }
 
 // driveRollout returns the replica index the current reconcile pass
@@ -521,22 +587,4 @@ func stickyExistingHost(cur *pb.ReplicaDesired, svc *pb.ServiceSpec, eligibleSet
 		}
 	}
 	return h
-}
-
-// markDeploymentPending builds a Command that flips a Deployment into
-// status=PENDING with the reason populated in details, and logs the
-// transition so the cause is visible in the daemon log too — not just in
-// `jaco status`. Scheduling-blocked deployments were previously silent on
-// this path, so an unschedulable placement left no trace anywhere.
-func (s *Scheduler) markDeploymentPending(name, reason string) *pb.Command {
-	s.log().Warn("deployment scheduling blocked", "deployment", name, "reason", reason)
-	return &pb.Command{
-		Identity: "scheduler",
-		Ts:       timestamppb.Now(),
-		Payload: &pb.Command_DeploymentStatusUpdate{DeploymentStatusUpdate: &pb.DeploymentStatusUpdate{
-			Deployment: name,
-			Status:     pb.DeploymentStatus_DEPLOYMENT_STATUS_PENDING,
-			Details:    map[string]string{"reason": reason},
-		}},
-	}
 }
