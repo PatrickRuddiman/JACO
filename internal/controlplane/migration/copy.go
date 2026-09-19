@@ -199,14 +199,13 @@ func Copy(opts Options) (Report, error) {
 	return report, nil
 }
 
-func databaseInventory(path string) ([]uint64, map[string][]byte, error) {
+func databaseInventory(path string) (indices []uint64, stable map[string][]byte, resultErr error) {
 	db, err := bbolt.Open(path, 0o600, &bbolt.Options{ReadOnly: true, Timeout: time.Second})
 	if err != nil {
 		return nil, nil, err
 	}
-	defer db.Close()
-	var indices []uint64
-	stable := make(map[string][]byte)
+	defer func() { resultErr = errors.Join(resultErr, db.Close()) }()
+	stable = make(map[string][]byte)
 	err = db.View(func(tx *bbolt.Tx) error {
 		if err := tx.Bucket([]byte("logs")).ForEach(func(key, value []byte) error {
 			if len(key) != 8 || value == nil || binary.BigEndian.Uint64(key) == 0 {

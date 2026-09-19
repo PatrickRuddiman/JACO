@@ -210,7 +210,7 @@ func Import(opts ImportOptions) (resultErr error) {
 	// In-memory transport is sufficient for recovery; jacod binds the network
 	// transport only when it starts against the completed state.
 	_, transport := hraft.NewInmemTransport(hraft.ServerAddress(opts.LocalID))
-	defer transport.Close()
+	defer func() { resultErr = errors.Join(resultErr, transport.Close()) }()
 
 	configuration := hraft.Configuration{
 		Servers: []hraft.Server{{
