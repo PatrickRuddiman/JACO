@@ -41,11 +41,10 @@ func (t *tlsTransport) SetHeartbeatHandler(handle func(hraft.RPC)) {
 }
 
 func (t *tlsTransport) Close() error {
-	err := t.NetworkTransport.Close()
 	// Fast-path heartbeats run outside Raft's shutdown wait group.
 	t.heartbeatMu.Lock()
-	t.heartbeatMu.Unlock()
-	return err
+	defer t.heartbeatMu.Unlock()
+	return t.NetworkTransport.Close()
 }
 
 func loadNodeTLS(dataDir, localID string) (*tls.Config, error) {
