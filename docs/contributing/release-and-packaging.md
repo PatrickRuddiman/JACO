@@ -20,6 +20,37 @@ in [`.github/workflows/release.yml`](../../.github/workflows/release.yml);
 the packaging recipe is [`nfpm.yaml`](../../nfpm.yaml); the local
 preview path is `make package` / `make release`.
 
+## Release compiler
+
+`go.mod` requires **Go 1.27.1**, a supported stable release containing
+the `crypto/tls` fix for
+[GO-2026-6090 / CVE-2026-56862](https://pkg.go.dev/vuln/GO-2026-6090).
+The release workflow selects this compiler via `go-version-file: go.mod`
+for both `linux/amd64` and `linux/arm64`. The `go build` commands in
+`Makefile` and `build/release.sh` enforce the same minimum; no separate
+compiler pin is needed in the packaging recipe.
+
+For an exact local reproduction, use `GOTOOLCHAIN=go1.27.1 make package`
+or `GOTOOLCHAIN=go1.27.1 make release`. Inspect the **built binaries**,
+not just the host's `go version`:
+
+```sh
+go version -m dist/staging/jaco
+go version -m dist/staging/jacod
+```
+
+After `make package`, both headers should report `go1.27.1`; the build
+settings should show `GOOS=linux`, the requested `GOARCH`, and
+`CGO_ENABLED=0`. For tarballs, extract and inspect both executables in
+the same way.
+
+**Existing binaries must be rebuilt and redeployed.** Go's standard
+library is compiled into JACO, so updating Go on a build host or daemon
+host does not patch an already-built executable. Publish new artifacts,
+replace both binaries, and restart each daemon one node at a time.
+Keep the current unsigned-release limitation below in mind when
+choosing the [upgrade path](../operations/upgrades.md).
+
 ## Artifact set per release
 
 For each tag `vX.Y.Z`, the pipeline produces, per `linux/<arch>` in
