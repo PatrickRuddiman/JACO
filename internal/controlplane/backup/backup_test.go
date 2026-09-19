@@ -4,11 +4,16 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/x509"
+	"encoding/pem"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +25,8 @@ import (
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
+	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 func freePort(t *testing.T) string {
@@ -188,6 +195,17 @@ func TestExportImport_RoundTripPreservesBootstrapToken(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Import: %v", err)
 	}
+	originalKey, err := os.ReadFile(filepath.Join(aDir, "node", "node-a.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredKey, err := os.ReadFile(filepath.Join(bDir, "node", "node-a.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(originalKey, restoredKey) {
+		t.Fatal("restore reused the original node private key")
+	}
 
 	// The restore.txt marker must be present so the daemon can emit
 	// RESTORE_COMPLETED on first boot (task 17).
@@ -220,6 +238,113 @@ func TestExportImport_RoundTripPreservesBootstrapToken(t *testing.T) {
 	// Cluster meta should also have survived.
 	if got := stB.Cluster.Get().GetClusterId(); got != clusterID {
 		t.Errorf("restored cluster_id = %q, want %q", got, clusterID)
+	}
+}
+
+func TestImportRejectsUnsafeLocalIdentity(t *testing.T) {
+	for _, id := range []string{".", "..", "../other-node", `..\other-node`} {
+		t.Run(id, func(t *testing.T) {
+			err := backup.Import(backup.ImportOptions{DataDir: t.TempDir(), LocalID: id, Reader: bytes.NewReader(nil)})
+			if err == nil || !strings.Contains(err.Error(), "LocalID") {
+				t.Fatalf("invalid identity was not rejected before restore: %v", err)
+			}
+		})
+	}
+}
+
+func TestImportPreservesOnlyMatchedMemberEndpointIdentities(t *testing.T) {
+	dir, addr := t.TempDir(), freePort(t)
+	if _, err := bootstrap.Run(bootstrap.Options{DataDir: dir, Name: "node-a", BindAddr: addr}); err != nil {
+		t.Fatal(err)
+	}
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	n, err := raftnode.New(raftnode.Config{
+		DataDir: dir, LocalID: "node-a", BindAddr: addr,
+		FSM: fsm.New(st, brokers), LogOutput: io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = n.Shutdown() })
+	waitForLeader(t, n, 10*time.Second)
+	for _, member := range []*pb.NodeJoin{
+		{Hostname: "node-a", GrpcAddress: "grpc-a.example.invalid:7000", Address: "192.0.2.10:7001"},
+		{Hostname: "node-b", GrpcAddress: "[2001:db8::20]:7000", Address: "raft-b.example.invalid:7001"},
+		{Hostname: "legacy"},
+		{Hostname: "wildcard", GrpcAddress: "0.0.0.0:7000", Address: "[::]:7001"},
+		{Hostname: "invalid", GrpcAddress: "*.example.invalid:7000", Address: "http://bad.example.invalid:7001"},
+		{Hostname: "invalid-port", GrpcAddress: "bad-port.example.invalid:0", Address: "other.example.invalid:65536"},
+	} {
+		data, err := proto.Marshal(&pb.Command{Payload: &pb.Command_NodeJoin{NodeJoin: member}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := n.Apply(data, 5*time.Second); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var archive bytes.Buffer
+	if err := backup.Export(backup.ExportOptions{
+		Raft: n, ClusterID: st.Cluster.Get().GetClusterId(), Writer: &archive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		id   string
+		want []string
+		warn bool
+	}{
+		{"node-a", []string{"grpc-a.example.invalid", "192.0.2.10"}, false},
+		{"node-b", []string{"raft-b.example.invalid", "2001:db8::20"}, false},
+		{"replacement", nil, false},
+		{"NODE-A", nil, false},
+		{"legacy", nil, false},
+		{"wildcard", nil, true},
+		{"invalid", nil, true},
+		{"invalid-port", nil, true},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			restored := t.TempDir()
+			var logs bytes.Buffer
+			if err := backup.Import(backup.ImportOptions{
+				DataDir: restored, LocalID: tc.id, Reader: bytes.NewReader(archive.Bytes()),
+				Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(restored, "node", tc.id+".crt"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			block, _ := pem.Decode(data)
+			if block == nil {
+				t.Fatal("restored node certificate is not PEM")
+			}
+			cert, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, host := range append([]string{tc.id}, tc.want...) {
+				if err := cert.VerifyHostname(host); err != nil {
+					t.Errorf("restored identity missing %q: %v", host, err)
+				}
+			}
+			for _, host := range []string{
+				"grpc-a.example.invalid", "192.0.2.10", "raft-b.example.invalid", "2001:db8::20",
+				"0.0.0.0", "::", "unapproved.example.invalid", "bad-port.example.invalid", "other.example.invalid",
+			} {
+				if slices.Contains(tc.want, host) {
+					continue
+				}
+				if err := cert.VerifyHostname(host); err == nil {
+					t.Errorf("restored identity included an unrelated or invalid endpoint %q", host)
+				}
+			}
+			if tc.warn && !strings.Contains(logs.String(), "ignoring unusable restored node endpoint") {
+				t.Error("unusable stored endpoint was omitted without an operator warning")
+			}
+		})
 	}
 }
 

@@ -1,5 +1,6 @@
 ---
 sources:
+  - internal/controlplane/raft/
   - cmd/jaco/self_upgrade.go
   - internal/packaging/
   - .github/workflows/release.yml
@@ -7,13 +8,18 @@ sources:
 
 # Upgrades
 
-JACO is upgraded **one node at a time** with `jaco self-upgrade`. The
+JACO is normally upgraded **one node at a time** with `jaco self-upgrade`. The
 command verifies the release tarball (minisign signature over
 `SHA256SUMS`, plus SHA-256 of the tarball), atomically swaps both
 binaries, restarts the daemon under systemd, and rolls back on health
 failure.
 
 CLI reference: [`jaco self-upgrade`](../cli/self-upgrade.md).
+
+**Exception: the first upgrade from plaintext Raft to mandatory Raft TLS
+requires a coordinated cutover of every peer.** Do not use the ordinary
+rolling walkthrough for that transition. See
+[Plaintext-to-TLS Raft cutover](#plaintext-to-tls-raft-cutover).
 
 ## Why one node at a time
 
@@ -125,6 +131,77 @@ Rotation requires:
 4. The next release after that is signed with the new key.
 
 See [release and packaging](../contributing/release-and-packaging.md).
+
+## Plaintext-to-TLS Raft cutover
+
+Plaintext Raft and TLS Raft are wire-incompatible. There is no automatic
+downgrade, mixed-mode listener, self-signed Raft bootstrap identity, or
+shared static transport key. TLS-to-TLS upgrades can continue to roll
+normally after this one-time transition.
+
+This is an operator-run maintenance procedure, not an automatic migration:
+
+1. Inventory every voter and nonvoter, its Raft ID/address, and the matching
+   `data_dir/node/<hostname>.crt`, `.key`, and `ca.crt`. Verify the
+   certificates belong to the intended cluster, are valid, and allow
+   server and client authentication. Retain a protected, verified backup
+   and use a trusted management channel to stage the signed release.
+2. Pause control-plane writes and stop `jacod` on **all** peers. Expect a
+   control-plane availability interruption; schedule it explicitly.
+3. Install the TLS-capable release on all peers while keeping their
+   daemons stopped. Preserve Raft logs, snapshots, node identities, and
+   addresses. Do not bootstrap new clusters over existing stores.
+4. Start the upgraded peers, restore a majority, and verify leader
+   election, every follower's applied index/catch-up, and a new replicated
+   write before resuming changes.
+5. If a node reports `raft TLS`, repair its trusted certificate/CA files
+   or identity mismatch. Do not bypass verification. A rollback across
+   this boundary must also be coordinated across the cluster and knowingly
+   reintroduces the old plaintext exposure; never automatically downgrade
+   individual peers to restore connectivity.
+
+The ordinary one-at-a-time `self-upgrade` health check is not a mixed-mode
+compatibility mechanism and must not be relied on for this cutover.
+
+## Raft node certificates
+
+For routine leaf rotation, issue a new per-node keypair and certificate
+under the same trusted cluster CA, keeping the Raft ID in both common
+name and SANs, preserving the node's approved management DNS/IP SANs,
+and retaining server/client authentication usages. Use a trusted PKI
+issuance procedure; this change adds no certificate-reissue CLI. In a
+TLS-only cluster, stop one node while preserving quorum, replace its
+matching `.crt`/`.key` files, protect the private key with mode `0600`,
+then restart it and verify catch-up before advancing to the next node.
+Keep `ca.crt` unchanged for a leaf-only rotation.
+
+New Raft handshakes pick up replacement files, but stopping/restarting
+also retires already-authenticated pooled connections and refreshes the
+gRPC listener. An invalid or partially replaced keypair fails closed.
+Do not wait for all node certificates to expire before rotating them.
+
+There is no online CA-rollover protocol in this change. Replacing one
+node's CA independently partitions trust. CA compromise requires a
+coordinated recovery into a fresh trust domain with newly enrolled nodes,
+not just new leaf certificates signed by the compromised CA. Membership
+removal alone is not certificate revocation.
+
+### Secrets exposed by historical plaintext replication
+
+Enabling TLS does not protect traffic captured before the upgrade.
+An observer positioned on the old Raft path could have obtained resolved
+Compose secrets, registry credentials, cluster CA private material, and
+ACME account/certificate keys from log or snapshot replication. This does
+not imply an arbitrary host can sniff switched LAN traffic.
+
+If exposure is suspected, treat those credentials as compromised: rotate
+application/deployment and registry secrets at their authorities, replace
+the cluster CA and node identities through a coordinated trusted recovery,
+and follow the certificate provider's procedure for ACME account-key
+rollover and certificate reissuance/revocation. Restoring an old backup
+alone preserves its old trust and secrets. Inventory and protect retained
+backups, snapshots, and captures as well; transport TLS does not encrypt
+stored Raft data or backups.
 
 ## See also
 

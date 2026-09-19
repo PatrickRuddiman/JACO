@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net"
+	"slices"
 	"time"
 )
 
@@ -17,6 +18,12 @@ import (
 // itself parses as an IP literal it is also added to IPAddresses so that both
 // dial forms (DNS name and IP address) pass TLS verification.
 func GenerateNodeKeypair(hostname string, ips ...net.IP) (keyPEM, csrPEM []byte, err error) {
+	return GenerateNodeKeypairWithSANs(hostname, nil, ips...)
+}
+
+// GenerateNodeKeypairWithSANs also requests caller-supplied DNS SANs. These
+// names must come from an approved identity scope, not unverified peer input.
+func GenerateNodeKeypairWithSANs(hostname string, dnsNames []string, ips ...net.IP) (keyPEM, csrPEM []byte, err error) {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate ed25519 key: %w", err)
@@ -31,6 +38,14 @@ func GenerateNodeKeypair(hostname string, ips ...net.IP) (keyPEM, csrPEM []byte,
 	csrTemplate := &x509.CertificateRequest{
 		Subject:  pkix.Name{CommonName: hostname},
 		DNSNames: []string{hostname},
+	}
+	for _, name := range dnsNames {
+		if name == "" {
+			return nil, nil, fmt.Errorf("empty node DNS SAN")
+		}
+		if !slices.Contains(csrTemplate.DNSNames, name) {
+			csrTemplate.DNSNames = append(csrTemplate.DNSNames, name)
+		}
 	}
 
 	// Collect IP SANs: explicit caller-supplied IPs first, then the hostname

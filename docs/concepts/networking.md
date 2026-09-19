@@ -1,5 +1,6 @@
 ---
 sources:
+  - internal/controlplane/raft/
   - internal/discovery/bridge/
   - internal/discovery/ipam/
   - internal/discovery/wgmesh/
@@ -24,6 +25,43 @@ nftables ruleset described in [Isolation](isolation.md). This page is
 about the connectivity plane; that page is about the deny plane.
 
 Code lives under [`internal/discovery/`](../../internal/discovery).
+
+## Raft transport and trust
+
+The management-plane Raft listener (`cluster_addr`, normally port 7001)
+encrypts **all** log replication, elections, and install-snapshot/catch-up
+streams with mutual TLS 1.3. Both ends must present a node certificate
+signed by the persisted cluster CA. Node identity is the certificate's
+common name plus matching SAN; outgoing connections additionally verify
+the exact destination Raft server ID. The Raft-specific ALPN protocol is
+`jaco-raft-v1`. Hashicorp's connection pooling, pipelining, RPC timeouts,
+and size-scaled snapshot timeouts remain in use.
+
+The cluster CA is the **node-enrollment authority**. Incoming identities
+are not rejected merely because they are absent from a stale local Raft
+configuration: a freshly joined node has no replicated configuration yet,
+and an offline follower may need to catch up from a leader admitted while
+it was away. Raft still manages voting and replication membership.
+**Removing a Raft member does not revoke its certificate.** JACO's
+replicated-CA architecture trusts enrolled nodes and is not Byzantine
+fault tolerant; this transport does not defend against a compromised
+node holding the cluster CA signing key.
+
+Raft trusts the locally persisted CA, so its initial provisioning must be
+trusted independently. Enrollment and gRPC authentication are separate
+boundaries; the TLS listener on port 7000 does not protect port 7001.
+Likewise, automatic selection of a private management address does not
+prove that address is routed through the container WireGuard mesh.
+Transport protection no longer depends on that assumption.
+
+New connections reload the node certificate, key, and CA from disk and
+reject invalid replacements rather than falling back to an old or
+self-signed identity. Existing encrypted connections are closed on
+shutdown; peer and issuer certificate expiry is checked on subsequent I/O.
+Pooled outbound connections also recheck the destination's current Raft
+identity, so reassigning an address cannot reuse the old identity. Follow
+the [certificate rotation and migration guidance](../operations/upgrades.md#raft-node-certificates)
+to retire pooled connections and update the gRPC listener too.
 
 ## IPAM
 

@@ -1,6 +1,6 @@
 // Package raftnode wires hashicorp/raft with a bolt log store, file snapshot
-// store, and TCP transport. The single exported type is Node; lifecycle is
-// New -> (use Apply / Leader / IsLeader) -> Shutdown.
+// store, and mutually authenticated TLS transport. The exported type is Node;
+// lifecycle is New -> (use Apply / Leader / IsLeader) -> Shutdown.
 //
 // The package name is `raftnode` rather than `raft` so callers can import this
 // alongside `github.com/hashicorp/raft` without an alias.
@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	hraft "github.com/hashicorp/raft"
@@ -21,8 +22,8 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/logging"
 )
 
-// Config holds everything New needs. All fields except LogOutput +
-// AdvertiseAddr are required.
+// Config holds everything New needs. DataDir/node must contain the cluster
+// CA and this LocalID's signed certificate/key before any Raft socket opens.
 type Config struct {
 	DataDir  string
 	BindAddr string
@@ -43,12 +44,14 @@ type Config struct {
 
 // Node owns a running raft.Raft and the stores backing it.
 type Node struct {
-	Raft      *hraft.Raft
-	boltStore *boltdb.BoltStore // concrete handle so Shutdown can release the file lock
-	snapStore hraft.SnapshotStore
-	transport hraft.Transport
-	logger    *slog.Logger
-	stopCh    chan struct{}
+	Raft         *hraft.Raft
+	boltStore    *boltdb.BoltStore // concrete handle so Shutdown can release the file lock
+	snapStore    hraft.SnapshotStore
+	transport    hraft.Transport
+	logger       *slog.Logger
+	stopCh       chan struct{}
+	shutdownOnce sync.Once
+	shutdownErr  error
 }
 
 // New constructs and starts a raft node. If cfg.Bootstrap is true the node
@@ -67,6 +70,9 @@ func New(cfg Config) (*Node, error) {
 	if cfg.BindAddr == "" {
 		return nil, fmt.Errorf("config: BindAddr is required")
 	}
+	if _, err := loadNodeTLS(cfg.DataDir, cfg.LocalID); err != nil {
+		return nil, fmt.Errorf("raft TLS: %w", err)
+	}
 
 	logOut := cfg.LogOutput
 	if logOut == nil {
@@ -82,6 +88,12 @@ func New(cfg Config) (*Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bolt store: %w", err)
 	}
+	started := false
+	defer func() {
+		if !started {
+			_ = store.Close()
+		}
+	}()
 
 	snaps, err := hraft.NewFileSnapshotStore(raftDir, 3, logOut)
 	if err != nil {
@@ -96,10 +108,16 @@ func New(cfg Config) (*Node, error) {
 		}
 		advertise = resolved
 	}
-	trans, err := hraft.NewTCPTransport(cfg.BindAddr, advertise, 3, 10*time.Second, logOut)
+	stream, err := newTLSStream(cfg, advertise)
 	if err != nil {
-		return nil, fmt.Errorf("tcp transport: %w", err)
+		return nil, fmt.Errorf("raft TLS transport: %w", err)
 	}
+	trans := &tlsTransport{NetworkTransport: hraft.NewNetworkTransport(stream, 3, transportTimeout, logOut)}
+	defer func() {
+		if !started {
+			_ = trans.Close()
+		}
+	}()
 
 	raftCfg := hraft.DefaultConfig()
 	raftCfg.LocalID = hraft.ServerID(cfg.LocalID)
@@ -115,6 +133,7 @@ func New(cfg Config) (*Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("new raft: %w", err)
 	}
+	stream.raft.Store(r)
 
 	if cfg.Bootstrap {
 		bc := hraft.Configuration{
@@ -125,6 +144,7 @@ func New(cfg Config) (*Node, error) {
 			}},
 		}
 		if f := r.BootstrapCluster(bc); f.Error() != nil {
+			_ = r.Shutdown().Error()
 			return nil, fmt.Errorf("bootstrap cluster: %w", f.Error())
 		}
 	}
@@ -141,6 +161,7 @@ func New(cfg Config) (*Node, error) {
 		logger:    logger,
 		stopCh:    make(chan struct{}),
 	}
+	started = true
 	go n.watchLeadership()
 	return n, nil
 }
@@ -225,27 +246,19 @@ func (n *Node) LocalAddr() hraft.ServerAddress {
 // Shutdown stops the raft node and releases the bolt log-store file lock so
 // the same data dir can be re-opened immediately after.
 func (n *Node) Shutdown() error {
-	if n.stopCh != nil {
-		select {
-		case <-n.stopCh:
-			// already closed
-		default:
-			close(n.stopCh)
+	n.shutdownOnce.Do(func() {
+		close(n.stopCh)
+		if closer, ok := n.transport.(interface{ Close() error }); ok {
+			n.shutdownErr = closer.Close()
 		}
-	}
-	var firstErr error
-	if f := n.Raft.Shutdown(); f.Error() != nil {
-		firstErr = f.Error()
-	}
-	if n.boltStore != nil {
-		if err := n.boltStore.Close(); err != nil && firstErr == nil {
-			firstErr = err
+		if err := n.Raft.Shutdown().Error(); err != nil && n.shutdownErr == nil {
+			n.shutdownErr = err
 		}
-	}
-	if closer, ok := n.transport.(interface{ Close() error }); ok {
-		if err := closer.Close(); err != nil && firstErr == nil {
-			firstErr = err
+		if n.boltStore != nil {
+			if err := n.boltStore.Close(); err != nil && n.shutdownErr == nil {
+				n.shutdownErr = err
+			}
 		}
-	}
-	return firstErr
+	})
+	return n.shutdownErr
 }

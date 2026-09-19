@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -24,10 +25,12 @@ import (
 	hraft "github.com/hashicorp/raft"
 	boltdb "github.com/hashicorp/raft-boltdb/v2"
 
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/ca"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/fsm"
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
+	"github.com/PatrickRuddiman/jaco/internal/daemon/netdetect"
 	"github.com/PatrickRuddiman/jaco/internal/logging"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 	"google.golang.org/protobuf/proto"
@@ -177,6 +180,9 @@ func Import(opts ImportOptions) error {
 	if opts.LocalID == "" {
 		return fmt.Errorf("LocalID is required")
 	}
+	if opts.LocalID == "." || opts.LocalID == ".." || strings.ContainsAny(opts.LocalID, `/\`) {
+		return fmt.Errorf("LocalID must be a node hostname, not a path")
+	}
 	logger := opts.Logger
 	if logger == nil {
 		logger = logging.Discard()
@@ -222,7 +228,7 @@ func Import(opts ImportOptions) error {
 	}
 
 	// In-memory transport is sufficient for RecoverCluster — no network needed
-	// during recovery; the real TCP transport binds when `jaco serve` runs.
+	// during recovery; the TLS transport binds when `jaco serve` runs.
 	_, transport := hraft.NewInmemTransport(hraft.ServerAddress(opts.LocalID))
 
 	configuration := hraft.Configuration{
@@ -259,6 +265,9 @@ func Import(opts ImportOptions) error {
 	if err := hraft.RecoverCluster(raftCfg, recoveryFSM, logStore, logStore, snapStore, transport, configuration); err != nil {
 		return fmt.Errorf("RecoverCluster: %w", err)
 	}
+	if err := restoreNodeCredentials(opts.DataDir, opts.LocalID, st, logger); err != nil {
+		return fmt.Errorf("restore node credentials: %w", err)
+	}
 
 	// Marker for the daemon's first-boot audit emission.
 	markerPath := filepath.Join(opts.DataDir, "restore.txt")
@@ -270,6 +279,81 @@ func Import(opts ImportOptions) error {
 	logger.Info("backup restore finished",
 		"cluster_id", meta.ClusterID, "snapshot_index", meta.SnapshotIndex, "bytes", len(snapshotBytes))
 	return nil
+}
+
+func restoreNodeCredentials(dataDir, localID string, st *state.State, logger *slog.Logger) error {
+	meta := st.Cluster.Get()
+	if meta == nil || len(meta.GetCaCert()) == 0 || len(meta.GetCaKey()) == 0 {
+		return fmt.Errorf("cluster CA missing from recovered state")
+	}
+	ips := netdetect.LocalIPs()
+	var dnsNames []string
+	// Only this exact member's recovered endpoints authorize extra identities.
+	// Never infer aliases through DNS or from another node in the snapshot.
+	if member, ok := st.Nodes.Get(localID); ok {
+		for _, endpoint := range []struct{ field, address string }{
+			{"grpc_address", member.GetGrpcAddress()},
+			{"address", member.GetAddress()},
+		} {
+			if endpoint.address == "" {
+				continue
+			}
+			host, port, err := net.SplitHostPort(endpoint.address)
+			portNumber, portErr := strconv.ParseUint(port, 10, 16)
+			ip := net.ParseIP(host)
+			valid := err == nil && portErr == nil && portNumber > 0 && host != ""
+			if ip != nil {
+				valid = valid && !ip.IsUnspecified() && !ip.IsMulticast() && !ip.Equal(net.IPv4bcast)
+			} else {
+				valid = valid && validRestoredDNSHost(host)
+			}
+			if !valid {
+				logger.Warn("ignoring unusable restored node endpoint", logging.KeyNode, localID, "field", endpoint.field)
+				continue
+			}
+			if ip != nil {
+				ips = append(ips, ip)
+			} else {
+				dnsNames = append(dnsNames, strings.TrimSuffix(host, "."))
+			}
+		}
+	}
+	key, csr, err := ca.GenerateNodeKeypairWithSANs(localID, dnsNames, ips...)
+	if err != nil {
+		return err
+	}
+	cert, err := ca.SignNodeCSR(csr, meta.GetCaCert(), meta.GetCaKey())
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(dataDir, "node")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	for name, data := range map[string][]byte{localID + ".crt": cert, localID + ".key": key, "ca.crt": meta.GetCaCert()} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			return fmt.Errorf("write %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func validRestoredDNSHost(host string) bool {
+	host = strings.TrimSuffix(host, ".")
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, c := range label {
+			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // ReadMeta untars opts.Reader and returns just the meta.json content,

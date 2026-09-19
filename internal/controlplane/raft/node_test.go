@@ -2,18 +2,22 @@ package raftnode_test
 
 import (
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	hraft "github.com/hashicorp/raft"
 
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/raft/rafttest"
 )
 
 // noopFSM does nothing; sufficient for verifying that Apply returns indices.
 type noopFSM struct{}
 
-func (noopFSM) Apply(*hraft.Log) interface{}        { return nil }
+func (noopFSM) Apply(*hraft.Log) interface{}         { return nil }
 func (noopFSM) Snapshot() (hraft.FSMSnapshot, error) { return noopSnapshot{}, nil }
 func (noopFSM) Restore(io.ReadCloser) error          { return nil }
 
@@ -46,9 +50,55 @@ func TestNew_RequiredFields(t *testing.T) {
 	}
 }
 
+func TestNewRequiresNodeCredentials(t *testing.T) {
+	for _, name := range []string{"missing", "malformed", "wrong node identity", "wrong cluster CA"} {
+		t.Run(name, func(t *testing.T) {
+			dir, id := t.TempDir(), "node-a"
+			if name != "missing" {
+				cert, key := rafttest.NewCA(t)
+				rafttest.Issue(t, dir, id, cert, key)
+			}
+			switch name {
+			case "malformed":
+				if err := os.WriteFile(filepath.Join(dir, "node", id+".crt"), []byte("invalid"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "wrong node identity":
+				for _, ext := range []string{".crt", ".key"} {
+					if err := os.Rename(filepath.Join(dir, "node", id+ext), filepath.Join(dir, "node", "node-b"+ext)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				id = "node-b"
+			case "wrong cluster CA":
+				otherCA, _ := rafttest.NewCA(t)
+				if err := os.WriteFile(filepath.Join(dir, "node", "ca.crt"), otherCA, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			n, err := raftnode.New(raftnode.Config{
+				DataDir: dir, BindAddr: "127.0.0.1:0", LocalID: id,
+				FSM: noopFSM{}, LogOutput: io.Discard,
+			})
+			if n != nil {
+				t.Cleanup(func() { _ = n.Shutdown() })
+			}
+			if err == nil || !strings.Contains(err.Error(), "raft TLS") {
+				t.Fatalf("New with %s credentials = %v; want raft TLS error", name, err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "raft", "log.db")); !os.IsNotExist(err) {
+				t.Fatalf("invalid credentials must not create raft state: %v", err)
+			}
+		})
+	}
+}
+
 func TestBootstrapSingleNodeAndApply(t *testing.T) {
+	dir := t.TempDir()
+	cert, key := rafttest.NewCA(t)
+	rafttest.Issue(t, dir, "node-a", cert, key)
 	n, err := raftnode.New(raftnode.Config{
-		DataDir:   t.TempDir(),
+		DataDir:   dir,
 		BindAddr:  "127.0.0.1:0",
 		LocalID:   "node-a",
 		Bootstrap: true,
@@ -81,8 +131,11 @@ func TestBootstrapSingleNodeAndApply(t *testing.T) {
 }
 
 func TestApplyDefaultTimeout(t *testing.T) {
+	dir := t.TempDir()
+	cert, key := rafttest.NewCA(t)
+	rafttest.Issue(t, dir, "node-a", cert, key)
 	n, err := raftnode.New(raftnode.Config{
-		DataDir:   t.TempDir(),
+		DataDir:   dir,
 		BindAddr:  "127.0.0.1:0",
 		LocalID:   "node-a",
 		Bootstrap: true,
