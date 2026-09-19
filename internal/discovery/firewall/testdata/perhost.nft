@@ -1,13 +1,13 @@
 add table inet jaco
 delete table inet jaco
 table inet jaco {
-    set dep_net_app_backend {
+    set dep_net_nvf6upziwspxeyjrjmfnzdeykofevgroy555wzpj2x5qdvwdacnq {
         type ipv4_addr
         flags interval
         elements = { 10.244.7.0/24 }
     }
 
-    set dep_net_app_frontend {
+    set dep_net_6pdw7okxi4r6k2fehldyl3sjf5o5c4tfez5g6rmxk2z6oabuq7aq {
         type ipv4_addr
         flags interval
         elements = { 10.244.5.0/24, 10.244.6.0/24 }
@@ -21,9 +21,8 @@ table inet jaco {
 
     chain forward {
         type filter hook forward priority 0; policy accept;
-        ct state established,related accept
-        ip saddr @dep_net_app_backend ip daddr @dep_net_app_backend accept
-        ip saddr @dep_net_app_frontend ip daddr @dep_net_app_frontend accept
+        ip saddr @dep_net_nvf6upziwspxeyjrjmfnzdeykofevgroy555wzpj2x5qdvwdacnq ip daddr @dep_net_nvf6upziwspxeyjrjmfnzdeykofevgroy555wzpj2x5qdvwdacnq accept
+        ip saddr @dep_net_6pdw7okxi4r6k2fehldyl3sjf5o5c4tfez5g6rmxk2z6oabuq7aq ip daddr @dep_net_6pdw7okxi4r6k2fehldyl3sjf5o5c4tfez5g6rmxk2z6oabuq7aq accept
         ip saddr @jaco_pool ip daddr @jaco_pool drop
     }
 

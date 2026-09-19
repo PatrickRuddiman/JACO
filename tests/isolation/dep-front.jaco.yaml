@@ -2,7 +2,7 @@ deployment: dep-front
 services:
   - name: svc-a
     replicas: 2
-    networks: [net-a]
+    networks: [private-net]
   - name: svc-b
     replicas: 2
-    networks: [net-b]
+    networks: [private.net]

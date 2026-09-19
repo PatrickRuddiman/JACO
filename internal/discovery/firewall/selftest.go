@@ -39,6 +39,10 @@ func SelfTest(ctx context.Context, expected RuleInput) error {
 // SelfTestFromJSON is the JSON-parsing core that production calls indirect
 // through SelfTest; exposed so unit tests can supply a canned nft output.
 func SelfTestFromJSON(jsonBytes []byte, expected RuleInput) error {
+	sets, err := groupSubnets(expected.Subnets, SetName)
+	if err != nil {
+		return err
+	}
 	var doc nftablesDoc
 	if err := json.Unmarshal(jsonBytes, &doc); err != nil {
 		return fmt.Errorf("parse nft json: %w", err)
@@ -88,8 +92,8 @@ func SelfTestFromJSON(jsonBytes []byte, expected RuleInput) error {
 	}
 
 	wantSets := map[string]bool{}
-	for _, s := range expected.Subnets {
-		wantSets[SetName(s.Deployment, s.Network)] = true
+	for _, set := range sets {
+		wantSets[set.name] = true
 	}
 	// jaco_pool is the union-of-all-subnets set Render emits to scope the
 	// cross-network isolation drop; it exists whenever there's any subnet

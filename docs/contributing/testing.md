@@ -54,6 +54,13 @@ suite self-skips when the matching `JACO_INTEGRATION_*` env var is
 unset, so a developer with only docker can still run the docker
 suites without setting up the rest.
 
+The nftables test re-executes inside a fresh Linux network namespace with
+`unshare --net` before modifying any firewall table. It covers cold creation,
+migration from a legacy punctuation-colliding set, atomic rejection of an
+invalid replacement, exact per-scope CIDR membership, and repeated reloads.
+It needs `nft`, `unshare`, and permission to create the namespace; it never
+falls back to modifying the caller's network namespace.
+
 Driver: [`scripts/test/integration.sh`](../../scripts/test/integration.sh).
 The packages it sweeps:
 
@@ -105,6 +112,13 @@ and asserts:
 Requires CAP_NET_ADMIN + CAP_NET_RAW + kernel WG + nftables + docker.
 CI runs it under a privileged runner; locally, set `JACO_RIG_FORCE=1`
 to confirm the host has what it needs.
+
+The checked-in scope-collision regression uses `private-net` and `private.net`.
+Its TCP probes use container IPs, with positive listener checks, so a DNS
+NXDOMAIN or missing target cannot masquerade as firewall isolation. The
+dedicated `isolation-rig` workflow currently sets `JACO_RIG_FORCE=0`; a green
+run of that disabled workflow is **not** evidence of a live isolation test.
+Run the enabled rig only on a disposable privileged Linux test host.
 
 ## Other E2E rigs
 
