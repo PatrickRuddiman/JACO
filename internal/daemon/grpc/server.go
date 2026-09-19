@@ -1,7 +1,5 @@
-// Package grpc builds the gRPC server jacod listens on. v1 opens a unix
-// socket listener; TLS-over-TCP for cross-host control lands once the
-// daemon transitions through Init/Join and has a real cluster CA cert
-// (later iters of task 38).
+// Package grpc serves local Unix-socket control and cluster-authenticated
+// TLS connections between nodes.
 package grpc
 
 import (
@@ -49,7 +47,6 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/scheduler/rollout"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 	hraft "github.com/hashicorp/raft"
-	"google.golang.org/grpc/credentials"
 )
 
 // Server bundles the daemon-side gRPC server with its unix socket listener
@@ -140,8 +137,8 @@ type Server struct {
 	dnsForwarderTimeout time.Duration
 
 	// tlsDyn holds the live server cert for the cross-host TCP listener.
-	// Nil when no TCP listener was opened. RebindTLS swaps the cert in
-	// after OpenRaft persists the cluster-CA-signed node cert.
+	// Nil when no TCP listener was opened. OpenRaft verifies and loads
+	// the persisted cluster-CA-signed node cert.
 	tlsDyn *dynamicTLS
 
 	mu      sync.Mutex
@@ -179,8 +176,7 @@ type Options struct {
 	// for ongoing operator RPCs. Empty → no cross-host listener (single
 	// node only).
 	//
-	// v0 ships plaintext TCP — Tailscale / WireGuard is expected to wrap
-	// the connection. TLS-with-cluster-CA is a follow-up iter.
+	// Connections require TLS even when a private network carries them.
 	ListenAddr string
 
 	// ListenAdvertiseAddr is the host:port peers should be told to dial
@@ -351,10 +347,9 @@ func New(opts Options) (*Server, error) {
 	// Optional cross-host TCP listener. Empty ListenAddr → single-node
 	// daemon (unix socket only). We open this NOW so a failure surfaces
 	// before Init/Join rather than mid-flight. The TCP listener is
-	// always TLS-wrapped — pre-Init with a self-signed bootstrap cert
-	// (joiners dial with InsecureSkipVerify; the join_token is the
-	// trust anchor); rebindTLS swaps in the cluster-CA-signed cert
-	// after OpenRaft persists certs.
+	// always TLS-wrapped. Its pre-Init bootstrap certificate is not an
+	// enrollment trust anchor; OpenRaft loads the independently verifiable
+	// cluster certificate after local initialization or authenticated join.
 	var tcpLis net.Listener
 	var tcpAddr string
 	var dynTLS *dynamicTLS
@@ -466,6 +461,29 @@ func (s *Server) OpenRaft(hostname, bindAddr, advertiseAddr string) error {
 	if s.cluster == nil || s.cluster.dataDir == "" {
 		return fmt.Errorf("OpenRaft: dataDir is required")
 	}
+	var nodeCert tls.Certificate
+	if s.tlsDyn != nil {
+		var err error
+		nodeCert, err = clusterNodeCert(s.cluster.dataDir, hostname)
+		if err != nil {
+			return fmt.Errorf("OpenRaft: initialized node TLS: %w", err)
+		}
+		caPEM, err := os.ReadFile(filepath.Join(s.cluster.dataDir, "node", "ca.crt"))
+		if err != nil {
+			return fmt.Errorf("OpenRaft: read node CA: %w", err)
+		}
+		roots, _, err := clusterTrust(caPEM)
+		if err != nil {
+			return fmt.Errorf("OpenRaft: node CA: %w", err)
+		}
+		raftAddress := advertiseAddr
+		if raftAddress == "" {
+			raftAddress = bindAddr
+		}
+		if err := verifyNodeCertificate(nodeCert, roots, hostname, raftAddress, s.tcpAdvertise); err != nil {
+			return fmt.Errorf("OpenRaft: initialized node TLS: %w", err)
+		}
+	}
 
 	brokers := watch.NewRegistry()
 	brokers.SetLogger(logging.Subsystem(s.logger, "watch").With(logging.KeyNode, hostname))
@@ -492,17 +510,8 @@ func (s *Server) OpenRaft(hostname, bindAddr, advertiseAddr string) error {
 	s.brokers = brokers
 	s.fsm = f
 
-	// Swap the bootstrap cert for the cluster-CA-signed node cert on the
-	// cross-host TCP listener. Best-effort — if the node cert isn't on
-	// disk (e.g. test paths that skip Init's persistJoin), the listener
-	// keeps the bootstrap cert and operators must keep using
-	// InsecureSkipVerify.
-	if s.tlsDyn != nil && s.cluster != nil && s.cluster.dataDir != "" {
-		if cert, err := clusterNodeCert(s.cluster.dataDir, hostname); err == nil {
-			s.tlsDyn.swap(cert)
-		} else {
-			s.srvLog.Warn("rebindTLS failed, keeping bootstrap cert", "error", err)
-		}
+	if s.tlsDyn != nil {
+		s.tlsDyn.swap(nodeCert)
 	}
 
 	s.startSubsystems(node, st, brokers, hostname)
@@ -646,7 +655,7 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 			ctx, data,
 			func(b []byte) (uint64, error) { return node.Apply(b, 0) },
 			func(ctx context.Context, b []byte) error {
-				return dialAndSubmit(ctx, leaderGRPCAddr(st, node), b)
+				return s.dialAndSubmit(ctx, leaderGRPCAddr(st, node), b)
 			},
 		)
 	}
@@ -718,7 +727,7 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 				ctx, data,
 				func(b []byte) (uint64, error) { return node.Apply(b, 0) },
 				func(ctx context.Context, b []byte) error {
-					return dialAndSubmit(ctx, leaderGRPCAddr(st, node), b)
+					return s.dialAndSubmit(ctx, leaderGRPCAddr(st, node), b)
 				},
 			)
 		}
@@ -862,7 +871,7 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 				context.Background(), cmd,
 				func(b []byte) (uint64, error) { return node.Apply(b, 0) },
 				func(ctx context.Context, b []byte) error {
-					return dialAndSubmit(ctx, leaderGRPCAddr(st, node), b)
+					return s.dialAndSubmit(ctx, leaderGRPCAddr(st, node), b)
 				},
 			)
 		}
@@ -1061,7 +1070,7 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 			}
 			// Not the leader — forward to whichever node is. Look up
 			// the leader's gRPC address from state.Nodes and dial
-			// Internal.Submit there. Plaintext; same v0 wire model.
+			// Internal.Submit there over verified cluster TLS.
 			leaderAddr := leaderGRPCAddr(st, node)
 			if leaderAddr == "" {
 				submitErrLogOnce.Do(func() {
@@ -1069,7 +1078,7 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 				})
 				return fmt.Errorf("submit: no leader gRPC address known")
 			}
-			conn, dialErr := grpc.NewClient(leaderAddr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})))
+			conn, dialErr := s.dialPeer(leaderAddr)
 			if dialErr != nil {
 				submitErrLogOnce.Do(func() {
 					s.srvLog.Error("submit: dial leader failed", "leader_addr", leaderAddr, "error", dialErr)
@@ -1109,7 +1118,7 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 			if leaderAddr == "" {
 				return "", fmt.Errorf("ensureSubnet: no leader gRPC address known")
 			}
-			conn, dialErr := grpc.NewClient(leaderAddr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})))
+			conn, dialErr := s.dialPeer(leaderAddr)
 			if dialErr != nil {
 				return "", fmt.Errorf("ensureSubnet: dial leader %s: %w", leaderAddr, dialErr)
 			}
@@ -1297,7 +1306,7 @@ func (s *Server) publishSelf(ctx context.Context, node *raftnode.Node, st *state
 	if leaderAddr == "" {
 		return fmt.Errorf("no leader gRPC address known")
 	}
-	conn, err := grpc.NewClient(leaderAddr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})))
+	conn, err := s.dialPeer(leaderAddr)
 	if err != nil {
 		return fmt.Errorf("dial leader: %w", err)
 	}

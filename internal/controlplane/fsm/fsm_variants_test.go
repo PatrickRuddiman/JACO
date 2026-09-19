@@ -651,6 +651,7 @@ func TestApply_JoinTokenIssueAndConsume(t *testing.T) {
 		Ts: timestampOf(100),
 		Payload: &pb.Command_JoinTokenIssue{JoinTokenIssue: &pb.JoinTokenIssue{
 			HashedSecret: hash, ExpiresAt: timestampOf(999),
+			NodeName: "node-b", AllowedSans: []string{"node-b.private", "10.0.0.2"},
 		}},
 	})
 	if s.JoinTokens.Len() != 1 {
@@ -661,12 +662,34 @@ func TestApply_JoinTokenIssueAndConsume(t *testing.T) {
 		t.Errorf("join token not keyed by hex(hashed_secret)")
 	}
 	applyCmd(t, f, 2, &pb.Command{
-		Ts: timestampOf(200),
+		Ts:      timestampOf(200),
 		Payload: &pb.Command_JoinTokenConsume{JoinTokenConsume: &pb.JoinTokenConsume{HashedSecret: hash}},
 	})
 	tok, _ := s.JoinTokens.Get(hex.EncodeToString(hash))
 	if tok.GetConsumedAt() == nil {
 		t.Errorf("ConsumedAt not stamped after consume")
+	}
+	if tok.GetNodeName() != "node-b" || len(tok.GetAllowedSans()) != 2 ||
+		tok.GetAllowedSans()[0] != "node-b.private" || tok.GetAllowedSans()[1] != "10.0.0.2" {
+		t.Errorf("approved enrollment identity was not persisted: %v", tok)
+	}
+	snapshot, err := f.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Release()
+	sink := newRecordingSink()
+	if err := snapshot.Persist(sink); err != nil {
+		t.Fatal(err)
+	}
+	restored, restoredState, _ := newFSM(t)
+	if err := restored.Restore(io.NopCloser(bytes.NewReader(sink.data.Bytes()))); err != nil {
+		t.Fatal(err)
+	}
+	tok, ok := restoredState.JoinTokens.Get(hex.EncodeToString(hash))
+	if !ok || tok.GetConsumedAt() == nil || tok.GetNodeName() != "node-b" ||
+		len(tok.GetAllowedSans()) != 2 || tok.GetAllowedSans()[1] != "10.0.0.2" {
+		t.Fatalf("enrollment scope or consumption lost after restore: %v", tok)
 	}
 }
 

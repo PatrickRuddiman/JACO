@@ -12,6 +12,8 @@ func TestFormatIssueJoinToken_DefaultOutput(t *testing.T) {
 	wantContains := []string{
 		"Join token issued.",
 		"sudo jaco node join --peer=jaco-1:7000 --token=tok-abc123",
+		"--ca-cert=/path/to/cluster-ca.crt",
+		"independently",
 		"Token expires in 24h (single-use).",
 	}
 	for _, w := range wantContains {
@@ -74,5 +76,30 @@ func TestFormatIssueJoinToken_IncludesServerAndToken(t *testing.T) {
 	}
 	if !strings.Contains(got, "--token="+token) {
 		t.Errorf("output missing --token=%s:\n%s", token, got)
+	}
+}
+
+func TestNodeJoinUsesProvisionedCAFlag(t *testing.T) {
+	t.Setenv("JACO_CA_CERT", "trusted-ca.pem")
+	flag := nodeJoinCmd().Flags().Lookup("ca-cert")
+	if flag == nil || flag.DefValue != "trusted-ca.pem" {
+		t.Fatalf("join must expose --ca-cert with JACO_CA_CERT default: %v", flag)
+	}
+}
+
+func TestIssueJoinTokenRequiresNodeName(t *testing.T) {
+	cmd := nodeIssueJoinTokenCmd()
+	if err := cmd.ValidateRequiredFlags(); err == nil || !strings.Contains(err.Error(), "node-name") {
+		t.Fatalf("missing approved node name must fail before dialing: %v", err)
+	}
+	if err := cmd.ParseFlags([]string{"--node-name", "node-b", "--san", "10.0.0.2", "--san", "node-b.private"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.ValidateRequiredFlags(); err != nil {
+		t.Fatal(err)
+	}
+	names, err := cmd.Flags().GetStringArray("san")
+	if err != nil || len(names) != 2 || names[0] != "10.0.0.2" || names[1] != "node-b.private" {
+		t.Fatalf("repeatable approved SANs were not retained: %v %v", names, err)
 	}
 }

@@ -2,6 +2,7 @@ package grpcsrv
 
 import (
 	"context"
+	"sync"
 
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
@@ -15,8 +16,9 @@ import (
 // test (task 06) needs a real RPC to exercise.
 type clusterServer struct {
 	pb.UnimplementedClusterServer
-	state *state.State
-	raft  *raftnode.Node
+	state  *state.State
+	raft   *raftnode.Node
+	joinMu sync.Mutex
 }
 
 // Status returns a snapshot of the cluster: known Node entities, the current

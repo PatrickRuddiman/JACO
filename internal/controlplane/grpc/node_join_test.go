@@ -130,7 +130,7 @@ func TestNodeJoin_TwoNodeClusterAndSingleUseToken(t *testing.T) {
 
 	// 6. IssueJoinToken (operator-authenticated).
 	ctxOp := metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+operatorToken)
-	issueResp, err := client.IssueJoinToken(ctxOp, &pb.IssueJoinTokenRequest{})
+	issueResp, err := client.IssueJoinToken(ctxOp, &pb.IssueJoinTokenRequest{NodeName: "node-b", AllowedSans: []string{"127.0.0.1"}})
 	if err != nil {
 		t.Fatalf("IssueJoinToken: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestNodeRemove_EvictsFromRaftAndState(t *testing.T) {
 	client := dialClusterClient(t, srv.Addr().String(), aCACert, "node-a")
 	ctxOp := metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+bootRes.OperatorToken)
 
-	issueResp, _ := client.IssueJoinToken(ctxOp, &pb.IssueJoinTokenRequest{})
+	issueResp, _ := client.IssueJoinToken(ctxOp, &pb.IssueJoinTokenRequest{NodeName: "node-b", AllowedSans: []string{"127.0.0.1"}})
 	_, bCSR, _ := ca.GenerateNodeKeypair("node-b")
 	_, err = client.NodeJoin(context.Background(), &pb.NodeJoinRequest{
 		Name: "node-b", JoinToken: issueResp.GetToken(), CsrPem: bCSR,

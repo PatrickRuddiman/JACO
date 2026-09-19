@@ -78,7 +78,7 @@ func TestRunNodeJoin_EnablesServiceWhenRequested(t *testing.T) {
 			return &pb.ClusterJoinResponse{}, nil
 		},
 	}
-	if err := runNodeJoin(context.Background(), client, "10.0.0.1:7000", "tok", true, &bytes.Buffer{}); err != nil {
+	if err := runNodeJoin(context.Background(), client, "10.0.0.1:7000", "tok", []byte("provisioned-ca"), true, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 {
@@ -97,7 +97,7 @@ func TestRunNodeJoin_SkipsServiceWhenDisabled(t *testing.T) {
 			return &pb.ClusterJoinResponse{}, nil
 		},
 	}
-	if err := runNodeJoin(context.Background(), client, "10.0.0.1:7000", "tok", false, &bytes.Buffer{}); err != nil {
+	if err := runNodeJoin(context.Background(), client, "10.0.0.1:7000", "tok", []byte("provisioned-ca"), false, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 0 {
@@ -116,7 +116,7 @@ func TestRunNodeJoin_DoesNotEnableOnError(t *testing.T) {
 			return nil, context.DeadlineExceeded
 		},
 	}
-	if err := runNodeJoin(context.Background(), client, "10.0.0.1:7000", "tok", true, &bytes.Buffer{}); err == nil {
+	if err := runNodeJoin(context.Background(), client, "10.0.0.1:7000", "tok", []byte("provisioned-ca"), true, &bytes.Buffer{}); err == nil {
 		t.Fatal("expected error")
 	}
 	if calls != 0 {

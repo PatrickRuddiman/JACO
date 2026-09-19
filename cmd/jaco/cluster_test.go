@@ -183,7 +183,7 @@ func TestRunNodeJoin_SuccessPrintsConfirmation(t *testing.T) {
 			return &pb.ClusterJoinResponse{}, nil
 		},
 	}
-	if err := runNodeJoin(context.Background(), client, "10.0.0.1:7000", "tok-123", false, &out); err != nil {
+	if err := runNodeJoin(context.Background(), client, "10.0.0.1:7000", "tok-123", []byte("provisioned-ca"), false, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "Joined cluster") {
@@ -191,6 +191,9 @@ func TestRunNodeJoin_SuccessPrintsConfirmation(t *testing.T) {
 	}
 	if captured.GetPeerAddr() != "10.0.0.1:7000" || captured.GetJoinToken() != "tok-123" {
 		t.Errorf("request = %+v", captured)
+	}
+	if string(captured.GetCaCert()) != "provisioned-ca" {
+		t.Errorf("independent trust not sent to local daemon: %q", captured.GetCaCert())
 	}
 }
 
@@ -200,9 +203,19 @@ func TestRunNodeJoin_SurfacesServerError(t *testing.T) {
 			return nil, errors.New("join_token_invalid")
 		},
 	}
-	err := runNodeJoin(context.Background(), client, "10.0.0.1:7000", "tok-bad", false, &bytes.Buffer{})
+	err := runNodeJoin(context.Background(), client, "10.0.0.1:7000", "tok-bad", []byte("provisioned-ca"), false, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "join_token_invalid") {
 		t.Errorf("err = %v", err)
+	}
+}
+
+func TestRunNodeJoinRejectsMissingCA(t *testing.T) {
+	client := &fakeClusterClient{joinFn: func(context.Context, *pb.ClusterJoinRequest) (*pb.ClusterJoinResponse, error) {
+		t.Error("join called without provisioned trust")
+		return &pb.ClusterJoinResponse{}, nil
+	}}
+	if err := runNodeJoin(context.Background(), client, "127.0.0.1:7000", "synthetic-token", nil, false, &bytes.Buffer{}); err == nil {
+		t.Fatal("missing CA was accepted")
 	}
 }
 

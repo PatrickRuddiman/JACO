@@ -2,14 +2,11 @@ package grpc
 
 import (
 	"context"
-	"crypto/tls"
 	"io"
 	"sync"
 	"time"
 
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
 	grpcsrv "github.com/PatrickRuddiman/jaco/internal/controlplane/grpc"
@@ -88,7 +85,7 @@ func (s *Server) streamDeploymentLogs(req *pb.LogsRequest, stream pb.Deploy_Logs
 		}
 		go func(addr string) {
 			defer wg.Done()
-			conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})))
+			conn, err := s.dialPeer(addr)
 			if err != nil {
 				errCh <- err
 				return

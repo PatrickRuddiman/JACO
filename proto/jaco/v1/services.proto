@@ -41,10 +41,12 @@ message ClusterInitResponse {
 
 // ClusterJoin asks the local daemon to dial peer_addr, exchange the
 // join_token for a signed node cert + cluster CA + raft peer set, and
-// transition out of uninitialized mode.
+// transition out of uninitialized mode. The independently provisioned CA
+// must authenticate the peer before the join token is sent.
 message ClusterJoinRequest {
   string peer_addr = 1;
   string join_token = 2;
+  bytes ca_cert = 3; // required PEM trust bundle, obtained out of band
 }
 message ClusterJoinResponse {}
 
@@ -56,7 +58,14 @@ message BootstrapResponse {
   string operator_token = 2;
 }
 
-message IssueJoinTokenRequest {}
+message IssueJoinTokenRequest {
+  // The exact joining daemon hostname. Required; legacy unscoped tokens
+  // cannot authorize enrollment.
+  string node_name = 1;
+  // Additional exact DNS names and IP addresses approved for this node.
+  // node_name is implicitly allowed; wildcards are not permitted.
+  repeated string allowed_sans = 2;
+}
 message IssueJoinTokenResponse {
   string token = 1;
   bytes ca_cert = 2;

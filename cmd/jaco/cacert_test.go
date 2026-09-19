@@ -38,11 +38,23 @@ func TestDefaultCACertPath_EmptyEnvFallsBack(t *testing.T) {
 
 func TestReadCACert_EmptyPath(t *testing.T) {
 	b, err := readCACert("")
-	if err != nil {
-		t.Fatalf("readCACert(\"\") returned error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "--ca-cert") {
+		t.Fatalf("empty CA path must fail without an insecure fallback: %v", err)
 	}
 	if b != nil {
 		t.Errorf("readCACert(\"\") = %v; want nil", b)
+	}
+}
+
+func TestDialServerRequiresCA(t *testing.T) {
+	for _, ca := range [][]byte{nil, {}, []byte("not a PEM certificate")} {
+		conn, err := dialServer("127.0.0.1:7000", ca)
+		if conn != nil {
+			conn.Close()
+		}
+		if err == nil {
+			t.Errorf("missing or invalid trust accepted: %q", ca)
+		}
 	}
 }
 

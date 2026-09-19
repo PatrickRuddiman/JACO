@@ -1520,6 +1520,8 @@ type JoinToken struct {
 	IssuedAt      *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=issued_at,json=issuedAt,proto3" json:"issued_at,omitempty"`
 	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
 	ConsumedAt    *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=consumed_at,json=consumedAt,proto3" json:"consumed_at,omitempty"`
+	NodeName      string                 `protobuf:"bytes,5,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
+	AllowedSans   []string               `protobuf:"bytes,6,rep,name=allowed_sans,json=allowedSans,proto3" json:"allowed_sans,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1578,6 +1580,20 @@ func (x *JoinToken) GetExpiresAt() *timestamppb.Timestamp {
 func (x *JoinToken) GetConsumedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.ConsumedAt
+	}
+	return nil
+}
+
+func (x *JoinToken) GetNodeName() string {
+	if x != nil {
+		return x.NodeName
+	}
+	return ""
+}
+
+func (x *JoinToken) GetAllowedSans() []string {
+	if x != nil {
+		return x.AllowedSans
 	}
 	return nil
 }
@@ -2177,14 +2193,16 @@ const file_jaco_v1_entities_proto_rawDesc = "" +
 	"\tissued_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\bissuedAt\x129\n" +
 	"\n" +
 	"revoked_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\trevokedAt\x12+\n" +
-	"\x11allows_privileged\x18\x05 \x01(\bR\x10allowsPrivileged\"\xe1\x01\n" +
+	"\x11allows_privileged\x18\x05 \x01(\bR\x10allowsPrivileged\"\xa1\x02\n" +
 	"\tJoinToken\x12#\n" +
 	"\rhashed_secret\x18\x01 \x01(\fR\fhashedSecret\x127\n" +
 	"\tissued_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\bissuedAt\x129\n" +
 	"\n" +
 	"expires_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x12;\n" +
 	"\vconsumed_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"consumedAt\"\x98\x02\n" +
+	"consumedAt\x12\x1b\n" +
+	"\tnode_name\x18\x05 \x01(\tR\bnodeName\x12!\n" +
+	"\fallowed_sans\x18\x06 \x03(\tR\vallowedSans\"\x98\x02\n" +
 	"\n" +
 	"AuditEvent\x12\x1d\n" +
 	"\n" +

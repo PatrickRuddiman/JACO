@@ -79,7 +79,7 @@ func setupTwoNodeCluster(t *testing.T) *twoNodeCluster {
 	b := openClusterNode(t, "node-b", bDir, bRaft)
 
 	ctxOp := authContext(bootRes.OperatorToken)
-	issueResp, err := a.Cluster.IssueJoinToken(ctxOp, &pb.IssueJoinTokenRequest{})
+	issueResp, err := a.Cluster.IssueJoinToken(ctxOp, &pb.IssueJoinTokenRequest{NodeName: "node-b", AllowedSans: []string{"127.0.0.1"}})
 	if err != nil {
 		t.Fatalf("IssueJoinToken: %v", err)
 	}

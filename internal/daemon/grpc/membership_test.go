@@ -48,6 +48,8 @@ func TestNodeJoin_SignsCSRAndAddsVoter(t *testing.T) {
 		JoinTokenIssue: &pb.JoinTokenIssue{
 			HashedSecret: hash[:],
 			ExpiresAt:    timestamppb.New(time.Now().Add(time.Hour)),
+			NodeName:     "test-host-2",
+			AllowedSans:  []string{"127.0.0.1"},
 		},
 	}}
 	issueData, _ := proto.Marshal(issueCmd)

@@ -39,9 +39,8 @@ type Options struct {
 	// bind to a real loopback IP, broken for production 0.0.0.0 binds.
 	AdvertiseAddr string
 	// ListenAdvertiseAddr is the host:port peers will dial to reach this
-	// node's cross-host gRPC listener. The node cert's IP SAN is derived
-	// from this address (not AdvertiseAddr): the cert is presented by the
-	// gRPC TLS listener, and clients dial that listener by its IP. When
+	// node's cross-host gRPC listener. Its DNS name or IP address is
+	// included in the node certificate alongside the Raft identity. When
 	// empty, falls back to AdvertiseAddr (common case where listen and
 	// cluster advertise IPs match).
 	ListenAdvertiseAddr string
@@ -85,38 +84,32 @@ func Run(opts Options) (*Result, error) {
 		return nil, fmt.Errorf("generate cluster CA: %w", err)
 	}
 
-	// Collect IP SANs for the node cert. The gRPC listen advertise IP is
-	// what matters for TLS validation (clients dial the gRPC listener by
-	// IP); the raft transport advertise IP is included too when distinct
-	// so that any code path dialing the raft advertise face by IP also
-	// validates. ListenAdvertiseAddr defaults to AdvertiseAddr — in the
-	// common case both values are the same and dedupe in
-	// ca.GenerateNodeKeypair collapses them into one SAN. Every up,
-	// non-loopback local interface IP is added as well so an operator
-	// reaching the node by any other interface (second NIC, the VNet
-	// address when advertise picked Tailscale, etc.) doesn't hit a TLS SAN
-	// mismatch.
+	// Bootstrap is locally authorized: preserve private interface IPs and
+	// both advertised DNS/IP identities, rather than silently dropping DNS.
+	raftAdvertise := opts.AdvertiseAddr
+	if raftAdvertise == "" {
+		raftAdvertise = opts.BindAddr
+	}
 	listenAdvertise := opts.ListenAdvertiseAddr
 	if listenAdvertise == "" {
-		listenAdvertise = opts.AdvertiseAddr
+		listenAdvertise = raftAdvertise
 	}
-	var listenIP, clusterIP net.IP
-	if listenAdvertise != "" {
-		if host, _, err := net.SplitHostPort(listenAdvertise); err == nil {
-			listenIP = net.ParseIP(host) // nil when host is a DNS name — that's fine
+	var sans []string
+	for _, ip := range netdetect.LocalIPs() {
+		sans = append(sans, ip.String())
+	}
+	for _, address := range []string{listenAdvertise, raftAdvertise} {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil || host == "" || port == "" {
+			return nil, fmt.Errorf("invalid advertised node address %q", address)
 		}
+		sans = append(sans, host)
 	}
-	if opts.AdvertiseAddr != "" {
-		if host, _, err := net.SplitHostPort(opts.AdvertiseAddr); err == nil {
-			clusterIP = net.ParseIP(host)
-		}
-	}
-	sanIPs := append(netdetect.LocalIPs(), listenIP, clusterIP)
-	nodeKeyPEM, csrPEM, err := ca.GenerateNodeKeypair(opts.Name, sanIPs...)
+	nodeKeyPEM, csrPEM, err := ca.GenerateNodeKeypair(opts.Name)
 	if err != nil {
 		return nil, fmt.Errorf("generate node keypair: %w", err)
 	}
-	nodeCertPEM, err := ca.SignNodeCSR(csrPEM, caCertPEM, caKeyPEM)
+	nodeCertPEM, err := ca.SignNodeCSRForIdentity(csrPEM, caCertPEM, caKeyPEM, opts.Name, sans)
 	if err != nil {
 		return nil, fmt.Errorf("sign node CSR: %w", err)
 	}

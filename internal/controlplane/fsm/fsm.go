@@ -504,6 +504,8 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 			HashedSecret: ji.GetHashedSecret(),
 			IssuedAt:     cmd.GetTs(),
 			ExpiresAt:    ji.GetExpiresAt(),
+			NodeName:     ji.GetNodeName(),
+			AllowedSans:  ji.GetAllowedSans(),
 		}, idx)
 		return pb.AuditEventType_AUDIT_EVENT_TYPE_UNSPECIFIED, nil
 
