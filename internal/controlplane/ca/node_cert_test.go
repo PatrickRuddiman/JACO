@@ -243,3 +243,49 @@ func TestGenerateNodeKeypair_IPDeduplication(t *testing.T) {
 		t.Errorf("expected exactly one IP SAN for 10.0.0.1, got %d (IPs: %v)", count, csr.IPAddresses)
 	}
 }
+
+func TestSignNodeCSRForIdentitySignsOnlyApprovedNames(t *testing.T) {
+	caPEM, caKey, err := ca.GenerateClusterCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, csr, err := ca.GenerateNodeKeypair("node-b", net.ParseIP("10.0.0.99"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved := []string{"10.0.0.2", "node-b.private", "2001:db8::2"}
+	signed, err := ca.SignNodeCSRForIdentity(csr, caPEM, caKey, "node-b", approved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(signed)
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cert.Subject.CommonName != "node-b" {
+		t.Fatalf("issued identity = %q", cert.Subject.CommonName)
+	}
+	for _, name := range append(approved, "node-b") {
+		if err := cert.VerifyHostname(name); err != nil {
+			t.Errorf("approved name %q missing: %v", name, err)
+		}
+	}
+	if cert.VerifyHostname("10.0.0.99") == nil {
+		t.Fatal("issuer copied unapproved CSR IP into the certificate")
+	}
+	for _, tc := range []struct {
+		name string
+		sans []string
+	}{
+		{"another-node", approved},
+		{"node-b", []string{"*.private"}},
+		{"node-b", []string{"not a DNS name"}},
+		{"node-b", []string{"https://node-b"}},
+		{"", approved},
+	} {
+		if _, err := ca.SignNodeCSRForIdentity(csr, caPEM, caKey, tc.name, tc.sans); err == nil {
+			t.Errorf("invalid approved identity accepted: name=%q sans=%v", tc.name, tc.sans)
+		}
+	}
+}

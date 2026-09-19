@@ -39,19 +39,73 @@ an existing one:
 ```sh
 sudo jaco cluster init                                   # new cluster
 # or
-sudo jaco node join --peer <leader>:7000 --token <hex>   # join existing
+sudo jaco node join --peer <leader>:7000 --token <hex> --ca-cert /path/to/cluster-ca.crt
 ```
+
+For joining, first obtain the CA file independently from an
+authenticated existing member and issue a single-use token scoped to
+this daemon's hostname and required SANs. See
+[Getting started](../getting-started.md#3-join-the-other-nodes).
+
+## Peer TLS or join-certificate verification failures
+
+A missing/invalid CA bundle, unknown issuer, expired certificate, wrong
+server-auth usage, or absent dial IP/DNS SAN now fails explicitly.
+Joining nodes verify the server **before** transmitting the join token;
+steady-state peer gRPC dials also verify CA + SAN. A previously working
+unverified connection is not evidence that its certificate is valid.
+
+- For enrollment, check `--ca-cert`, `JACO_CA_CERT`, or the existing
+  `/var/lib/jaco/node/ca.crt`. Obtain the correct public CA from an
+  authenticated member's local socket, an already CA-verifying operator
+  connection, verified SSH, or trusted configuration management.
+  Never fetch-and-trust a CA from the failing endpoint.
+- For daemon forwarding/logs, check that the daemon can read the correct
+  `$JACO_DATA_DIR/node/ca.crt`; new dials reload that bundle. Check the
+  destination certificate against the exact advertised/dialed host,
+  not only its common name. Verify dates and the system clock.
+- If `OpenRaft` refuses startup/resume, check the node CA, matching
+  keypair, certificate CN versus local identity, and every advertised
+  host's SAN. Missing/invalid material fails before Raft starts; there
+  is no bootstrap-certificate fallback. For a restored node with
+  missing legacy metadata or a changed ID, use an already covered IP;
+  see [Recovery](recovery.md#restored-node-credentials-and-addresses).
+- If enrollment rejects the returned credentials, check that the
+  returned CA belongs to the provisioned bundle and the leaf matches
+  the joiner's private key, approved identity, advertised SANs, and
+  both server/client-auth EKUs. Do not replace the trusted bundle with
+  one supplied by a rejected response.
+- For legacy leaves missing a required SAN, use the
+  [upgrade preflight](upgrades.md#peer-tls-and-enrollment-compatibility).
+  Arrange approved re-enrollment or a correctly signed replacement;
+  do not delete live state/keys or disable verification.
+
+## Join token rejected
+
+Check that the token is unexpired, unused, and issued for the joining
+daemon's OS/configured hostname. Every advertised Raft/gRPC host must
+be approved (the hostname is implicit; other hosts need `--san`).
+Additional private/interface IPs and dial aliases also need explicit
+approval. Unknown or legacy unscoped tokens must be reissued:
+
+```sh
+# on an authenticated existing member's local socket
+sudo jaco node issue-join-token --node-name <joining-hostname> --san <joining-private-ip>
+```
+
+Issue one token per node; arbitrary CSR aliases cannot expand its scope.
 
 ## `cluster_already_initialized`
 
-`jaco cluster init` against a host whose `$JACO_DATA_DIR/raft/` is
-already populated. Either the host is already a cluster member (check
-`jaco cluster status`), or there's stale raft state from a prior
-install.
+`jaco cluster init` or `jaco node join` against a host whose
+`$JACO_DATA_DIR/raft/` is already populated. Check `jaco cluster status`
+and confirm whether this is the intended cluster before taking action.
 
-If you actually intend to wipe and start over: `sudo systemctl stop
-jaco && sudo rm -rf /var/lib/jaco/* && sudo systemctl start jaco`, then
-`sudo jaco cluster init`. **This destroys all cluster state on the host.**
+Do not clear live state or node keys to retry enrollment or work around
+a TLS error. If reprovisioning is intentional, preserve backups and
+credentials and follow an approved membership/recovery plan that
+accounts for quorum and workloads. See [Recovery](recovery.md) and
+the [TLS upgrade preflight](upgrades.md#peer-tls-and-enrollment-compatibility).
 
 ## `no_leader`
 

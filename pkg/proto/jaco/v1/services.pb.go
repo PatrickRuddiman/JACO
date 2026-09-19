@@ -177,11 +177,13 @@ func (x *ClusterInitResponse) GetOperatorToken() string {
 
 // ClusterJoin asks the local daemon to dial peer_addr, exchange the
 // join_token for a signed node cert + cluster CA + raft peer set, and
-// transition out of uninitialized mode.
+// transition out of uninitialized mode. The independently provisioned CA
+// must authenticate the peer before the join token is sent.
 type ClusterJoinRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PeerAddr      string                 `protobuf:"bytes,1,opt,name=peer_addr,json=peerAddr,proto3" json:"peer_addr,omitempty"`
 	JoinToken     string                 `protobuf:"bytes,2,opt,name=join_token,json=joinToken,proto3" json:"join_token,omitempty"`
+	CaCert        []byte                 `protobuf:"bytes,3,opt,name=ca_cert,json=caCert,proto3" json:"ca_cert,omitempty"` // required PEM trust bundle, obtained out of band
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -228,6 +230,13 @@ func (x *ClusterJoinRequest) GetJoinToken() string {
 		return x.JoinToken
 	}
 	return ""
+}
+
+func (x *ClusterJoinRequest) GetCaCert() []byte {
+	if x != nil {
+		return x.CaCert
+	}
+	return nil
 }
 
 type ClusterJoinResponse struct {
@@ -363,7 +372,13 @@ func (x *BootstrapResponse) GetOperatorToken() string {
 }
 
 type IssueJoinTokenRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The exact joining daemon hostname. Required; legacy unscoped tokens
+	// cannot authorize enrollment.
+	NodeName string `protobuf:"bytes,1,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
+	// Additional exact DNS names and IP addresses approved for this node.
+	// node_name is implicitly allowed; wildcards are not permitted.
+	AllowedSans   []string `protobuf:"bytes,2,rep,name=allowed_sans,json=allowedSans,proto3" json:"allowed_sans,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -396,6 +411,20 @@ func (x *IssueJoinTokenRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use IssueJoinTokenRequest.ProtoReflect.Descriptor instead.
 func (*IssueJoinTokenRequest) Descriptor() ([]byte, []int) {
 	return file_jaco_v1_services_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *IssueJoinTokenRequest) GetNodeName() string {
+	if x != nil {
+		return x.NodeName
+	}
+	return ""
+}
+
+func (x *IssueJoinTokenRequest) GetAllowedSans() []string {
+	if x != nil {
+		return x.AllowedSans
+	}
+	return nil
 }
 
 type IssueJoinTokenResponse struct {
@@ -3750,19 +3779,22 @@ const file_jaco_v1_services_proto_rawDesc = "" +
 	"\x13ClusterInitResponse\x12\x1d\n" +
 	"\n" +
 	"cluster_id\x18\x01 \x01(\tR\tclusterId\x12%\n" +
-	"\x0eoperator_token\x18\x02 \x01(\tR\roperatorToken\"P\n" +
+	"\x0eoperator_token\x18\x02 \x01(\tR\roperatorToken\"i\n" +
 	"\x12ClusterJoinRequest\x12\x1b\n" +
 	"\tpeer_addr\x18\x01 \x01(\tR\bpeerAddr\x12\x1d\n" +
 	"\n" +
-	"join_token\x18\x02 \x01(\tR\tjoinToken\"\x15\n" +
+	"join_token\x18\x02 \x01(\tR\tjoinToken\x12\x17\n" +
+	"\aca_cert\x18\x03 \x01(\fR\x06caCert\"\x15\n" +
 	"\x13ClusterJoinResponse\"&\n" +
 	"\x10BootstrapRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"Y\n" +
 	"\x11BootstrapResponse\x12\x1d\n" +
 	"\n" +
 	"cluster_id\x18\x01 \x01(\tR\tclusterId\x12%\n" +
-	"\x0eoperator_token\x18\x02 \x01(\tR\roperatorToken\"\x17\n" +
-	"\x15IssueJoinTokenRequest\"j\n" +
+	"\x0eoperator_token\x18\x02 \x01(\tR\roperatorToken\"W\n" +
+	"\x15IssueJoinTokenRequest\x12\x1b\n" +
+	"\tnode_name\x18\x01 \x01(\tR\bnodeName\x12!\n" +
+	"\fallowed_sans\x18\x02 \x03(\tR\vallowedSans\"j\n" +
 	"\x16IssueJoinTokenResponse\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x17\n" +
 	"\aca_cert\x18\x02 \x01(\fR\x06caCert\x12!\n" +

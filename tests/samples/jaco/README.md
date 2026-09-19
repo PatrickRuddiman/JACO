@@ -16,7 +16,11 @@ jaco/
 
 ## One-shot
 
-From the operator host, with the testbed already deployed:
+From the operator host, with the testbed already deployed and each node's
+SSH host key independently verified and installed in `~/.ssh/known_hosts`
+(or your configured SSH known-hosts store). Bootstrap enforces
+`StrictHostKeyChecking=yes`; blindly accepting a first-seen key is not
+sufficient because SSH carries the cluster's initial CA trust.
 
 ```sh
 # nodes resolved from Azure (RESOURCE_GROUP + VM_NAME_PREFIX), or pass them:
@@ -33,8 +37,14 @@ What it does, in order:
 3. Stands up `registry:2` on node-1 and **builds the workload images there**
    (the operator host can't reach the private registry — only 22/80/443 are
    public), pushing `bench-web` / `bench-api` to `<node-1-private-ip>:5000`.
-4. `jaco cluster init` on node-1, issues a join token, `jaco node join` on
-   node-2 and node-3 (peer = node-1 private IP `:7000`). After each
+4. `jaco cluster init` on node-1; for each joining node, discovers its
+   OS hostname over verified SSH and issues a separate scoped token
+   (`--node-name <hostname> --san <private-ip>`). The installer pins
+   gRPC/Raft addresses to that same private IPv4. Bootstrap transfers
+   node-1's public CA over verified SSH to `/etc/jaco/cluster-ca.crt`
+   on each joining node and passes it to `jaco node join --ca-cert`
+   (peer = node-1 private IP `:7000`). No unverified TLS fetch or
+   server-provided CA replacement is used. After each
    init/join the bootstrap runs `systemctl enable jaco` so the unit
    survives reboots — the `.deb` postinstall deliberately ships the unit
    disabled (see `build/packaging/postinstall.sh`); the cluster-commit is
@@ -43,6 +53,14 @@ What it does, in order:
 
 Mesh traffic (gRPC `:7000`, raft `:7001`, WireGuard `:51820`) stays on the
 private VNet; only Caddy ingress (80/443) is public, via the LB.
+The sample assumes the default `/var/lib/jaco` data directory and daemon
+OS hostname. Only that hostname and private IP are approved for joins;
+additional gRPC dial aliases need explicit SAN approval. Existing node
+certificates missing required SANs need the
+[upgrade preflight](../../../docs/operations/upgrades.md#peer-tls-and-enrollment-compatibility),
+not disabled verification or deletion of live state. Raft remains
+plaintext; verifying peer gRPC servers does not add client mTLS or
+Internal caller authorization.
 
 ## Verify
 

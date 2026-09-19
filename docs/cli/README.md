@@ -23,11 +23,12 @@ shape: it tries the local unix socket unless you pass `--server`.
   permissions, so **no bearer token is required**; the action is
   attributed to the `local` identity in the audit log.
 - **Remote** — off-node, pass `--server <host:port>` plus `--token`
-  (or `JACO_TOKEN`). The CLI dials TLS gRPC and pins the cluster CA
-  from `--ca-cert` (default `/var/lib/jaco/node/ca.crt`, override
-  via `JACO_CA_CERT`). Without a `--ca-cert`, the dial falls back to
-  `InsecureSkipVerify` with a one-line stderr warning — fine for v0
-  bootstrapping, but pin the cert in any environment you care about.
+  (or `JACO_TOKEN`). The CLI verifies TLS gRPC using the independently
+  provisioned CA bundle from `--ca-cert` (default
+  `/var/lib/jaco/node/ca.crt`, override via `JACO_CA_CERT`), including
+  validity, server-auth usage, and the exact dial IP/DNS SAN. Provision
+  the file from an authenticated existing member; missing/invalid trust
+  is an error, not a reason to skip verification.
 
 A handful of commands (`rollback`, `delete`, `token *`, `node list`)
 currently require `--server` even when run on a cluster node. The
@@ -41,7 +42,7 @@ remainder (`apply`, `status`, `logs`, `audit`, `backup`,
 | [`jaco cluster init`](cluster.md)            | bootstrap a new cluster on this node       |
 | [`jaco cluster status`](cluster.md)          | print the local daemon's cluster status    |
 | [`jaco node join`](node.md)                  | attach this node to an existing cluster    |
-| [`jaco node issue-join-token`](node.md)      | mint a single-use 24h join token           |
+| [`jaco node issue-join-token`](node.md)      | mint a single-use 24h token scoped to a hostname and approved SANs |
 | [`jaco node list`](node.md)                  | list cluster members                       |
 | [`jaco node remove`](node.md)                | remove a node from the cluster             |
 | [`jaco apply`](apply.md)                     | apply a jaco.yaml + compose pair           |
@@ -82,7 +83,7 @@ Level precedence: `--log-level` > `--verbose` > `JACO_LOG` > `warn`.
 |-----------------|----------------------------------------------|------------------------------------------------------|
 | `JACO_TOKEN`    | every command that takes `--token`           | operator bearer token (required with `--server`)     |
 | `JACO_SOCKET`   | every command that takes `--socket`          | local daemon unix socket path                        |
-| `JACO_CA_CERT`  | every command that takes `--ca-cert`         | path to the cluster CA cert PEM                      |
+| `JACO_CA_CERT`  | every command that takes `--ca-cert`, including `node join` | path to the independently provisioned cluster CA PEM bundle |
 | `JACO_JOIN_TOKEN` | `jaco node join`                           | single-use join token                                |
 | `JACO_DATA_DIR` | `jaco restore`                               | daemon data dir to seed                              |
 | `JACO_LOG`      | root command                                 | base log level                                       |
@@ -100,9 +101,13 @@ Level precedence: `--log-level` > `--verbose` > `JACO_LOG` > `warn`.
   manifests using compose `privileged:` or `security_opt:`. Token
   revocation is a raft write, effective cluster-wide within one apply
   (well under 5 s).
-- **Join tokens** are single-use, 24-hour TTL, hashed in raft state.
-  Mint with `jaco node issue-join-token`, consume with
-  `jaco node join`.
+- **Join tokens** are single-use, 24-hour TTL, hashed and scoped in raft
+  state. Mint with `jaco node issue-join-token --node-name <hostname>`
+  and repeatable `--san` approvals; each node needs its own token.
+  Consume with `jaco node join --peer <member>:7000 --token <single-use>
+  --ca-cert <trusted-ca.pem>`. The joiner must already have the CA;
+  the token authorizes enrollment, not server trust. Legacy unscoped
+  tokens must be reissued.
 
 See [Auth and tokens](../concepts/auth-and-tokens.md) for the full
 trust model.

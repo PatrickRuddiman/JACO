@@ -79,15 +79,49 @@ Action:
    the backup.
 2. `sudo systemctl stop jaco` if the daemon auto-started.
 3. `sudo jaco restore --input <backup>.tar.gz --name $(hostname)`.
-4. `sudo systemctl start jaco`.
+4. Check [restored-node credentials and addresses](#restored-node-credentials-and-addresses)
+   below, then `sudo systemctl start jaco`.
 5. `jaco cluster status` should show the restored cluster id, a
    single voter, and the deployments from the backup.
-6. Provision and join the remaining nodes via
-   `jaco node issue-join-token` + `jaco node join`.
+6. Independently provision the authenticated restored member's CA on
+   the remaining nodes. For each daemon, issue its own token with
+   `jaco node issue-join-token --node-name <hostname>` and repeatable
+   `--san` approvals for advertised hosts and extra dial aliases.
+   Join with `jaco node join --peer <restored-member>:7000 --token <single-use>
+   --ca-cert <trusted-ca.pem>`. Follow [Backups → Rejoin](backups.md#rejoin-the-rest-of-the-cluster),
+   including the certificate preflight for legacy nodes.
 7. Wait for `jaco node list` to report every node `READY`. Verify
    deployments converge: `jaco status -w`.
 
 See [Backups](backups.md) for the full export → restore workflow.
+
+### Restored-node credentials and addresses
+
+In this peer-verification change, `OpenRaft` refuses to start Raft when
+the node CA or keypair is missing/invalid, the certificate CN does not
+match the local node identity, or an advertised Raft/gRPC host is
+missing from the SANs. It does not retain the bootstrap certificate as
+a fallback. Check these credentials before attempting recovery; the
+CN identity check does not replace the dial host's SAN check.
+
+Use advertised hosts already covered by the restored node certificate.
+For legacy backups without membership endpoint metadata, or when the
+restored member ID (`LocalID`) changes, recover using an **already
+covered IP** for `listen_addr` and `cluster_addr` (with their separate
+ports), not an assumed DNS alias. Verify the identity and certificate
+chain too. There is no automatic node-certificate reissuance path or
+supported `SignNodeCert` RPC to repair this. Do not delete live state or
+keys to bypass the checks.
+
+**Separate, unmerged Raft TLS work — not supplied by this branch:** its
+approved restore rule preserves `LocalID` and local IPs, and adds only
+explicit DNS/IP hosts from saved membership `GrpcAddress` / `Address`
+when that member's ID **exactly equals `LocalID`**. It must not copy
+unrelated members' aliases, discover names through DNS, or include
+wildcard bind addresses such as `0.0.0.0` / `::`. Do not assume that
+alias-preservation behavior or Raft TLS is already available here;
+the covered-IP recovery path applies when metadata is absent or the
+identity has changed.
 
 ## Pinned replica is `pending`
 

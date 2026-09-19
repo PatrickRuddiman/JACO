@@ -2,13 +2,10 @@ package grpc
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 
 	hraft "github.com/hashicorp/raft"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
@@ -45,11 +42,11 @@ func applyOrForwardCommand(
 // the inline production closure stays a one-liner. It assumes the caller
 // has already resolved the leader's gRPC address; an empty addr surfaces
 // as a no-leader error rather than a dial attempt.
-func dialAndSubmit(ctx context.Context, leaderAddr string, data []byte) error {
+func (s *Server) dialAndSubmit(ctx context.Context, leaderAddr string, data []byte) error {
 	if leaderAddr == "" {
 		return fmt.Errorf("no leader gRPC address known")
 	}
-	conn, err := grpc.NewClient(leaderAddr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})))
+	conn, err := s.dialPeer(leaderAddr)
 	if err != nil {
 		return fmt.Errorf("dial leader %s: %w", leaderAddr, err)
 	}

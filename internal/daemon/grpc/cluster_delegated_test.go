@@ -66,7 +66,7 @@ func TestDelegated_IssueJoinTokenReturnsToken(t *testing.T) {
 	waitForLeader(t, s.Raft())
 
 	authCtx := withOperatorAuth(context.Background(), resp.GetOperatorToken())
-	out, err := c.IssueJoinToken(authCtx, &pb.IssueJoinTokenRequest{})
+	out, err := c.IssueJoinToken(authCtx, &pb.IssueJoinTokenRequest{NodeName: "new-node", AllowedSans: []string{"127.0.0.1"}})
 	if err != nil {
 		t.Fatalf("IssueJoinToken: %v", err)
 	}

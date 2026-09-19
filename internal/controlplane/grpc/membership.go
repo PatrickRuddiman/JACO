@@ -25,15 +25,21 @@ import (
 const joinTokenTTL = 24 * time.Hour
 
 // IssueJoinToken mints a single-use 32-byte token, raft-applies a
-// JoinTokenIssue command storing only its hash, and returns the cleartext
-// token (returned exactly once) plus the cluster CA cert for the joiner to
-// pin its TLS dial. Requires operator authentication.
-func (c *clusterServer) IssueJoinToken(ctx context.Context, _ *pb.IssueJoinTokenRequest) (*pb.IssueJoinTokenResponse, error) {
+// JoinTokenIssue command storing its hash and approved node identity, and
+// returns the cleartext token once. The CA must reach the joiner through an
+// independently authenticated channel. Requires operator authentication.
+func (c *clusterServer) IssueJoinToken(ctx context.Context, req *pb.IssueJoinTokenRequest) (*pb.IssueJoinTokenResponse, error) {
 	if c.raft == nil {
 		return nil, errorStatus(codes.Unavailable, "raft_unavailable", "raft not wired")
 	}
 	if !c.raft.IsLeader() {
 		return nil, errorStatus(codes.Unavailable, "no_leader", "issue join token requires leader")
+	}
+	if err := ca.ValidateNodeIdentity(req.GetNodeName(), req.GetAllowedSans()); err != nil {
+		return nil, errorStatus(codes.InvalidArgument, "validation_failed", err.Error())
+	}
+	if _, ok := c.state.Nodes.Get(req.GetNodeName()); ok {
+		return nil, errorStatus(codes.AlreadyExists, "node_exists", "node is already a member")
 	}
 
 	tokenBytes := make([]byte, 32)
@@ -50,6 +56,8 @@ func (c *clusterServer) IssueJoinToken(ctx context.Context, _ *pb.IssueJoinToken
 		Payload: &pb.Command_JoinTokenIssue{JoinTokenIssue: &pb.JoinTokenIssue{
 			HashedSecret: hash[:],
 			ExpiresAt:    expiresAt,
+			NodeName:     req.GetNodeName(),
+			AllowedSans:  req.GetAllowedSans(),
 		}},
 	}); err != nil {
 		return nil, errorStatus(codes.Internal, "raft_apply_failed", err.Error())
@@ -79,8 +87,8 @@ func (c *clusterServer) IssueJoinToken(ctx context.Context, _ *pb.IssueJoinToken
 // cluster CA, adds the joiner to raft as a NON-VOTER (bug 003: voters
 // count toward quorum the moment AddVoter returns, which collapses a
 // 1-node cluster's leader before the new server's raft is up), and
-// writes a NodeJoin command into the FSM. Unauthenticated (the
-// join_token in the body is the gate; see admission.UnauthMethods).
+// writes a NodeJoin command into the FSM. The scoped join_token authorizes
+// enrollment without an operator bearer token; see admission.UnauthMethods.
 //
 // Promotion to voter is the responsibility of the leader-side voter-set
 // reconciler (issue #143): once the joiner has been settling as a
@@ -91,6 +99,9 @@ func (c *clusterServer) IssueJoinToken(ctx context.Context, _ *pb.IssueJoinToken
 // that assemble two-node clusters without spinning up the full
 // daemon) must spawn their own reconciler if they want promotion.
 func (c *clusterServer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*pb.NodeJoinResponse, error) {
+	c.joinMu.Lock()
+	defer c.joinMu.Unlock()
+
 	if c.raft == nil {
 		return nil, errorStatus(codes.Unavailable, "raft_unavailable", "raft not wired")
 	}
@@ -113,12 +124,15 @@ func (c *clusterServer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*p
 	if exp := tok.GetExpiresAt(); exp != nil && exp.AsTime().Before(time.Now()) {
 		return nil, errorStatus(codes.PermissionDenied, "join_token_expired", "join token expired")
 	}
+	if err := ValidateJoinIdentity(c.state, tok, req); err != nil {
+		return nil, err
+	}
 
 	meta := c.state.Cluster.Get()
 	if meta == nil || len(meta.GetCaCert()) == 0 || len(meta.GetCaKey()) == 0 {
 		return nil, errorStatus(codes.Internal, "ca_missing", "cluster CA not present in state")
 	}
-	signedCertPEM, err := ca.SignNodeCSR(req.GetCsrPem(), meta.GetCaCert(), meta.GetCaKey())
+	signedCertPEM, err := ca.SignNodeCSRForIdentity(req.GetCsrPem(), meta.GetCaCert(), meta.GetCaKey(), tok.GetNodeName(), tok.GetAllowedSans())
 	if err != nil {
 		return nil, errorStatus(codes.InvalidArgument, "csr_invalid", err.Error())
 	}
@@ -151,6 +165,7 @@ func (c *clusterServer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*p
 					Address:               req.GetAdvertiseAddr(),
 					ServerCertFingerprint: nil,
 					WireguardPubkey:       req.GetWireguardPubkey(),
+					GrpcAddress:           req.GetGrpcAddress(),
 				}},
 			},
 		}}},

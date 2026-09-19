@@ -10,7 +10,7 @@
 #
 # Env:
 #   SSH_USER   default azureuser
-#   SSH_KEY    default ~/.ssh/jaco
+#   SSH_KEY    default ~/.ssh/jaco; verified host keys must already be in known_hosts
 #   DEB        path to a prebuilt jaco_*.deb (default: built via `make package`)
 #   REGISTRY   registry host:port (default: <node-1 private IP>:5000)
 #   VNET_CIDR  default 172.16.0.0/16
@@ -27,7 +27,7 @@ SSH_USER="${SSH_USER:-azureuser}"
 _bed_key="$REPO_ROOT/tests/testbed/.ssh/jaco"
 SSH_KEY="${SSH_KEY:-$([ -f "$_bed_key" ] && echo "$_bed_key" || echo "$HOME/.ssh/jaco")}"
 VNET_CIDR="${VNET_CIDR:-172.16.0.0/16}"
-SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -o UserKnownHostsFile=/dev/null)
+SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
 
 # --- resolve node addresses (node-1 first) ----------------------------------
 read -r -a PUB <<<"${BENCH_PUBLIC_IPS:-}"
@@ -69,7 +69,7 @@ for i in "${!PUB[@]}"; do
   scp "${SSH_OPTS[@]}" "$DEB" "$HERE/install-node.sh" "$SSH_USER@$pub:/tmp/"
   # Forward ACME_CA (when set) through sudo so the operator can pick the prod
   # LE directory; install-node.sh otherwise defaults it to staging.
-  ssh_node "$pub" "sudo ${ACME_CA:+ACME_CA='$ACME_CA'} bash /tmp/install-node.sh /tmp/$(basename "$DEB") '$REGISTRY' '$VNET_CIDR'"
+  ssh_node "$pub" "sudo ${ACME_CA:+ACME_CA='$ACME_CA'} bash /tmp/install-node.sh /tmp/$(basename "$DEB") '$REGISTRY' '$VNET_CIDR' '${PRIV[$i]}'"
 done
 
 # --- 3. in-cluster registry + image build/push (on node-1) ------------------
@@ -125,11 +125,16 @@ ssh_node "${PUB[0]}" "sudo systemctl enable jaco"
 # Join tokens are single-use — issue a fresh one for each joining node.
 for i in "${!PUB[@]}"; do
   [[ "$i" -eq 0 ]] && continue
+  NODE_NAME="$(ssh_node "${PUB[$i]}" "hostname")"
+  # SSH host keys are verified; never obtain join trust from the peer's TLS response.
+  ssh_node "${PUB[0]}" "sudo cat /var/lib/jaco/node/ca.crt" \
+    | ssh_node "${PUB[$i]}" "sudo tee /etc/jaco/cluster-ca.crt >/dev/null"
   echo "[bootstrap] issuing join token for node$((i+1))"
-  TOKEN="$(ssh_node "${PUB[0]}" "sudo jaco node issue-join-token" | grep -oE 'token=[^ ]+' | head -1 | cut -d= -f2)"
+  printf -v ISSUE_JOIN_CMD 'sudo jaco node issue-join-token --node-name=%q --san=%q' "$NODE_NAME" "${PRIV[$i]}"
+  TOKEN="$(ssh_node "${PUB[0]}" "$ISSUE_JOIN_CMD" | grep -oE 'token=[^ ]+' | head -1 | cut -d= -f2)"
   [[ -n "$TOKEN" ]] || { echo "[bootstrap] failed to capture join token" >&2; exit 1; }
   echo "[bootstrap] joining node$((i+1)) -> ${NODE1_PRIV}:7000"
-  ssh_node "${PUB[$i]}" "sudo jaco node join --peer='${NODE1_PRIV}:7000' --token='$TOKEN'"
+  ssh_node "${PUB[$i]}" "sudo jaco node join --peer='${NODE1_PRIV}:7000' --token='$TOKEN' --ca-cert=/etc/jaco/cluster-ca.crt"
   # Persist jacod across reboots — postinstall ships disabled by design (build/packaging/postinstall.sh); enabling here is the cluster-commit signal. Issue #151.
   ssh_node "${PUB[$i]}" "sudo systemctl enable jaco"
 done

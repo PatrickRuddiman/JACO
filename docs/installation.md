@@ -118,7 +118,13 @@ The daemon comes up in the **uninitialized** state. Every RPC except
 either of those two transitions runs. From here, either:
 
 - bootstrap a new cluster with `sudo jaco cluster init`, or
-- join an existing cluster with `sudo jaco node join --peer … --token …`.
+- join an existing cluster with
+  `sudo jaco node join --peer … --token … --ca-cert /path/to/cluster-ca.crt`.
+
+Before joining, independently provision the authentic CA file from an
+existing member and obtain a single-use token scoped with
+`--node-name` and the required `--san` approvals. The token does not
+establish server trust; see [Getting started](getting-started.md#3-join-the-other-nodes).
 
 Both of those commands are the point at which this node commits to a cluster,
 so they also run `systemctl enable jaco` for you — the daemon will come back up

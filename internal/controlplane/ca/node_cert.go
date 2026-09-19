@@ -8,7 +8,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net"
-	"time"
 )
 
 // GenerateNodeKeypair returns an Ed25519 private key + a CSR for the given
@@ -66,44 +65,11 @@ func GenerateNodeKeypair(hostname string, ips ...net.IP) (keyPEM, csrPEM []byte,
 // returned cert carries the CSR's Subject + SANs verbatim; key usage covers
 // TLS server + client auth for the gRPC layer.
 func SignNodeCSR(csrPEM, caCertPEM, caKeyPEM []byte) ([]byte, error) {
-	block, _ := pem.Decode(csrPEM)
-	if block == nil || block.Type != "CERTIFICATE REQUEST" {
-		return nil, fmt.Errorf("decode CSR PEM")
-	}
-	csr, err := x509.ParseCertificateRequest(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("parse CSR: %w", err)
-	}
-	if err := csr.CheckSignature(); err != nil {
-		return nil, fmt.Errorf("CSR signature: %w", err)
-	}
-
-	caCert, caKey, err := ParseCA(caCertPEM, caKeyPEM)
+	csr, err := parseNodeCSR(csrPEM)
 	if err != nil {
 		return nil, err
 	}
-
-	serial, err := randomSerial()
-	if err != nil {
-		return nil, err
-	}
-
-	template := &x509.Certificate{
-		SerialNumber: serial,
-		Subject:      csr.Subject,
-		DNSNames:     csr.DNSNames,
-		IPAddresses:  csr.IPAddresses,
-		NotBefore:    time.Now().Add(-clockSkew),
-		NotAfter:     time.Now().Add(certLifetime),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-	}
-
-	der, err := x509.CreateCertificate(rand.Reader, template, caCert, csr.PublicKey, caKey)
-	if err != nil {
-		return nil, fmt.Errorf("sign cert: %w", err)
-	}
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), nil
+	return signNodeCSR(csr, caCertPEM, caKeyPEM)
 }
 
 // ensure ed25519 import is exercised (gofmt would otherwise drop it on tidy if

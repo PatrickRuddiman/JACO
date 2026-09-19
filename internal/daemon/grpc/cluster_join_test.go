@@ -2,15 +2,8 @@ package grpc_test
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
-	"encoding/pem"
-	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -25,6 +18,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/ca"
 	dgrpc "github.com/PatrickRuddiman/jaco/internal/daemon/grpc"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
@@ -36,6 +30,7 @@ type fakePeer struct {
 	clusterID     string
 	signedCertPEM []byte
 	caCertPEM     []byte
+	caKeyPEM      []byte
 	peerAddrs     []string
 
 	mu      sync.Mutex // protects lastReq
@@ -49,8 +44,15 @@ func (f *fakePeer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*pb.Nod
 		return nil, f.rejectWith
 	}
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.lastReq = req
-	f.mu.Unlock()
+	if f.signedCertPEM == nil {
+		var err error
+		f.signedCertPEM, err = ca.SignNodeCSR(req.GetCsrPem(), f.caCertPEM, f.caKeyPEM)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return &pb.NodeJoinResponse{
 		ClusterId:  f.clusterID,
 		SignedCert: f.signedCertPEM,
@@ -61,36 +63,28 @@ func (f *fakePeer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*pb.Nod
 
 func startFakePeer(t *testing.T, peer *fakePeer) string {
 	t.Helper()
-	// Generate self-signed TLS cert + key for the peer.
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	caCert, caKey, err := ca.GenerateClusterCA()
 	if err != nil {
-		t.Fatalf("genkey: %v", err)
+		t.Fatal(err)
 	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "fake-peer"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-		KeyUsage:     x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
-		DNSNames:     []string{"localhost"},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	peer.caCertPEM, peer.caKeyPEM = caCert, caKey
+	keyPEM, csrPEM, err := ca.GenerateNodeKeypair("localhost", net.ParseIP("127.0.0.1"))
 	if err != nil {
-		t.Fatalf("cert: %v", err)
+		t.Fatal(err)
 	}
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyDER, _ := x509.MarshalECPrivateKey(priv)
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-	tlsCert, _ := tls.X509KeyPair(certPEM, keyPEM)
+	certPEM, err := ca.SignNodeCSR(csrPEM, caCert, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	// The daemon's Cluster.Join dials this peer with TLS skip-verify;
-	// our self-signed cert + TLS-wrapped listener completes that flow.
 	gs := grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{Certificates: []tls.Certificate{tlsCert}})))
 	pb.RegisterClusterServer(gs, peer)
 	go func() { _ = gs.Serve(lis) }()
@@ -138,10 +132,8 @@ func newDaemon(t *testing.T) (*dgrpc.Server, pb.ClusterClient, string) {
 
 func TestJoin_DialsPeerAndPersistsCerts(t *testing.T) {
 	peer := &fakePeer{
-		clusterID:     "cluster-xyz",
-		signedCertPEM: []byte("-----BEGIN CERTIFICATE-----\nFAKE_SIGNED\n-----END CERTIFICATE-----\n"),
-		caCertPEM:     []byte("-----BEGIN CERTIFICATE-----\nFAKE_CA\n-----END CERTIFICATE-----\n"),
-		peerAddrs:     []string{"127.0.0.1:7001"},
+		clusterID: "cluster-xyz",
+		peerAddrs: []string{"127.0.0.1:7001"},
 	}
 	peerAddr := startFakePeer(t, peer)
 
@@ -149,6 +141,7 @@ func TestJoin_DialsPeerAndPersistsCerts(t *testing.T) {
 	_, err := c.Join(context.Background(), &pb.ClusterJoinRequest{
 		PeerAddr:  peerAddr,
 		JoinToken: "fake-token-xyz",
+		CaCert:    peer.caCertPEM,
 	})
 	if err != nil {
 		t.Fatalf("Join: %v", err)
@@ -166,9 +159,11 @@ func TestJoin_DialsPeerAndPersistsCerts(t *testing.T) {
 	}
 	// Cert content matches what the peer returned.
 	gotCert, _ := os.ReadFile(filepath.Join(dataDir, "node", "node-b.crt"))
+	peer.mu.Lock()
 	if string(gotCert) != string(peer.signedCertPEM) {
 		t.Errorf("cert content mismatch")
 	}
+	peer.mu.Unlock()
 	gotCA, _ := os.ReadFile(filepath.Join(dataDir, "node", "ca.crt"))
 	if string(gotCA) != string(peer.caCertPEM) {
 		t.Errorf("ca content mismatch")
@@ -245,6 +240,7 @@ func TestJoin_SurfacesPeerError(t *testing.T) {
 	_, err := c.Join(context.Background(), &pb.ClusterJoinRequest{
 		PeerAddr:  peerAddr,
 		JoinToken: "bad-token",
+		CaCert:    peer.caCertPEM,
 	})
 	if err == nil {
 		t.Fatal("expected error")

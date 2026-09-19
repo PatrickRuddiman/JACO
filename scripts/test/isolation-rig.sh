@@ -6,6 +6,7 @@
 #
 # Requires (when JACO_RIG_FORCE=1):
 #   - CAP_NET_ADMIN + CAP_NET_RAW (privileged container or root).
+#   - util-linux unshare, hostname, and CAP_SYS_ADMIN for UTS isolation.
 #   - Kernel WireGuard module loaded.
 #   - nftables >= 1.0.
 #   - Docker engine reachable.
@@ -24,10 +25,15 @@ if [[ "${JACO_RIG_FORCE:-0}" != "1" ]]; then
   cat >&2 <<'EOF'
 isolation-rig.sh: 3-node E2E rig — set JACO_RIG_FORCE=1 to enable.
 
-Requires CAP_NET_ADMIN + CAP_NET_RAW, kernel WireGuard, nftables >= 1.0,
-docker engine. Skipped by default so CI passes on unprivileged runners.
+Requires CAP_NET_ADMIN + CAP_NET_RAW + CAP_SYS_ADMIN, unshare, hostname,
+kernel WireGuard, nftables >= 1.0, docker engine. Skipped by default so
+CI passes on unprivileged runners.
 EOF
   exit 0
+fi
+if ! unshare --uts -- sh -c 'hostname jaco-preflight' 2>/dev/null; then
+  echo "FAIL isolation-rig.sh: requires unshare, hostname, and CAP_SYS_ADMIN with UTS namespace creation permitted." >&2
+  exit 1
 fi
 if ! command -v nft >/dev/null 2>&1; then
   echo "SKIP isolation-rig.sh: nft binary not found"; exit 0
@@ -63,7 +69,8 @@ wg_port: 5182$n
 log_level: info
 ipam_pool: 10.244.0.0/16
 EOF
-  JACO_CONFIG="$WORK/jacod-$n.yaml" "$WORK/jacod" >"$WORK/jacod-$n.log" 2>&1 &
+  JACO_CONFIG="$WORK/jacod-$n.yaml" unshare --uts -- sh -c 'hostname "$1" && exec "$2"' sh \
+    "jaco-$n" "$WORK/jacod" >"$WORK/jacod-$n.log" 2>&1 &
   PIDS+=("$!")
 }
 
@@ -74,12 +81,13 @@ sleep 2
 
 TOKEN=$("$WORK/jaco" cluster init --socket "$WORK/jaco-1.sock" --name rig 2>&1 | awk '/operator_token:/ {print $2}')
 [[ -z "$TOKEN" ]] && { echo "FAIL: empty operator token"; exit 1; }
+export JACO_CA_CERT="$WORK/data-1/node/ca.crt"
 sleep 1
 
-JOIN1=$(JACO_TOKEN="$TOKEN" "$WORK/jaco" node issue-join-token --server 127.0.0.1:28001 2>&1 | awk '/^Join token:/ {print $3}')
-"$WORK/jaco" node join --socket "$WORK/jaco-2.sock" --peer 127.0.0.1:28001 --token "$JOIN1"
-JOIN2=$(JACO_TOKEN="$TOKEN" "$WORK/jaco" node issue-join-token --server 127.0.0.1:28001 2>&1 | awk '/^Join token:/ {print $3}')
-"$WORK/jaco" node join --socket "$WORK/jaco-3.sock" --peer 127.0.0.1:28001 --token "$JOIN2"
+JOIN1=$(JACO_TOKEN="$TOKEN" "$WORK/jaco" node issue-join-token --server 127.0.0.1:28001 --node-name jaco-2 --san 127.0.0.1 2>&1 | grep -oE -- '--token=[^ ]+' | head -1 | cut -d= -f2)
+"$WORK/jaco" node join --socket "$WORK/jaco-2.sock" --peer 127.0.0.1:28001 --token "$JOIN1" --ca-cert "$WORK/data-1/node/ca.crt"
+JOIN2=$(JACO_TOKEN="$TOKEN" "$WORK/jaco" node issue-join-token --server 127.0.0.1:28001 --node-name jaco-3 --san 127.0.0.1 2>&1 | grep -oE -- '--token=[^ ]+' | head -1 | cut -d= -f2)
+"$WORK/jaco" node join --socket "$WORK/jaco-3.sock" --peer 127.0.0.1:28001 --token "$JOIN2" --ca-cert "$WORK/data-1/node/ca.crt"
 sleep 2
 
 # --- Apply two deployments, each with two networks --------------------------
@@ -161,11 +169,12 @@ wg_port: 51824
 log_level: info
 ipam_pool: 10.244.0.0/16
 EOF
-PATH="/usr/bin:/bin" JACO_CONFIG="$WORK/jacod-4.yaml" "$WORK/jacod" >"$WORK/jacod-4.log" 2>&1 &
+PATH="/usr/bin:/bin" JACO_CONFIG="$WORK/jacod-4.yaml" unshare --uts -- sh -c 'hostname "$1" && exec "$2"' sh \
+  jaco-4 "$WORK/jacod" >"$WORK/jacod-4.log" 2>&1 &
 PIDS+=("$!")
 sleep 3
-JOIN4=$(JACO_TOKEN="$TOKEN" "$WORK/jaco" node issue-join-token --server 127.0.0.1:28001 2>&1 | awk '/^Join token:/ {print $3}')
-"$WORK/jaco" node join --socket "$WORK/jaco-4.sock" --peer 127.0.0.1:28001 --token "$JOIN4" || true
+JOIN4=$(JACO_TOKEN="$TOKEN" "$WORK/jaco" node issue-join-token --server 127.0.0.1:28001 --node-name jaco-4 --san 127.0.0.1 2>&1 | grep -oE -- '--token=[^ ]+' | head -1 | cut -d= -f2)
+"$WORK/jaco" node join --socket "$WORK/jaco-4.sock" --peer 127.0.0.1:28001 --token "$JOIN4" --ca-cert "$WORK/data-1/node/ca.crt" || true
 sleep 5
 STATUS=$(JACO_TOKEN="$TOKEN" "$WORK/jaco" node list --server 127.0.0.1:28001 2>&1)
 if echo "$STATUS" | grep -q "ISOLATION_UNAVAILABLE"; then

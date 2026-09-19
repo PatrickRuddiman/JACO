@@ -72,10 +72,23 @@ on multi-NIC hosts, on overlay-only clusters where the daemon should
 listen on the overlay interface, or whenever you want bind == advertise
 to be an exact value. A pinned value is honored verbatim.
 
+Peer TLS verifies the exact dial IP/DNS SAN. Before joining, have the
+operator approve this host component with `issue-join-token --san`
+unless it is already the implicitly approved `--node-name`. Approve any
+additional private/interface IP or DNS alias operators will dial too;
+ports are not SANs. Changing an advertised host later requires a
+certificate valid for the new host, not a verification bypass. See
+[Enrollment](cli/node.md) and the
+[legacy certificate preflight](operations/upgrades.md#peer-tls-and-enrollment-compatibility).
+
 ### `cluster_addr` (string, required, `host:port`)
 
 Raft TCP transport. Same resolution semantics as `listen_addr`. MUST
 differ from `listen_addr`. Default `0.0.0.0:7001`.
+
+Its advertised host component must also be within the join token's
+approved SAN set, even when different from the gRPC host. This identity
+check does not add TLS to the Raft transport, which remains plaintext.
 
 ### `unix_socket` (string, required)
 

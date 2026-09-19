@@ -2326,6 +2326,8 @@ type JoinTokenIssue struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	HashedSecret  []byte                 `protobuf:"bytes,1,opt,name=hashed_secret,json=hashedSecret,proto3" json:"hashed_secret,omitempty"`
 	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	NodeName      string                 `protobuf:"bytes,3,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
+	AllowedSans   []string               `protobuf:"bytes,4,rep,name=allowed_sans,json=allowedSans,proto3" json:"allowed_sans,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2370,6 +2372,20 @@ func (x *JoinTokenIssue) GetHashedSecret() []byte {
 func (x *JoinTokenIssue) GetExpiresAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.ExpiresAt
+	}
+	return nil
+}
+
+func (x *JoinTokenIssue) GetNodeName() string {
+	if x != nil {
+		return x.NodeName
+	}
+	return ""
+}
+
+func (x *JoinTokenIssue) GetAllowedSans() []string {
+	if x != nil {
+		return x.AllowedSans
 	}
 	return nil
 }
@@ -2741,11 +2757,13 @@ const file_jaco_v1_commands_proto_rawDesc = "" +
 	"\rhashed_secret\x18\x02 \x01(\fR\fhashedSecret\x12+\n" +
 	"\x11allows_privileged\x18\x03 \x01(\bR\x10allowsPrivileged\")\n" +
 	"\vTokenRevoke\x12\x1a\n" +
-	"\bidentity\x18\x01 \x01(\tR\bidentity\"p\n" +
+	"\bidentity\x18\x01 \x01(\tR\bidentity\"\xb0\x01\n" +
 	"\x0eJoinTokenIssue\x12#\n" +
 	"\rhashed_secret\x18\x01 \x01(\fR\fhashedSecret\x129\n" +
 	"\n" +
-	"expires_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"7\n" +
+	"expires_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x12\x1b\n" +
+	"\tnode_name\x18\x03 \x01(\tR\bnodeName\x12!\n" +
+	"\fallowed_sans\x18\x04 \x03(\tR\vallowedSans\"7\n" +
 	"\x10JoinTokenConsume\x12#\n" +
 	"\rhashed_secret\x18\x01 \x01(\fR\fhashedSecret\"8\n" +
 	"\vAuditAppend\x12)\n" +

@@ -2,7 +2,6 @@ package grpc
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,9 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
 	hraft "github.com/hashicorp/raft"
@@ -45,8 +42,7 @@ type clusterServer struct {
 	advertiseAddr string
 	server        *Server // back-reference so handlers can call OpenRaft / read raft handle
 
-	// mu guards the single-flight Init / Join. Concurrent Init calls would
-	// race on raft store creation; serialize them at the handler layer.
+	// Serialize cluster initialization and single-use token enrollment.
 	mu sync.Mutex
 }
 
@@ -133,11 +129,10 @@ func (c *clusterServer) Init(_ context.Context, req *pb.ClusterInitRequest) (*pb
 }
 
 // Join asks the daemon to add this node to an existing cluster. Generates
-// a local keypair + CSR, dials the peer over TLS (skip-verify; the
-// join_token is the trust anchor), exchanges via Cluster.NodeJoin for the
+// a local keypair + CSR, authenticates the peer using the independently
+// provisioned cluster CA, then exchanges the token via Cluster.NodeJoin for the
 // signed cert + CA + raft peer list, persists everything under
-// $DataDir/node/, and flips the InitGate. The local raft node + steady-
-// state goroutines come up in iter 6 once a real daemon entry exists.
+// $DataDir/node/, opens Raft, and marks the daemon initialized.
 func (c *clusterServer) Join(ctx context.Context, req *pb.ClusterJoinRequest) (*pb.ClusterJoinResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -156,6 +151,11 @@ func (c *clusterServer) Join(ctx context.Context, req *pb.ClusterJoinRequest) (*
 	if req.GetJoinToken() == "" {
 		return nil, status.Error(codes.InvalidArgument, "join_token is required")
 	}
+	conn, err := dialVerifiedPeer(req.GetPeerAddr(), req.GetCaCert())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "peer trust: %v", err)
+	}
+	defer conn.Close()
 
 	hostname, err := c.effectiveHostname()
 	if err != nil {
@@ -190,17 +190,6 @@ func (c *clusterServer) Join(ctx context.Context, req *pb.ClusterJoinRequest) (*
 		return nil, status.Errorf(codes.Internal, "generate keypair: %v", err)
 	}
 
-	// Dial peer with TLS skip-verify — pre-Init this joiner can't yet
-	// verify the peer's bootstrap cert, but the join_token in the body is
-	// the trust anchor. Once Cluster.NodeJoin returns the cluster CA,
-	// subsequent operator RPCs validate against that pin.
-	creds := credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})
-	conn, err := grpc.NewClient(req.GetPeerAddr(), grpc.WithTransportCredentials(creds))
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "dial peer: %v", err)
-	}
-	defer conn.Close()
-
 	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -220,7 +209,10 @@ func (c *clusterServer) Join(ctx context.Context, req *pb.ClusterJoinRequest) (*
 		return nil, status.Errorf(codes.Internal, "node join rpc: %v", err)
 	}
 
-	if err := persistJoin(c.dataDir, hostname, advertise, keyPEM, resp); err != nil {
+	if err := validateJoinResponse(resp, keyPEM, req.GetCaCert(), hostname, advertise, grpcAdvertise); err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "invalid enrollment credentials: %v", err)
+	}
+	if err := persistJoin(c.dataDir, hostname, advertise, keyPEM, req.GetCaCert(), resp); err != nil {
 		return nil, status.Errorf(codes.Internal, "persist: %v", err)
 	}
 
@@ -238,7 +230,7 @@ func (c *clusterServer) Join(ctx context.Context, req *pb.ClusterJoinRequest) (*
 
 // persistJoin writes the joining node's certs + cluster CA + join metadata
 // under $dataDir/node/.
-func persistJoin(dataDir, hostname, advertise string, keyPEM []byte, resp *pb.NodeJoinResponse) error {
+func persistJoin(dataDir, hostname, advertise string, keyPEM, trustedCA []byte, resp *pb.NodeJoinResponse) error {
 	nodeDir := filepath.Join(dataDir, "node")
 	if err := os.MkdirAll(nodeDir, 0o700); err != nil {
 		return fmt.Errorf("create node dir: %w", err)
@@ -249,7 +241,7 @@ func persistJoin(dataDir, hostname, advertise string, keyPEM []byte, resp *pb.No
 	if err := os.WriteFile(filepath.Join(nodeDir, hostname+".crt"), resp.GetSignedCert(), 0o644); err != nil {
 		return fmt.Errorf("write cert: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(nodeDir, "ca.crt"), resp.GetCaCert(), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(nodeDir, "ca.crt"), trustedCA, 0o644); err != nil {
 		return fmt.Errorf("write ca: %w", err)
 	}
 	meta := map[string]any{

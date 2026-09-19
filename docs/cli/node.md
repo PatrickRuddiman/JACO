@@ -15,44 +15,64 @@ remove existing ones, list members.
 ### Synopsis
 
 ```
-jaco node issue-join-token [--server <host:port> --token <op>] [--show-ca] [--socket <path>]
+jaco node issue-join-token --node-name <hostname> [--san <DNS-or-IP> ...] [--server <host:port> --token <op> --ca-cert <path>] [--show-ca] [--socket <path>]
 ```
 
 ### Flags
 
 | flag                  | default                       | meaning                                       |
 |-----------------------|-------------------------------|-----------------------------------------------|
+| `--node-name <hostname>` | — (required)               | approved joining daemon identity; must match its OS hostname or explicitly configured hostname |
+| `--san <DNS-or-IP>`   | hostname implicitly included  | repeatable approval for advertised hosts and additional dialable IPs / DNS aliases; no ports |
 | `--server <addr>`     | —                             | leader gRPC; omit to use the local socket     |
 | `--token <op>`        | `JACO_TOKEN`                  | operator bearer token (required with `--server`) |
-| `--ca-cert <path>`    | `/var/lib/jaco/node/ca.crt`   | cluster CA PEM (used with `--server`)         |
+| `--ca-cert <path>`    | `JACO_CA_CERT` or `/var/lib/jaco/node/ca.crt` | independently provisioned cluster CA PEM bundle (used with `--server`) |
 | `--socket <path>`     | `/var/run/jaco/jaco.sock`     | local jacod unix socket                       |
 | `--show-ca`           | `false`                       | append the cluster CA PEM to the output       |
 
 ### Auth
 
-Operator token (TCP path) or unix-socket trust (local path).
+Operator token over CA- and SAN-verifying TLS (TCP path), or unix-socket
+trust (local path). Use an authenticated existing member to issue tokens
+and obtain the public cluster CA.
 
 ### Behavior
 
-Mints a single-use, 24-hour-TTL join token. The hashed secret is stored
-in raft as a `JoinToken{}` entity; the plaintext is printed once.
-Output is the exact `jaco node join` invocation the operator will run
-on the joining node. With `--show-ca`, the cluster CA PEM is appended
-— write that to a file on the joining node and pass via `--ca-cert`.
+Mints a single-use, 24-hour-TTL join token scoped to `--node-name` and
+the approved SANs. The hashed secret and scope are stored in raft as a
+`JoinToken{}` entity; the plaintext is printed once.
+
+The hostname is implicitly approved. Supply `--san` for **every other
+host component** advertised for Raft and gRPC, plus any additional
+private/interface IP or DNS alias peers or operators will dial. Check
+the joining daemon's hostname and configured addresses before issuance.
+Signing uses only this approved set, not arbitrary aliases requested
+in a CSR. Issue a separate token for each node. Unknown or legacy
+unscoped tokens are rejected; reissue them with the required scope.
+
+Output includes a `jaco node join` command with
+`--ca-cert=/path/to/cluster-ca.crt`. Replace the placeholder with the
+independently provisioned file. With `--show-ca`, the public cluster CA
+PEM is appended. Obtain it through the existing member's local socket
+or an already CA-verifying operator connection, then transfer it using
+verified SSH or trusted configuration management **before** joining.
+The certificate is public; its authenticity is essential. A join
+response is not a source of initial trust.
 
 ### Exit codes
 
 - `0` — token issued.
-- `1` — auth failure or transport error.
+- `1` — missing/invalid node identity or SAN, auth failure, or transport error.
 
 ### Examples
 
 ```sh
 export JACO_TOKEN=<operator_token>
-jaco node issue-join-token --server node-1:7000
+jaco node issue-join-token --server node-1:7000 --ca-cert /path/to/cluster-ca.crt \
+  --node-name node-2 --san 10.0.0.6 --san node-2.internal --show-ca
 # Join token issued. On the joining node, run:
 #
-#   sudo jaco node join --peer=node-1:7000 --token=<single-use>
+#   sudo jaco node join --peer=node-1:7000 --token=<single-use> --ca-cert=/path/to/cluster-ca.crt
 #
 # Token expires in 24h (single-use).
 ```
@@ -62,7 +82,7 @@ jaco node issue-join-token --server node-1:7000
 ### Synopsis
 
 ```
-sudo jaco node join --peer <host:port> --token <single-use> [--socket <path>] [--no-systemd-enable]
+sudo jaco node join --peer <host:port> --token <single-use> --ca-cert <path> [--socket <path>] [--no-systemd-enable]
 ```
 
 ### Flags
@@ -71,21 +91,34 @@ sudo jaco node join --peer <host:port> --token <single-use> [--socket <path>] [-
 |-----------------------|-------------------------------|------------------------------------------|
 | `--peer <addr>`       | — (required)                  | leader or any cluster member's gRPC      |
 | `--token <s>`         | `JACO_JOIN_TOKEN`             | single-use join token                    |
+| `--ca-cert <path>`    | `JACO_CA_CERT` or `/var/lib/jaco/node/ca.crt` | required, independently provisioned CA PEM bundle; the flag may be omitted only when the env/default file is usable |
 | `--socket <path>`     | `/var/run/jaco/jaco.sock`     | local jacod unix socket                  |
 | `--no-systemd-enable` | `false`                       | skip `systemctl enable jaco` after join  |
 
 ### Auth
 
-Unix-socket only. The CLI calls `Cluster.Join` on the local daemon; the
-daemon performs the cross-host raft + CSR exchange itself.
+Unix-socket only. The CLI reads the CA file and sends its PEM bytes as
+`ClusterJoinRequest.ca_cert` to `Cluster.Join` on the local daemon; the
+daemon performs the cross-host enrollment. The token authorizes that
+enrollment; it does **not** authenticate the remote server.
 
 ### Behavior
 
-The local daemon generates a CSR, dials `--peer` over TLS, exchanges
-the join token for a signed node cert + cluster CA + raft peer set,
-persists everything under `$JACO_DATA_DIR/node/`, opens its raft node,
-and joins the existing cluster. The join token is consumed (marked
-`consumed_at` in raft) and cannot be reused.
+The local daemon generates a CSR and verifies `--peer` using the supplied
+CA bundle, certificate validity, server-auth usage, and the exact dial
+IP/DNS SAN **before sending the join token**. Missing/invalid CA files
+fail explicitly; there is no fetch-and-trust, self-signed bootstrap
+exception, or insecure fallback.
+
+The leader checks token scope, expiry, consumption, and the CSR signature,
+then returns a signed node cert, cluster CA, and raft peer set. Before
+persisting credentials or starting Raft, the joiner verifies that the
+returned CA belongs to the supplied bundle and that the leaf matches the
+local private key, approved identity, advertised hosts, and both server-
+and client-auth EKUs. It persists the **independently supplied bundle**,
+not a server-provided replacement, under `$JACO_DATA_DIR/node/` with its
+node credentials. The single-use token is marked `consumed_at` in raft
+and cannot be reused.
 
 `node join` is the operator's "this node is now a cluster member"
 commitment, so by default it also runs `systemctl enable jaco` after a
@@ -98,12 +131,15 @@ than a hard failure if enabling errors. Pass `--no-systemd-enable` to skip it.
 ### Exit codes
 
 - `0` — node joined.
-- `1` — bad token, network unreachable, or `cluster_already_initialized`.
+- `1` — missing/invalid CA, TLS or issued-certificate verification failure,
+  bad/expired/consumed/unscoped token, network unreachable, or
+  `cluster_already_initialized`.
 
 ### Examples
 
 ```sh
-sudo jaco node join --peer node-1:7000 --token <single-use>
+# First securely provision /path/to/cluster-ca.crt from an authenticated member.
+sudo jaco node join --peer node-1:7000 --token <single-use> --ca-cert /path/to/cluster-ca.crt
 # Joined cluster.
 # Enabled jaco.service to start on boot — this node now survives reboot.
 ```

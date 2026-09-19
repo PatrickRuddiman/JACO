@@ -27,6 +27,72 @@ raft rejoin, move to the next — is the canonical path.
 Cluster-wide coordinated upgrade (`jaco cluster upgrade --all`) is
 explicitly **not** in v1; the operator drives the rotation.
 
+## Peer TLS and enrollment compatibility
+
+Before upgrading to mandatory peer CA/SAN verification, check every
+existing node's credentials. Older certificates without an advertised
+DNS/IP SAN now fail instead of silently connecting; protobuf field
+compatibility does not make legacy enrollment tokens or certificates
+valid under the new checks.
+
+`OpenRaft` also rejects missing/invalid node CA/keypair material, a CN
+identity mismatch, or missing advertised SANs before Raft startup; it
+does not fall back to the bootstrap certificate. For restored nodes,
+follow the [covered-IP recovery guidance](recovery.md#restored-node-credentials-and-addresses)
+rather than assuming automatic certificate reissuance.
+
+1. Back up cluster state and preserve node credentials. Inventory each
+   daemon's OS/configured hostname, advertised Raft and gRPC host
+   components, and any additional IP/DNS names operators dial.
+2. Independently verify the cluster CA bundle's provenance through an
+   authenticated existing member (local socket, already CA-verifying
+   operator TLS, verified SSH, or trusted configuration management).
+   Ensure each daemon can read its `$JACO_DATA_DIR/node/ca.crt`.
+3. Verify each existing leaf's chain, dates, identity, required SANs,
+   and server/client-auth EKUs. For example, substituting the actual
+   hostname and every dial IP/DNS name:
+
+   ```sh
+   sudo openssl x509 -in /var/lib/jaco/node/<hostname>.crt \
+     -noout -subject -dates -ext subjectAltName,extendedKeyUsage
+   sudo openssl verify -CAfile /path/to/cluster-ca.crt \
+     -purpose sslserver -verify_ip 10.0.0.6 /var/lib/jaco/node/<hostname>.crt
+   sudo openssl verify -CAfile /path/to/cluster-ca.crt \
+     -purpose sslserver -verify_hostname node-2.internal /var/lib/jaco/node/<hostname>.crt
+   sudo openssl verify -CAfile /path/to/cluster-ca.crt \
+     -purpose sslclient /var/lib/jaco/node/<hostname>.crt
+   ```
+
+4. If a legacy certificate is unsuitable, arrange approved
+   re-enrollment or independently provision a correctly signed
+   replacement matching the local private key, intended identity, all
+   required SANs, and both EKUs. Preserve quorum and follow the existing
+   certificate activation/restart process. **Do not delete live Raft
+   state or node keys to clear a TLS error.**
+5. Update token-only enrollment automation before upgrading:
+   `jaco node issue-join-token --node-name <hostname>` now requires a
+   separately scoped token per node, with repeatable `--san <DNS-or-IP>`
+   approvals for every advertised host beyond the implicit hostname
+   and any extra dial aliases. Unknown/legacy unscoped tokens must be
+   reissued. Coordinate issuer and joiner upgrades; an old issuer
+   cannot supply the required scope. Provision the authentic CA file
+   before `jaco node join --peer <member>:7000 --token <single-use>
+   --ca-cert <trusted-ca.pem>` (or use `JACO_CA_CERT` / the existing
+   default CA file). No missing-CA or self-signed bootstrap fallback
+   exists.
+
+New bootstrap certificates include explicit advertised DNS aliases and
+local/private IPs. New join certificates include only token-approved
+SANs; CSR aliases do not grant additional names.
+
+Trusted CA-signed leaf renewals and key rotations need no leaf-pin
+updates. Existing dynamicTLS/restart swaps remain unchanged. New peer
+dials reload `node/ca.crt`, so planned CA changes require explicitly
+provisioning overlapping old/new bundles out of band before swapping
+certificates. There is no automatic CA acceptance from remote RPCs, no
+new renewal RPC, and no automatic CA-rotation workflow. See
+[Auth and tokens](../concepts/auth-and-tokens.md#peer-grpc-verification-and-certificate-changes).
+
 ## Walkthrough
 
 For a cluster `{node-1, node-2, node-3}` going from `v0.1.0` to

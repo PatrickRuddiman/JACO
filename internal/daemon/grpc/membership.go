@@ -13,15 +13,19 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/ca"
+	grpcsrv "github.com/PatrickRuddiman/jaco/internal/controlplane/grpc"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
 // NodeJoin is the peer-facing RPC `jaco node join` (on jacod-2) calls to ask
 // this jacod (jacod-1) to sign its CSR and add it to the raft membership.
-// Unauthenticated — the single-use join_token in the body is the trust
-// anchor (gated by InitGate.AllowedPreInit so peers can reach it pre-init
-// too, even though it only succeeds once the leader has raft state).
+// The scoped, single-use join_token authorizes the joining identity instead
+// of an operator bearer token. The joiner separately authenticates this
+// initialized leader's server certificate before transmitting that token.
 func (c *clusterServer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*pb.NodeJoinResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	r := c.server.Raft()
 	if r == nil {
 		return nil, status.Error(codes.Unavailable, "raft_unavailable: daemon has no raft state — run `jaco cluster init` first")
@@ -50,12 +54,15 @@ func (c *clusterServer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*p
 	if exp := tok.GetExpiresAt(); exp != nil && exp.AsTime().Before(time.Now()) {
 		return nil, status.Error(codes.PermissionDenied, "join_token_expired")
 	}
+	if err := grpcsrv.ValidateJoinIdentity(st, tok, req); err != nil {
+		return nil, err
+	}
 
 	meta := st.Cluster.Get()
 	if meta == nil || len(meta.GetCaCert()) == 0 || len(meta.GetCaKey()) == 0 {
 		return nil, status.Error(codes.Internal, "ca_missing: cluster CA not in state")
 	}
-	signedCertPEM, err := ca.SignNodeCSR(req.GetCsrPem(), meta.GetCaCert(), meta.GetCaKey())
+	signedCertPEM, err := ca.SignNodeCSRForIdentity(req.GetCsrPem(), meta.GetCaCert(), meta.GetCaKey(), tok.GetNodeName(), tok.GetAllowedSans())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "csr_invalid: %v", err)
 	}

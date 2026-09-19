@@ -265,6 +265,8 @@ message JoinToken {
   google.protobuf.Timestamp issued_at = 2;
   google.protobuf.Timestamp expires_at = 3;
   google.protobuf.Timestamp consumed_at = 4;
+  string node_name = 5;
+  repeated string allowed_sans = 6;
 }
 
 // ----- Audit -----

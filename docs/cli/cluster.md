@@ -121,6 +121,10 @@ Run `jaco cluster init` to start a new cluster,
 or `jaco node join` to join an existing one.
 ```
 
+Joining requires an independently provisioned CA bundle and a
+single-use token scoped to the daemon's hostname and approved SANs.
+See [`jaco node`](node.md#jaco-node-join) before running the join.
+
 #### Output formats
 
 `-o json` / `-o yaml` emit a structured view. `status`/`suffrage` use

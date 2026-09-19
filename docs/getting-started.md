@@ -24,8 +24,10 @@ End-to-end in one page.
   whichever clients hit your ingress.
 
 The cross-host gRPC control plane (`:7000`) runs over **TLS** with the
-cluster CA — the CLI and peer nodes pin it — and the operator bearer
-token authenticates the caller on top. The **raft transport** (`:7001`)
+cluster CA — the CLI and peer nodes verify the CA and exact dial IP/DNS
+SAN. Provision that CA independently before joining; a join token is
+not server trust. Operator bearer tokens authorize operator RPCs
+separately. The **raft transport** (`:7001`)
 is still plaintext TCP, so run it over a private network or overlay you
 control. See [Networking](concepts/networking.md) and the README
 "Network model" section.
@@ -64,24 +66,49 @@ until you issue more via `jaco token issue`.
 
 ## 3. Join the other nodes
 
-On node 1, mint a single-use 24-hour join token:
+Check node 2's daemon hostname (`hostname` unless explicitly configured)
+and advertised Raft/gRPC addresses. On node 1, use its authenticated
+local socket to mint a single-use 24-hour token for that identity:
 
 ```sh
 export JACO_TOKEN=<operator_token>
-jaco node issue-join-token
+sudo jaco node issue-join-token --node-name node-2 --san <node-2-private-ip> --show-ca
 # Join token issued. On the joining node, run:
 #
-#   sudo jaco node join --peer=<node-1-host:port> --token=<single-use>
+#   sudo jaco node join --peer=<node-1-host:port> --token=<single-use> --ca-cert=/path/to/cluster-ca.crt
 #
 # Token expires in 24h (single-use).
 ```
 
-On each follower:
+Replace `node-2` with the actual daemon hostname. It is implicitly
+included in the certificate SANs; repeat `--san` for every other
+advertised host and any additional private/interface IP or DNS alias
+operators or peers will dial. CSR-requested aliases outside this
+approved set are not signed.
+
+Before joining, securely copy node 1's public CA to node 2. For example,
+run this **on node 2**, with node 1's SSH host key already independently
+verified and installed in `known_hosts`:
 
 ```sh
-sudo jaco node join --peer <node-1-host>:7000 --token <single-use>
+ssh -o StrictHostKeyChecking=yes <operator>@<node-1-host> \
+  'sudo cat /var/lib/jaco/node/ca.crt' > ./cluster-ca.crt
+sudo jaco node join --peer <node-1-host>:7000 --token <single-use> --ca-cert ./cluster-ca.crt
 # Joined cluster.
 ```
+
+Trusted configuration management is another way to provision this file;
+`--show-ca` also displays the PEM from the authenticated member. Do not
+download a CA from an unverified TLS connection or trust the join
+response. The CA is public, but its authenticity is essential. Missing
+trust, expired certificates, or a dial host absent from the server SANs
+stop enrollment before the token is sent.
+
+Repeat issuance with **node 3's own hostname and SANs**, transfer the CA,
+and join using its separate token. A single-use token cannot enroll both
+nodes. `JACO_CA_CERT` or the existing `/var/lib/jaco/node/ca.crt` may
+supply the CA path instead of `--ca-cert`; neither is a missing-CA
+fallback.
 
 Confirm everyone is in:
 

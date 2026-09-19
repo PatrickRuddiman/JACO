@@ -267,6 +267,8 @@ message TokenRevoke {
 message JoinTokenIssue {
   bytes hashed_secret = 1;
   google.protobuf.Timestamp expires_at = 2;
+  string node_name = 3;
+  repeated string allowed_sans = 4;
 }
 
 message JoinTokenConsume {

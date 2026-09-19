@@ -35,17 +35,22 @@ func nodeIssueJoinTokenCmd() *cobra.Command {
 		Short: "Issue a single-use join token (operator-authenticated)",
 	}
 	var (
-		server string
-		token  string
-		caCert string
-		socket string
-		showCA bool
+		server   string
+		token    string
+		caCert   string
+		socket   string
+		showCA   bool
+		nodeName string
+		sans     []string
 	)
 	c.Flags().StringVar(&server, "server", "", "leader address (host:port); off-node only — omit to use the local socket")
 	c.Flags().StringVar(&token, "token", "", "operator bearer token (or JACO_TOKEN); required with --server")
 	c.Flags().StringVar(&caCert, "ca-cert", defaultCACertPath(), "path to cluster CA cert PEM")
 	c.Flags().StringVar(&socket, "socket", socketDefault(), "local jacod unix socket (used when --server is omitted)")
 	c.Flags().BoolVar(&showCA, "show-ca", false, "append the cluster CA certificate to the output")
+	c.Flags().StringVar(&nodeName, "node-name", "", "exact hostname of the joining daemon; required")
+	c.Flags().StringArrayVar(&sans, "san", nil, "additional approved DNS name or IP address; repeat for each advertised/private identity")
+	_ = c.MarkFlagRequired("node-name")
 
 	c.RunE = func(cmd *cobra.Command, _ []string) error {
 		conn, withAuth, err := dialOperator(operatorAuth{server: server, token: token, caCert: caCert, socket: socket})
@@ -56,7 +61,9 @@ func nodeIssueJoinTokenCmd() *cobra.Command {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		ctx = withAuth(ctx)
-		resp, err := pb.NewClusterClient(conn).IssueJoinToken(ctx, &pb.IssueJoinTokenRequest{})
+		resp, err := pb.NewClusterClient(conn).IssueJoinToken(ctx, &pb.IssueJoinTokenRequest{
+			NodeName: nodeName, AllowedSans: sans,
+		})
 		if err != nil {
 			return cliclient.FormatError(err)
 		}
@@ -84,10 +91,10 @@ func formatIssueJoinToken(server, token string, expires time.Duration, ca string
 	if h := expires.Hours(); h == float64(int(h)) && h > 0 {
 		expiryStr = fmt.Sprintf("%dh", int(h))
 	}
-	out := fmt.Sprintf("Join token issued. On the joining node, run:\n\n  sudo jaco node join --peer=%s --token=%s\n\nToken expires in %s (single-use).\n",
+	out := fmt.Sprintf("Join token issued. Provision the cluster CA independently on the joining node, then run:\n\n  sudo jaco node join --peer=%s --token=%s --ca-cert=/path/to/cluster-ca.crt\n\nToken expires in %s (single-use).\n",
 		server, token, expiryStr)
 	if showCA && ca != "" {
-		out += fmt.Sprintf("\nCluster CA (write to a file on the joining node):\n%s", ca)
+		out += fmt.Sprintf("\nCluster CA (transfer using an independently authenticated channel):\n%s", ca)
 	}
 	return out
 }
@@ -96,25 +103,29 @@ func formatIssueJoinToken(server, token string, expires time.Duration, ca string
 
 func nodeJoinCmd() *cobra.Command {
 	c := &cobra.Command{
-		Use:   "join --peer <host:port> --token <single-use>",
+		Use:   "join --peer <host:port> --token <single-use> --ca-cert <trusted-ca.pem>",
 		Short: "Join this node to an existing cluster (RPCs the local jacod)",
 		Long: `Join this node to an existing cluster.
 
 This RPCs the local jacod over its unix socket; the daemon does all the
-work (generates a CSR, dials the peer, exchanges via Cluster.NodeJoin for
-a signed cert + cluster CA, persists everything under $JACO_DATA_DIR/node/,
-opens its raft node, and connects to the existing cluster).`,
+work (generates a CSR, verifies the peer using the independently provisioned
+cluster CA before sending the join token, validates the returned certificate,
+persists credentials under $JACO_DATA_DIR/node/, and opens its raft node).
+The join token must approve this daemon's hostname and advertised DNS/IP names.
+There is no token-only or trust-on-first-use enrollment mode.`,
 	}
 	var (
 		socket    string
 		peer      string
 		joinToken string
+		caCert    string
 
 		noSystemdEnable bool
 	)
 	c.Flags().StringVar(&socket, "socket", socketDefault(), "local jacod unix socket")
-	c.Flags().StringVar(&peer, "peer", "", "leader / any-cluster-member gRPC address (host:port); required")
+	c.Flags().StringVar(&peer, "peer", "", "leader gRPC address (host:port); required")
 	c.Flags().StringVar(&joinToken, "token", "", "single-use join token (or JACO_JOIN_TOKEN env)")
+	c.Flags().StringVar(&caCert, "ca-cert", defaultCACertPath(), "path to independently provisioned cluster CA PEM (or JACO_CA_CERT)")
 	c.Flags().BoolVar(&noSystemdEnable, "no-systemd-enable", false, "do not run `systemctl enable jaco` after join (this node won't auto-start after a reboot)")
 	_ = c.MarkFlagRequired("peer")
 
@@ -125,6 +136,10 @@ opens its raft node, and connects to the existing cluster).`,
 		if joinToken == "" {
 			return fmt.Errorf("--token or JACO_JOIN_TOKEN env is required")
 		}
+		caPEM, err := readCACert(caCert)
+		if err != nil {
+			return err
+		}
 		conn, err := dialDaemon(socket)
 		if err != nil {
 			return err
@@ -132,7 +147,7 @@ opens its raft node, and connects to the existing cluster).`,
 		defer conn.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		return runNodeJoin(ctx, pb.NewClusterClient(conn), peer, joinToken, !noSystemdEnable, os.Stdout)
+		return runNodeJoin(ctx, pb.NewClusterClient(conn), peer, joinToken, caPEM, !noSystemdEnable, os.Stdout)
 	}
 	return c
 }
@@ -141,10 +156,14 @@ opens its raft node, and connects to the existing cluster).`,
 // inject a fake without spinning up jacod. When enableSystemd is true it
 // enables jaco.service after a successful join so the freshly-committed node
 // survives a reboot (issue #151).
-func runNodeJoin(ctx context.Context, client pb.ClusterClient, peer, token string, enableSystemd bool, out io.Writer) error {
+func runNodeJoin(ctx context.Context, client pb.ClusterClient, peer, token string, caPEM []byte, enableSystemd bool, out io.Writer) error {
+	if len(caPEM) == 0 {
+		return fmt.Errorf("--ca-cert must contain independently provisioned cluster trust")
+	}
 	if _, err := client.Join(ctx, &pb.ClusterJoinRequest{
 		PeerAddr:  peer,
 		JoinToken: token,
+		CaCert:    caPEM,
 	}); err != nil {
 		return cliclient.FormatError(err)
 	}
@@ -272,33 +291,30 @@ func nodeListToView(resp *pb.NodeListResponse) nodeListView {
 
 // --- shared dial helper ---------------------------------------------------
 
-// dialServer dials the JACO control plane. The cross-host listener is
-// always TLS (bootstrap self-signed pre-Init, cluster-CA-signed post-
-// Init — task 41). When caCertPEM is non-empty the dial pins the
-// cluster CA; otherwise it falls back to InsecureSkipVerify with a
-// single one-line warning so v0 muscle-memory keeps working.
+// dialServer authenticates the control plane using explicitly provisioned CA
+// trust and the DNS/IP identity in addr. Missing trust is never an opt-out.
 func dialServer(addr string, caCertPEM []byte) (*grpc.ClientConn, error) {
 	if addr == "" {
 		return nil, fmt.Errorf("--server is required (host:port of any cluster node)")
 	}
-	if len(caCertPEM) > 0 {
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caCertPEM) {
-			return nil, fmt.Errorf("--ca-cert did not parse as PEM")
-		}
-		return grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{RootCAs: pool})))
+	if len(caCertPEM) == 0 {
+		return nil, fmt.Errorf("--ca-cert or JACO_CA_CERT is required; server authentication cannot be disabled")
 	}
-	fmt.Fprintln(os.Stderr, "warning: dialing without --ca-cert; server identity is not verified")
-	return grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})))
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caCertPEM) {
+		return nil, fmt.Errorf("--ca-cert did not parse as PEM")
+	}
+	return grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{
+		RootCAs: pool, MinVersion: tls.VersionTLS12,
+	})))
 }
 
 // readCACert reads the PEM-encoded CA certificate at path. When the file does
 // not exist it returns the documented user-facing error so operators know how
-// to fix it. An empty path is treated as "no cert" (returns nil, nil) so that
-// dialServer falls back to InsecureSkipVerify.
+// to fix it. An empty path cannot disable server authentication.
 func readCACert(path string) ([]byte, error) {
 	if path == "" {
-		return nil, nil
+		return nil, fmt.Errorf("--ca-cert or JACO_CA_CERT is required; server authentication cannot be disabled")
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
