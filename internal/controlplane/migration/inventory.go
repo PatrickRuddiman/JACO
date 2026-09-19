@@ -103,15 +103,21 @@ func validateIdentity(root, name string) error {
 			return errors.New("migration: trailing join metadata")
 		}
 	case strings.HasSuffix(name, ".crt"):
-		block, err := strictPEM(data)
-		if err != nil || block.Type != "CERTIFICATE" {
-			return errors.New("migration: certificate file contains unexpected private/opaque data")
-		}
-		if _, err := x509.ParseCertificate(block.Bytes); err != nil {
-			return errors.New("migration: invalid node certificate")
+		for remaining := data; ; {
+			block, rest, err := strictPEM(remaining)
+			if err != nil || block.Type != "CERTIFICATE" {
+				return errors.New("migration: certificate file contains unexpected private/opaque data")
+			}
+			if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+				return errors.New("migration: invalid node certificate")
+			}
+			if len(bytes.TrimSpace(rest)) == 0 {
+				break
+			}
+			remaining = rest
 		}
 	case strings.HasSuffix(name, ".key") && name != "ca.key":
-		if _, err := strictPEM(data); err != nil {
+		if _, rest, err := strictPEM(data); err != nil || len(bytes.TrimSpace(rest)) != 0 {
 			return errors.New("migration: unsupported node identity key file")
 		}
 		cert, err := os.ReadFile(filepath.Join(root, "node", strings.TrimSuffix(name, ".key")+".crt"))
@@ -132,14 +138,14 @@ func validateIdentity(root, name string) error {
 	return nil
 }
 
-func strictPEM(data []byte) (*pem.Block, error) {
+func strictPEM(data []byte) (*pem.Block, []byte, error) {
 	normalized := bytes.TrimSpace(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")))
 	block, rest := pem.Decode(normalized)
-	if block == nil || len(block.Headers) != 0 || len(bytes.TrimSpace(rest)) != 0 ||
-		!bytes.Equal(normalized, bytes.TrimSpace(pem.EncodeToMemory(block))) {
-		return nil, errors.New("migration: unexpected data in PEM identity")
+	if block == nil || len(block.Headers) != 0 ||
+		!bytes.Equal(bytes.TrimSpace(normalized[:len(normalized)-len(rest)]), bytes.TrimSpace(pem.EncodeToMemory(block))) {
+		return nil, nil, errors.New("migration: unexpected data in PEM identity")
 	}
-	return block, nil
+	return block, rest, nil
 }
 
 func validateAncillary(root, relative string) error {
