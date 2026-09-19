@@ -5,9 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"io"
-	"net"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,16 +13,12 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/pkg/stdcopy"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/ca"
-	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
-	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
@@ -153,40 +146,14 @@ func TestDeploymentLogsForwardsOperatorAuthority(t *testing.T) {
 }
 
 func TestFollowerLocalLogsRejectBeforeAnyLines(t *testing.T) {
-	dir, err := os.MkdirTemp("", "jaco-rpc-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Remove(dir) })
-	socket := filepath.Join(dir, "control.sock")
+	s := internalRPCServer(t)
+	s.cluster.hostname = "worker"
 	docker := &authorizedLogsDocker{}
-	s, err := New(Options{UnixSocketPath: socket, Hostname: "worker", Docker: docker})
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.state = state.New(watch.NewRegistry())
-	s.Gate().MarkInitialized()
+	s.docker = docker
 	s.state.ReplicasDesired.Apply(&pb.ReplicaDesired{Id: "local", Deployment: "private", Service: "web", Host: "worker"}, 1)
 	s.state.ReplicasDesired.Apply(&pb.ReplicaDesired{Id: "remote", Deployment: "private", Service: "web", Host: "leader"}, 1)
 	s.state.Nodes.Apply(&pb.Node{Hostname: "leader", GrpcAddress: "127.0.0.1:1"}, 1)
-	serveDone := make(chan error, 1)
-	go func() { serveDone <- s.Serve() }()
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		s.Stop(ctx)
-		if err := <-serveDone; err != nil {
-			t.Errorf("Serve: %v", err)
-		}
-	})
-	conn, err := grpc.NewClient("passthrough:///local", grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
-		}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
+	conn := localRPCClient(t, s)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	stream, err := pb.NewDeployClient(conn).Logs(ctx, &pb.LogsRequest{Deployment: "private"})
