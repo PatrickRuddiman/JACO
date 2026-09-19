@@ -61,22 +61,32 @@ func TestRunGetDeployments_Table(t *testing.T) {
 	}
 }
 
-func TestRunGetDeployment_YamlIncludesSpecs(t *testing.T) {
-	client := &fakeGetClient{statusFn: func(_ context.Context, req *pb.DeployStatusRequest) (*pb.DeployStatusResponse, error) {
-		if req.GetDeploymentFilter() != "sample" {
-			t.Errorf("filter = %q, want sample", req.GetDeploymentFilter())
-		}
-		return sampleStatusResp(), nil
-	}}
-	var out bytes.Buffer
-	flagOutput = "yaml"
+func TestRunGetDeployment_SecretsRequireOptIn(t *testing.T) {
 	defer func() { flagOutput = "table" }()
-	if err := runGetDeployment(context.Background(), client, "sample", &out); err != nil {
-		t.Fatalf("runGetDeployment: %v", err)
-	}
-	for _, want := range []string{"name: sample", "applied_revision: 2", "jaco_yaml:", "compose_yaml:", "nginx:1.27"} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("yaml missing %q:\n%s", want, out.String())
+	for _, format := range []string{"table", "json", "yaml"} {
+		for _, showSecrets := range []bool{false, true} {
+			client := &fakeGetClient{statusFn: func(_ context.Context, req *pb.DeployStatusRequest) (*pb.DeployStatusResponse, error) {
+				if req.GetDeploymentFilter() != "sample" || req.GetIncludeSecrets() != showSecrets {
+					t.Error("export opt-in/filter was not sent to server")
+				}
+				response := sampleStatusResp()
+				response.Deployments[0].ComposeYaml = []byte("synthetic-compose-secret")
+				response.Deployments[0].JacoYaml = []byte("synthetic-jaco-secret")
+				return response, nil // Includes specs even without opt-in, like an old daemon.
+			}}
+			var out bytes.Buffer
+			flagOutput = format
+			if err := runGetDeployment(context.Background(), client, "sample", showSecrets, &out); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out.String(), "sample") {
+				t.Error("operational metadata missing")
+			}
+			for _, marker := range []string{"synthetic-compose-secret", "synthetic-jaco-secret"} {
+				if strings.Contains(out.String(), marker) != showSecrets {
+					t.Errorf("%s showSecrets=%v: unexpected manifest exposure", format, showSecrets)
+				}
+			}
 		}
 	}
 }
@@ -87,7 +97,7 @@ func TestRunGetDeployment_NotFound(t *testing.T) {
 	}}
 	var out bytes.Buffer
 	flagOutput = "table"
-	err := runGetDeployment(context.Background(), client, "missing", &out)
+	err := runGetDeployment(context.Background(), client, "missing", false, &out)
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("err = %v, want not found", err)
 	}

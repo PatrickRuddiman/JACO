@@ -55,6 +55,7 @@ remainder (`apply`, `status`, `logs`, `audit`, `backup`,
 | [`jaco token revoke`](token.md)              | revoke an operator token by identity       |
 | [`jaco token list`](token.md)                | list known operator tokens                 |
 | [`jaco audit`](audit.md)                     | query the cluster audit log                |
+| [`jaco state`](../operations/state-encryption.md) | offline key generation, state migration and backup re-encryption |
 | [`jaco backup`](backup-restore.md)           | stream a cluster backup tarball locally    |
 | [`jaco restore`](backup-restore.md)          | restore a backup into this node's data dir |
 | [`jaco self-upgrade`](self-upgrade.md)       | verify + atomically swap both binaries     |

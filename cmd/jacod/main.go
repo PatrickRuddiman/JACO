@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -124,6 +125,7 @@ func run(ctx context.Context, configPath string, root *slog.Logger) error {
 		UnixSocketPath:       cfg.UnixSocket,
 		UnixListener:         unixListener,
 		DataDir:              cfg.DataDir,
+		StateKeyFile:         cfg.StateKeyFile,
 		ListenAddr:           listenBind,
 		ListenAdvertiseAddr:  listenAdvertise,
 		ClusterAddr:          clusterBind,
@@ -142,21 +144,29 @@ func run(ctx context.Context, configPath string, root *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("gRPC server: %w", err)
 	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		server.Stop(shutdownCtx)
+		logger.Info("shutdown complete")
+	}()
 	// Bug 005: if raft state already exists on disk, re-open it now so
 	// the daemon resumes its existing membership instead of sitting at
 	// "uninitialized" until an operator re-runs cluster init/join.
 	// Hostname resolution matches the Cluster.Init handler's path.
-	if _, statErr := os.Stat(cfg.DataDir + "/raft/log.db"); statErr == nil {
+	if _, statErr := os.Stat(filepath.Join(cfg.DataDir, "raft", "log.db")); statErr == nil {
 		hostname, hErr := os.Hostname()
 		if hErr != nil {
-			logger.Warn("hostname for raft resume failed, staying uninitialized", "error", hErr)
-		} else if err := server.OpenRaft(hostname, clusterBind, clusterAdvertise); err != nil {
-			logger.Warn("auto-resume OpenRaft failed, staying uninitialized", "error", err)
-		} else {
-			server.Gate().MarkInitialized()
-			logger.Info("resumed existing raft state",
-				logging.KeyNode, hostname, "bind", clusterBind, "advertise", clusterAdvertise)
+			return fmt.Errorf("hostname for Raft resume: %w", hErr)
 		}
+		if err := server.OpenRaft(hostname, clusterBind, clusterAdvertise); err != nil {
+			return fmt.Errorf("resume existing Raft state (not starting an uninitialized replacement): %w", err)
+		}
+		server.Gate().MarkInitialized()
+		logger.Info("resumed existing raft state",
+			logging.KeyNode, hostname, "bind", clusterBind, "advertise", clusterAdvertise)
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("inspect existing Raft state: %w", statErr)
 	} else {
 		logger.Info("listening (uninitialized — run `jaco cluster init` or `jaco node join`)",
 			"socket", server.SocketPath())
@@ -183,10 +193,6 @@ func run(ctx context.Context, configPath string, root *slog.Logger) error {
 		logger.Info("signal received, shutting down")
 	}
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
-	server.Stop(shutdownCtx)
-	logger.Info("shutdown complete")
 	return nil
 }
 
@@ -300,4 +306,3 @@ func defaultConfigPath() string {
 	}
 	return "/etc/jaco/jacod.yaml"
 }
-

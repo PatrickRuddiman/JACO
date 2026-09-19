@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	dgrpc "github.com/PatrickRuddiman/jaco/internal/daemon/grpc"
+	"github.com/PatrickRuddiman/jaco/internal/testutil"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -63,6 +64,7 @@ func startServerWithDataDir(t *testing.T, dataDir string) (*grpc.ClientConn, *dg
 	sock := filepath.Join(t.TempDir(), "jacod.sock")
 	s, err := dgrpc.New(dgrpc.Options{
 		UnixSocketPath: sock,
+		Keys:           testutil.StateKeys(t),
 		DataDir:        dataDir,
 		Hostname:       "test-host",
 		ClusterAddr:    freePort(t),
@@ -163,10 +165,7 @@ func TestInit_RefusesWhenAlreadyInitialized(t *testing.T) {
 	}
 }
 
-func TestInit_RefusesWhenRaftStateOnDiskButGateOpen(t *testing.T) {
-	// Pre-create $dataDir/raft/log.db; daemon should refuse Init even
-	// though the in-memory gate is closed (could happen if a previous
-	// Init crashed mid-flight or the operator manually placed state).
+func TestStartupRejectsDamagedRaft(t *testing.T) {
 	dataDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dataDir, "raft"), 0o700); err != nil {
 		t.Fatal(err)
@@ -174,16 +173,19 @@ func TestInit_RefusesWhenRaftStateOnDiskButGateOpen(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dataDir, "raft", "log.db"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	conn, _ := startServerWithDataDir(t, dataDir)
-	c := pb.NewClusterClient(conn)
-
-	_, err := c.Init(context.Background(), &pb.ClusterInitRequest{})
+	socket := filepath.Join(t.TempDir(), "j.sock")
+	server, err := dgrpc.New(dgrpc.Options{
+		DataDir: dataDir, UnixSocketPath: socket, Keys: testutil.StateKeys(t),
+	})
 	if err == nil {
-		t.Fatal("Init with pre-existing raft state succeeded")
+		server.Stop(context.Background())
+		t.Fatal("startup accepted damaged pre-existing state")
 	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.FailedPrecondition {
-		t.Errorf("code = %v, want FailedPrecondition", st.Code())
+	if !strings.Contains(err.Error(), "state encryption") {
+		t.Fatalf("unexpected preflight error: %v", err)
+	}
+	if _, err := os.Stat(socket); !os.IsNotExist(err) {
+		t.Fatalf("failed preflight opened socket: %v", err)
 	}
 }
 

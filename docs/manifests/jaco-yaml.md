@@ -260,8 +260,10 @@ present at apply time.
   [`compose.md` → env_file resolution](compose.md#env_file-resolution).
 - **At-rest posture.** Resolved values ride the wire baked into the
   compose YAML stored on the per-deployment record raft already
-  replicates and snapshots — no separate "env" entity, no separate
-  rotation. See
+  replicates and snapshots. Application payloads are encrypted before Raft
+  persistence; this is not a separate "env" entity or secret-reference
+  store. Changing an application password still requires applying its new
+  value, separately from wrapping-key rotation. See
   [Auth & tokens → at-rest posture](../concepts/auth-and-tokens.md#registry-credentials)
   for the trust boundary that already governs `compose_yaml`.
 - **Omitting the field** is the no-op default and preserves every

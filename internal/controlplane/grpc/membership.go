@@ -113,6 +113,9 @@ func (c *clusterServer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*p
 	if exp := tok.GetExpiresAt(); exp != nil && exp.AsTime().Before(time.Now()) {
 		return nil, errorStatus(codes.PermissionDenied, "join_token_expired", "join token expired")
 	}
+	if err := c.raft.StateKeys().VerifyJoinRequest(req); err != nil {
+		return nil, errorStatus(codes.PermissionDenied, "state_key_mismatch", "provision the identical complete state keyring before joining")
+	}
 
 	meta := c.state.Cluster.Get()
 	if meta == nil || len(meta.GetCaCert()) == 0 || len(meta.GetCaKey()) == 0 {
@@ -166,12 +169,16 @@ func (c *clusterServer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*p
 		}
 	}
 
-	return &pb.NodeJoinResponse{
+	resp := &pb.NodeJoinResponse{
 		ClusterId:  meta.GetClusterId(),
 		SignedCert: signedCertPEM,
 		CaCert:     meta.GetCaCert(),
 		PeerAddrs:  peerAddrs,
-	}, nil
+	}
+	if err := c.raft.StateKeys().SignJoinResponse(req, resp); err != nil {
+		return nil, errorStatus(codes.Internal, "state_key_proof_failed", err.Error())
+	}
+	return resp, nil
 }
 
 // NodeRemove evicts hostname from the raft configuration and writes a

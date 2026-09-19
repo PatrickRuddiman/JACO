@@ -13,6 +13,16 @@ DEB="${1:?usage: install-node.sh <deb-path> <registry-host:port> [vnet-cidr]}"
 REGISTRY_HOST="${2:?registry host:port (e.g. 172.16.0.4:5000)}"
 VNET_CIDR="${3:-172.16.0.0/16}"
 
+if [[ ! -r /etc/jaco/state-keys.json ]]; then
+  echo "[install-node] independently provision the cluster keyring at /etc/jaco/state-keys.json before installation; no key is generated or distributed by this script" >&2
+  exit 1
+fi
+key_mode="$(stat -c '%a' /etc/jaco/state-keys.json)"
+if [[ "$(stat -c '%u' /etc/jaco/state-keys.json)" != "0" || ( "$key_mode" != "400" && "$key_mode" != "600" ) ]]; then
+  echo "[install-node] the credential source must be root-owned and mode 0400 or 0600" >&2
+  exit 1
+fi
+
 export DEBIAN_FRONTEND=noninteractive
 
 # 0. Wait out the base cloud-init's apt activity so our apt-get calls don't race
@@ -56,6 +66,13 @@ CONF=/etc/jaco/jacod.yaml
 echo "[install-node] pinning acme_ca=${ACME_CA}"
 sed -i '/^acme_ca:/d' "$CONF"
 echo "acme_ca: ${ACME_CA}" >> "$CONF"
+
+install -d -m 0755 /etc/systemd/system/jaco.service.d
+cat >/etc/systemd/system/jaco.service.d/state-keys.conf <<'EOF'
+[Service]
+LoadCredential=jaco-state-keys:/etc/jaco/state-keys.json
+EOF
+systemctl daemon-reload
 
 # The package ships the daemon as jaco.service (not jacod.service). Restart so
 # the acme_ca change is picked up (jacod does not hot-reload config).

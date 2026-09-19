@@ -9,11 +9,13 @@ import (
 	"testing"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/bootstrap"
+	"github.com/PatrickRuddiman/jaco/internal/testutil"
 )
 
 func TestRun_WritesEverythingAndReturnsToken(t *testing.T) {
 	dir := t.TempDir()
 	res, err := bootstrap.Run(bootstrap.Options{
+		Keys:    testutil.StateKeys(t),
 		DataDir: dir,
 		Name:    "testhost",
 	})
@@ -52,10 +54,10 @@ func TestRun_WritesEverythingAndReturnsToken(t *testing.T) {
 
 func TestRun_RefusesExistingState(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := bootstrap.Run(bootstrap.Options{DataDir: dir, Name: "h"}); err != nil {
+	if _, err := bootstrap.Run(bootstrap.Options{DataDir: dir, Name: "h", Keys: testutil.StateKeys(t)}); err != nil {
 		t.Fatalf("first Run: %v", err)
 	}
-	if _, err := bootstrap.Run(bootstrap.Options{DataDir: dir, Name: "h"}); err == nil {
+	if _, err := bootstrap.Run(bootstrap.Options{DataDir: dir, Name: "h", Keys: testutil.StateKeys(t)}); err == nil {
 		t.Errorf("expected error on second bootstrap into same data dir")
 	}
 }
@@ -71,7 +73,7 @@ func TestRun_RequiresNameAndDataDir(t *testing.T) {
 
 func TestRun_TokenHashRoundTrips(t *testing.T) {
 	dir := t.TempDir()
-	res, err := bootstrap.Run(bootstrap.Options{DataDir: dir, Name: "h"})
+	res, err := bootstrap.Run(bootstrap.Options{DataDir: dir, Name: "h", Keys: testutil.StateKeys(t)})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -81,6 +83,20 @@ func TestRun_TokenHashRoundTrips(t *testing.T) {
 	h := sha256.Sum256([]byte(res.OperatorToken))
 	if len(h) != 32 {
 		t.Errorf("token hash length = %d, want 32", len(h))
+	}
+}
+
+func TestRunRequiresKeysBeforeWritingIdentity(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := bootstrap.Run(bootstrap.Options{DataDir: dir, Name: "node-a"}); err == nil {
+		t.Fatal("bootstrap accepted missing state keys")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatal("failed key provisioning left node identity or raft state behind")
 	}
 }
 

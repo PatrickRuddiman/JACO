@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -17,7 +18,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/bootstrap"
+	"github.com/PatrickRuddiman/jaco/internal/daemon/config"
 	"github.com/PatrickRuddiman/jaco/internal/logging"
+	"github.com/PatrickRuddiman/jaco/internal/testutil"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -44,13 +48,14 @@ func writeConfig(t *testing.T, dataDir, sock string) string {
 		listen = freePort(t)
 	}
 	body := fmt.Sprintf(`data_dir: %s
+state_key_file: %s
 listen_addr: %s
 cluster_addr: %s
 unix_socket: %s
 wg_port: 51820
 log_level: info
 ipam_pool: 10.244.0.0/16
-`, dataDir, listen, cluster, sock)
+`, dataDir, testutil.StateKeyFile(t), listen, cluster, sock)
 	path := filepath.Join(t.TempDir(), "jacod.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -101,6 +106,44 @@ func TestRun_BootsAndAcceptsStatus(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Errorf("run: %v", err)
 	}
+}
+
+func TestRunResumeFailsClosed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("daemon executable provisions POSIX owner-only key files")
+	}
+	dir := t.TempDir()
+	socket := filepath.Join(t.TempDir(), "j.sock")
+	path := writeConfig(t, dir, socket)
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bootstrap.Run(bootstrap.Options{DataDir: dir, Name: hostname, Keys: testutil.StateKeys(t)}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	occupied, err := net.Listen("tcp", cfg.ClusterAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := run(ctx, path, discardLog()); err == nil {
+		t.Fatal("resume failed but daemon continued serving uninitialized state")
+	}
+	if _, err := os.Stat(socket); !os.IsNotExist(err) {
+		t.Fatalf("failed resume left its socket open: %v", err)
+	}
+	available, err := net.Listen("tcp", cfg.ListenAddr)
+	if err != nil {
+		t.Fatalf("failed resume left its control listener open: %v", err)
+	}
+	available.Close()
 }
 
 func TestRun_InitFlipsStatusAndPersistsRaft(t *testing.T) {

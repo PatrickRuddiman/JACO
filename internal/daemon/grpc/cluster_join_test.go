@@ -25,7 +25,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/seal"
 	dgrpc "github.com/PatrickRuddiman/jaco/internal/daemon/grpc"
+	"github.com/PatrickRuddiman/jaco/internal/testutil"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -33,10 +35,12 @@ import (
 
 type fakePeer struct {
 	pb.UnimplementedClusterServer
-	clusterID     string
-	signedCertPEM []byte
-	caCertPEM     []byte
-	peerAddrs     []string
+	clusterID      string
+	signedCertPEM  []byte
+	caCertPEM      []byte
+	peerAddrs      []string
+	keys           *seal.Keyring
+	omitStateProof bool
 
 	mu      sync.Mutex // protects lastReq
 	lastReq *pb.NodeJoinRequest
@@ -51,16 +55,23 @@ func (f *fakePeer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*pb.Nod
 	f.mu.Lock()
 	f.lastReq = req
 	f.mu.Unlock()
-	return &pb.NodeJoinResponse{
+	response := &pb.NodeJoinResponse{
 		ClusterId:  f.clusterID,
 		SignedCert: f.signedCertPEM,
 		CaCert:     f.caCertPEM,
 		PeerAddrs:  f.peerAddrs,
-	}, nil
+	}
+	if !f.omitStateProof {
+		if err := f.keys.SignJoinResponse(req, response); err != nil {
+			return nil, err
+		}
+	}
+	return response, nil
 }
 
 func startFakePeer(t *testing.T, peer *fakePeer) string {
 	t.Helper()
+	peer.keys = testutil.StateKeys(t)
 	// Generate self-signed TLS cert + key for the peer.
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -106,6 +117,7 @@ func newDaemon(t *testing.T) (*dgrpc.Server, pb.ClusterClient, string) {
 	sock := filepath.Join(t.TempDir(), "jacod.sock")
 	s, err := dgrpc.New(dgrpc.Options{
 		UnixSocketPath: sock,
+		Keys:           testutil.StateKeys(t),
 		DataDir:        dataDir,
 		Hostname:       "node-b",
 		ClusterAddr:    freePort(t),
@@ -249,10 +261,31 @@ func TestJoin_SurfacesPeerError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
+
 	if !strings.Contains(err.Error(), "join_token_invalid") {
 		t.Errorf("err should mention join_token_invalid; got %v", err)
 	}
 	if server.Gate().IsInitialized() {
 		t.Errorf("gate flipped despite peer error")
+	}
+}
+
+func TestJoinBadStateProof(t *testing.T) {
+	peer := &fakePeer{clusterID: "cluster-test", omitStateProof: true}
+	peerAddr := startFakePeer(t, peer)
+	server, client, dataDir := newDaemon(t)
+	_, err := client.Join(context.Background(), &pb.ClusterJoinRequest{
+		PeerAddr: peerAddr, JoinToken: "synthetic-join-token",
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("missing state-key proof was not rejected: %v", err)
+	}
+	if server.Gate().IsInitialized() {
+		t.Fatal("missing key proof initialized the daemon")
+	}
+	for _, name := range []string{"node", "raft"} {
+		if _, err := os.Stat(filepath.Join(dataDir, name)); !os.IsNotExist(err) {
+			t.Fatalf("unauthenticated response persisted %s: %v", name, err)
+		}
 	}
 }

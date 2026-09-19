@@ -16,6 +16,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/raft/membership"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
+	"github.com/PatrickRuddiman/jaco/internal/testutil"
 )
 
 // TestReconciler_PromotesAndDemotesAcrossMembershipChanges drives the
@@ -140,6 +141,7 @@ func bootNode(t *testing.T, id, addr string, bootstrap bool) (*raftnode.Node, *s
 	f := fsm.New(st, brokers)
 	n, err := raftnode.New(raftnode.Config{
 		DataDir: dir, BindAddr: addr, LocalID: id, Bootstrap: bootstrap, FSM: f, LogOutput: io.Discard,
+		Keys: testutil.StateKeys(t),
 	})
 	if err != nil {
 		t.Fatalf("raft.New(%s): %v", id, err)

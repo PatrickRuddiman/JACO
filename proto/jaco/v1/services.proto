@@ -72,12 +72,17 @@ message NodeJoinRequest {
   // grpc_address is the host:port of the joining node's cross-host
   // gRPC listener — see Node.grpc_address.
   string grpc_address = 6;
+  // Context-bound proof of the complete independently provisioned state
+  // keyring. This carries no wrapping key and is required before enrollment.
+  bytes state_key_proof = 7;
 }
 message NodeJoinResponse {
   string cluster_id = 1;
   bytes signed_cert = 2;
   bytes ca_cert = 3;
   repeated string peer_addrs = 4;
+  // Binds this response to the exact request and shared state keyring.
+  bytes state_key_proof = 6;
 }
 
 message NodeRemoveRequest {
@@ -186,6 +191,10 @@ message DeleteResponse {}
 message DeployStatusRequest {
   string deployment_filter = 1;
   string service_filter = 2;
+  // Explicit secret-bearing export for one deployment. Requires operator
+  // authentication and deployment_filter; routine Status and all Watch
+  // events omit jaco_yaml and compose_yaml. Runtime replicas use local state.
+  bool include_secrets = 3;
 }
 message DeployStatusResponse {
   repeated Deployment deployments = 1;

@@ -15,9 +15,11 @@ import (
 
 	hraft "github.com/hashicorp/raft"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/bootstrap"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/ca"
@@ -26,6 +28,7 @@ import (
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
+	"github.com/PatrickRuddiman/jaco/internal/testutil"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -53,6 +56,7 @@ func TestNodeJoin_TwoNodeClusterAndSingleUseToken(t *testing.T) {
 	aDir := t.TempDir()
 	bootRes, err := bootstrap.Run(bootstrap.Options{
 		DataDir:  aDir,
+		Keys:     testutil.StateKeys(t),
 		Name:     "node-a",
 		BindAddr: aRaftAddr,
 	})
@@ -68,6 +72,7 @@ func TestNodeJoin_TwoNodeClusterAndSingleUseToken(t *testing.T) {
 	aFSM := fsm.New(aState, aBrokers)
 	aRaft, err := raftnode.New(raftnode.Config{
 		DataDir:   aDir,
+		Keys:      testutil.StateKeys(t),
 		BindAddr:  aRaftAddr,
 		LocalID:   "node-a",
 		Bootstrap: false,
@@ -113,6 +118,7 @@ func TestNodeJoin_TwoNodeClusterAndSingleUseToken(t *testing.T) {
 	bFSM := fsm.New(bState, bBrokers)
 	bRaft, err := raftnode.New(raftnode.Config{
 		DataDir:   bDir,
+		Keys:      testutil.StateKeys(t),
 		BindAddr:  bRaftAddr,
 		LocalID:   "node-b",
 		Bootstrap: false,
@@ -144,14 +150,43 @@ func TestNodeJoin_TwoNodeClusterAndSingleUseToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateNodeKeypair: %v", err)
 	}
-	joinResp, err := client.NodeJoin(context.Background(), &pb.NodeJoinRequest{
+	joinRequest := &pb.NodeJoinRequest{
 		Name:          "node-b",
 		JoinToken:     joinToken,
 		CsrPem:        bCSR,
 		AdvertiseAddr: bRaftAddr,
-	})
+	}
+	keys := testutil.StateKeys(t)
+	if err := keys.SignJoinRequest(joinRequest); err != nil {
+		t.Fatal(err)
+	}
+	for _, missing := range []bool{true, false} {
+		bad := proto.Clone(joinRequest).(*pb.NodeJoinRequest)
+		if missing {
+			bad.StateKeyProof = nil
+		} else {
+			bad.StateKeyProof[0] ^= 1
+		}
+		if _, err := client.NodeJoin(context.Background(), bad); status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("mismatched key proof accepted: %v", err)
+		}
+		configuration := aRaft.Raft.GetConfiguration()
+		if err := configuration.Error(); err != nil {
+			t.Fatal(err)
+		}
+		if len(configuration.Configuration().Servers) != 1 {
+			t.Fatal("key mismatch changed membership")
+		}
+		if _, ok := aState.Nodes.Get("node-b"); ok {
+			t.Fatal("key mismatch changed node state")
+		}
+	}
+	joinResp, err := client.NodeJoin(context.Background(), joinRequest)
 	if err != nil {
 		t.Fatalf("NodeJoin: %v", err)
+	}
+	if err := keys.VerifyJoinResponse(joinRequest, joinResp); err != nil {
+		t.Fatal(err)
 	}
 	if len(joinResp.GetSignedCert()) == 0 {
 		t.Errorf("NodeJoin returned empty signed_cert")
@@ -208,6 +243,7 @@ func TestNodeRemove_EvictsFromRaftAndState(t *testing.T) {
 	aDir := t.TempDir()
 	bootRes, err := bootstrap.Run(bootstrap.Options{
 		DataDir: aDir, Name: "node-a", BindAddr: aRaftAddr,
+		Keys: testutil.StateKeys(t),
 	})
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
@@ -218,6 +254,7 @@ func TestNodeRemove_EvictsFromRaftAndState(t *testing.T) {
 	aFSM := fsm.New(aState, aBrokers)
 	aRaft, err := raftnode.New(raftnode.Config{
 		DataDir: aDir, BindAddr: aRaftAddr, LocalID: "node-a",
+		Keys:      testutil.StateKeys(t),
 		Bootstrap: false, FSM: aFSM, LogOutput: io.Discard,
 	})
 	if err != nil {
@@ -244,6 +281,7 @@ func TestNodeRemove_EvictsFromRaftAndState(t *testing.T) {
 	bDir := t.TempDir()
 	bRaft, err := raftnode.New(raftnode.Config{
 		DataDir: bDir, BindAddr: bRaftAddr, LocalID: "node-b",
+		Keys:      testutil.StateKeys(t),
 		Bootstrap: false,
 		FSM:       fsm.New(state.New(watch.NewRegistry()), watch.NewRegistry()),
 		LogOutput: io.Discard,
@@ -258,10 +296,14 @@ func TestNodeRemove_EvictsFromRaftAndState(t *testing.T) {
 
 	issueResp, _ := client.IssueJoinToken(ctxOp, &pb.IssueJoinTokenRequest{})
 	_, bCSR, _ := ca.GenerateNodeKeypair("node-b")
-	_, err = client.NodeJoin(context.Background(), &pb.NodeJoinRequest{
+	joinRequest := &pb.NodeJoinRequest{
 		Name: "node-b", JoinToken: issueResp.GetToken(), CsrPem: bCSR,
 		AdvertiseAddr: bRaftAddr,
-	})
+	}
+	if err := testutil.StateKeys(t).SignJoinRequest(joinRequest); err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.NodeJoin(context.Background(), joinRequest)
 	if err != nil {
 		t.Fatalf("NodeJoin: %v", err)
 	}

@@ -25,6 +25,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/fsm"
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
 	raftmembership "github.com/PatrickRuddiman/jaco/internal/controlplane/raft/membership"
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/seal"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	"github.com/PatrickRuddiman/jaco/internal/daemon/admission"
@@ -119,6 +120,7 @@ type Server struct {
 	// dataDir is the daemon's $JACO_DATA_DIR; the ingress disk fallback cache
 	// lives under $dataDir/ingress/cache (issue #41).
 	dataDir string
+	keys    *seal.Keyring
 
 	// acme holds the resolved cluster-wide ACME settings plumbed from
 	// jacod.yaml (email, CA URL, enabled, skip-staging). Read in
@@ -173,6 +175,11 @@ type Options struct {
 	// DataDir is the daemon's $JACO_DATA_DIR. Cluster.Init writes raft
 	// state under $DataDir/raft and certs under $DataDir/node.
 	DataDir string
+	// StateKeyFile is an external owner-restricted keyring. Empty resolves
+	// JACO_STATE_KEY_FILE or systemd's jaco-state-keys credential.
+	StateKeyFile string
+	// Keys injects an already-provisioned ring for embedded callers/tests.
+	Keys *seal.Keyring
 
 	// ListenAddr is the cross-host control-plane listener (TCP). Peers
 	// dial this for Cluster.{Status,Join} during cluster formation and
@@ -257,6 +264,22 @@ type Options struct {
 func New(opts Options) (*Server, error) {
 	if opts.UnixSocketPath == "" {
 		return nil, errors.New("UnixSocketPath is required")
+	}
+	keys := opts.Keys
+	if keys == nil {
+		var err error
+		keys, err = seal.LoadFile(opts.StateKeyFile, opts.DataDir)
+		if err != nil {
+			return nil, fmt.Errorf("state encryption provisioning: %w", err)
+		}
+	}
+	if opts.DataDir != "" {
+		if err := seal.ValidateRaftDataDir(opts.DataDir, keys); err != nil {
+			return nil, fmt.Errorf("state encryption validation: %w", err)
+		}
+		if err := seal.ValidateCache(filepath.Join(opts.DataDir, "ingress", "cache"), keys); err != nil {
+			return nil, fmt.Errorf("state encryption cache validation: %w", err)
+		}
 	}
 	if opts.SocketMode == 0 {
 		opts.SocketMode = 0o660
@@ -403,6 +426,7 @@ func New(opts Options) (*Server, error) {
 		tlsDyn:       dynTLS,
 		ipamPool:     ipamPool,
 		dataDir:      opts.DataDir,
+		keys:         keys,
 		acme: ingressACMEOpts{
 			Email:   opts.ACMEEmail,
 			CA:      acmeCA,
@@ -481,6 +505,7 @@ func (s *Server) OpenRaft(hostname, bindAddr, advertiseAddr string) error {
 		LocalID:       hostname,
 		Bootstrap:     false, // raft state already on disk
 		FSM:           f,
+		Keys:          s.keys,
 		Logger:        logging.Subsystem(s.logger, "raft").With(logging.KeyNode, hostname),
 	})
 	if err != nil {
@@ -866,13 +891,14 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 				},
 			)
 		}
-		jacoStorage := storage.NewWithCache(st, storageApply, hostname, nil, s.ingressCacheDir())
+		ingressLog := logging.Subsystem(s.logger, "ingress").With(logging.KeyNode, hostname)
+		jacoStorage := storage.NewWithCache(st, storageApply, hostname, nil, s.ingressCacheDir(), s.keys)
+		jacoStorage.Logger = ingressLog
 		storage.SetDefaultStorage(jacoStorage)
 
 		// ACME settings plumbed from jacod.yaml (issue #41). When
 		// acme_enabled is false the builder omits the tls.automation block
 		// entirely, so no issuer is exercised.
-		ingressLog := logging.Subsystem(s.logger, "ingress").With(logging.KeyNode, hostname)
 		acme := s.acme
 		ingressLog.Info("ingress acme config",
 			"enabled", acme.Enabled, "ca", acme.CA, "email", acme.Email, "skip_staging", s.acmeSkipStaging)
@@ -1219,6 +1245,14 @@ func (s *Server) Stop(ctx context.Context) {
 	case <-stopped:
 	case <-ctx.Done():
 		s.gs.Stop()
+	}
+	// A failed resume can stop the server before Serve registers listeners.
+	for _, listener := range []net.Listener{s.listener, s.tcpListener} {
+		if listener != nil {
+			if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				s.srvLog.Error("close control listener failed", "error", err)
+			}
+		}
 	}
 	_ = os.Remove(s.socketPath)
 

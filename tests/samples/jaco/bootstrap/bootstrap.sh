@@ -52,6 +52,11 @@ echo "[bootstrap] registry: $REGISTRY"
 
 ssh_node() { ssh "${SSH_OPTS[@]}" "$SSH_USER@$1" "$2"; }
 
+for pub in "${PUB[@]}"; do
+  ssh_node "$pub" "sudo test -r /etc/jaco/state-keys.json" \
+    || { echo "[bootstrap] independently provision the same owner-only /etc/jaco/state-keys.json on every node first; see docs/operations/state-encryption.md" >&2; exit 1; }
+done
+
 # --- 1. build the .deb (unless provided) ------------------------------------
 if [[ -z "${DEB:-}" ]]; then
   echo "[bootstrap] building jaco .deb (make package — needs nfpm on PATH)"

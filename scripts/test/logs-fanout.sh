@@ -20,6 +20,8 @@ trap 'kill $JACOD1_PID 2>/dev/null || true; kill $JACOD2_PID 2>/dev/null || true
 
 go build -o "$WORK/jacod" ./cmd/jacod
 go build -o "$WORK/jaco"  ./cmd/jaco
+export JACO_STATE_KEY_FILE="$WORK/state-keys.json"
+"$WORK/jaco" state keygen --file "$JACO_STATE_KEY_FILE" --key-id fixture --data-dir "$WORK/data-1"
 
 mkconfig() {
   local n=$1 listen=$2 cluster=$3

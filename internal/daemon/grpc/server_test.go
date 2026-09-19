@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	dgrpc "github.com/PatrickRuddiman/jaco/internal/daemon/grpc"
+	"github.com/PatrickRuddiman/jaco/internal/testutil"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -24,7 +25,7 @@ import (
 func startServer(t *testing.T) (*grpc.ClientConn, *dgrpc.Server) {
 	t.Helper()
 	sock := filepath.Join(t.TempDir(), "jacod.sock")
-	s, err := dgrpc.New(dgrpc.Options{UnixSocketPath: sock})
+	s, err := dgrpc.New(dgrpc.Options{UnixSocketPath: sock, Keys: testutil.StateKeys(t)})
 	if err != nil {
 		t.Fatalf("dgrpc.New: %v", err)
 	}
@@ -128,6 +129,7 @@ func TestServer_TCPListenerServesClusterStatus(t *testing.T) {
 	s, err := dgrpc.New(dgrpc.Options{
 		UnixSocketPath: sock,
 		ListenAddr:     listenAddr,
+		Keys:           testutil.StateKeys(t),
 	})
 	if err != nil {
 		t.Fatalf("dgrpc.New: %v", err)
@@ -164,7 +166,7 @@ func TestServer_TCPListenerServesClusterStatus(t *testing.T) {
 
 func TestServer_StopRemovesSocketFile(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "jacod.sock")
-	s, err := dgrpc.New(dgrpc.Options{UnixSocketPath: sock})
+	s, err := dgrpc.New(dgrpc.Options{UnixSocketPath: sock, Keys: testutil.StateKeys(t)})
 	if err != nil {
 		t.Fatal(err)
 	}

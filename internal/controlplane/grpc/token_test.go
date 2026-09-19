@@ -20,6 +20,7 @@ import (
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
+	"github.com/PatrickRuddiman/jaco/internal/testutil"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -56,7 +57,7 @@ func setupTwoNodeCluster(t *testing.T) *twoNodeCluster {
 
 	// --- Node A: bootstrap, re-open, gRPC. ---
 	aDir := t.TempDir()
-	bootRes, err := bootstrap.Run(bootstrap.Options{DataDir: aDir, Name: "node-a", BindAddr: aRaft})
+	bootRes, err := bootstrap.Run(bootstrap.Options{DataDir: aDir, Name: "node-a", BindAddr: aRaft, Keys: testutil.StateKeys(t)})
 	if err != nil {
 		t.Fatalf("bootstrap A: %v", err)
 	}
@@ -87,12 +88,16 @@ func setupTwoNodeCluster(t *testing.T) *twoNodeCluster {
 	if err != nil {
 		t.Fatalf("GenerateNodeKeypair B: %v", err)
 	}
-	joinResp, err := a.Cluster.NodeJoin(context.Background(), &pb.NodeJoinRequest{
+	joinRequest := &pb.NodeJoinRequest{
 		Name:          "node-b",
 		JoinToken:     issueResp.GetToken(),
 		CsrPem:        bCSR,
 		AdvertiseAddr: bRaft,
-	})
+	}
+	if err := testutil.StateKeys(t).SignJoinRequest(joinRequest); err != nil {
+		t.Fatal(err)
+	}
+	joinResp, err := a.Cluster.NodeJoin(context.Background(), joinRequest)
 	if err != nil {
 		t.Fatalf("NodeJoin: %v", err)
 	}
@@ -127,6 +132,7 @@ func openClusterNode(t *testing.T, name, dataDir, raftAddr string) *clusterNode 
 	st := state.New(brokers)
 	f := fsm.New(st, brokers)
 	r, err := raftnode.New(raftnode.Config{
+		Keys:      testutil.StateKeys(t),
 		DataDir:   dataDir,
 		BindAddr:  raftAddr,
 		LocalID:   name,

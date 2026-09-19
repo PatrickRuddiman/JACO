@@ -7,6 +7,12 @@
 # Filesystem root for raft store, node certs, wg keys, ACME blobs.
 data_dir: /var/lib/jaco
 
+# Mandatory independently provisioned cluster keyring, outside data_dir.
+# Empty resolves JACO_STATE_KEY_FILE, then the systemd jaco-state-keys
+# credential. There is no generated/default key or plaintext fallback.
+# See docs/operations/state-encryption.md before first start or upgrade.
+state_key_file: ""
+
 # Cross-host gRPC endpoint — peers + remote CLI dial here. v0 ships
 # plaintext TCP (Tailscale / WireGuard wraps the wire); TLS-with-
 # cluster-CA lands in a follow-up.

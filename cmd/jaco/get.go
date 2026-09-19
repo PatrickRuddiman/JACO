@@ -29,7 +29,7 @@ func getCmd() *cobra.Command {
 		Use:   "get",
 		Short: "Read the current in-raft spec for a deployment, replica, or route",
 		Long: "Dump the cluster state JACO actually stored, not just the fixed projection " +
-			"`jaco status` shows. Use -o yaml to print the full deployment/replica/route spec.",
+			"`jaco status` shows. Deployment manifests are omitted unless --show-secrets is explicitly requested.",
 	}
 	c.AddCommand(
 		getDeploymentsCmd(),
@@ -97,17 +97,19 @@ func getDeploymentsCmd() *cobra.Command {
 func getDeploymentCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "deployment <name>",
-		Short: "Print the full in-raft spec for one deployment (jaco + compose yaml)",
+		Short: "Print deployment metadata; optionally export secret-bearing manifests",
 		Args:  cobra.ExactArgs(1),
 	}
 	a := addOperatorFlags(c)
+	var showSecrets bool
+	c.Flags().BoolVar(&showSecrets, "show-secrets", false, "explicitly export resolved manifests, including secrets, to stdout")
 	c.RunE = func(_ *cobra.Command, args []string) error {
 		client, ctx, cleanup, err := dialDeploy(*a)
 		if err != nil {
 			return err
 		}
 		defer cleanup()
-		return runGetDeployment(ctx, client, args[0], os.Stdout)
+		return runGetDeployment(ctx, client, args[0], showSecrets, os.Stdout)
 	}
 	return c
 }
@@ -145,8 +147,8 @@ func runGetDeployments(ctx context.Context, client pb.DeployClient, out io.Write
 	})
 }
 
-func runGetDeployment(ctx context.Context, client pb.DeployClient, name string, out io.Writer) error {
-	resp, err := client.Status(ctx, &pb.DeployStatusRequest{DeploymentFilter: name})
+func runGetDeployment(ctx context.Context, client pb.DeployClient, name string, showSecrets bool, out io.Writer) error {
+	resp, err := client.Status(ctx, &pb.DeployStatusRequest{DeploymentFilter: name, IncludeSecrets: showSecrets})
 	if err != nil {
 		return cliclient.FormatError(err)
 	}
@@ -161,6 +163,12 @@ func runGetDeployment(ctx context.Context, client pb.DeployClient, name string, 
 		return fmt.Errorf("deployment %q not found", name)
 	}
 	view := deploymentToDetailView(dep)
+	view.SpecRedacted = !showSecrets
+	if !showSecrets {
+		// Also protect routine output when talking to a pre-redaction daemon.
+		view.JacoYAML = ""
+		view.ComposeYAML = ""
+	}
 	return renderOutput(out, view, func() error {
 		return renderDeploymentDetail(out, view)
 	})
@@ -193,6 +201,9 @@ func renderDeploymentDetail(out io.Writer, v deploymentDetailView) error {
 	}
 	if v.ComposeYAML != "" {
 		fmt.Fprintf(out, "\ncompose.yaml:\n%s\n", ensureTrailingNewline(v.ComposeYAML))
+	}
+	if v.SpecRedacted {
+		fmt.Fprintln(out, "\nManifests omitted; use --show-secrets for an authorized secret-bearing export.")
 	}
 	return nil
 }
@@ -409,6 +420,7 @@ type deploymentDetailView struct {
 	Status           string            `json:"status" yaml:"status"`
 	AcmeEmail        string            `json:"acme_email,omitempty" yaml:"acme_email,omitempty"`
 	Services         []serviceSpecView `json:"services" yaml:"services"`
+	SpecRedacted     bool              `json:"spec_redacted" yaml:"spec_redacted"`
 	JacoYAML         string            `json:"jaco_yaml,omitempty" yaml:"jaco_yaml,omitempty"`
 	ComposeYAML      string            `json:"compose_yaml,omitempty" yaml:"compose_yaml,omitempty"`
 }

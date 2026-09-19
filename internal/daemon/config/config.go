@@ -5,12 +5,12 @@ package config
 
 import (
 	"fmt"
+	"gopkg.in/yaml.v3"
 	"net"
 	"net/url"
 	"os"
 	"strings"
 	"time"
-	"gopkg.in/yaml.v3"
 
 	dnspkg "github.com/PatrickRuddiman/jaco/internal/discovery/dns"
 )
@@ -78,6 +78,9 @@ const (
 type Config struct {
 	// DataDir holds raft store, snapshots, node certs, wg keys.
 	DataDir string `yaml:"data_dir"`
+	// StateKeyFile must resolve to an owner-restricted file outside DataDir.
+	// Empty uses JACO_STATE_KEY_FILE or systemd's jaco-state-keys credential.
+	StateKeyFile string `yaml:"state_key_file"`
 	// ListenAddr is the cluster gRPC TLS endpoint (peers + remote CLI).
 	ListenAddr string `yaml:"listen_addr"`
 	// ClusterAddr is the raft TCP transport listen address (peer-to-peer
@@ -187,12 +190,12 @@ func (c Config) DNSForwarderTimeoutOrDefault() time.Duration {
 // Defaults returns a Config populated with the documented defaults.
 func Defaults() Config {
 	return Config{
-		DataDir:     DefaultDataDir,
-		ListenAddr:  DefaultListenAddr,
-		ClusterAddr: DefaultClusterAddr,
-		UnixSocket:  DefaultUnixSocket,
-		WGPort:      DefaultWGPort,
-		LogLevel:    DefaultLogLevel,
+		DataDir:            DefaultDataDir,
+		ListenAddr:         DefaultListenAddr,
+		ClusterAddr:        DefaultClusterAddr,
+		UnixSocket:         DefaultUnixSocket,
+		WGPort:             DefaultWGPort,
+		LogLevel:           DefaultLogLevel,
 		IPAMPool:           DefaultIPAMPool,
 		NodeStatusInterval: DefaultNodeStatusInterval,
 		DNS:                DNSConfig{ForwarderTimeout: DefaultDNSForwarderTimeout},

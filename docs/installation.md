@@ -22,11 +22,18 @@ All artifacts are published at
 <https://github.com/PatrickRuddiman/JACO/releases/latest>. Swap `<arch>`
 for `amd64` or `arm64` in the snippets below.
 
+**Before starting the service**, independently provision the same external
+state keyring on every member using the
+[state-encryption provisioning guide](operations/state-encryption.md).
+The daemon fails closed without it. Existing plaintext clusters require
+the guide's coordinated offline migration before starting the new binary.
+
 ## Debian / Ubuntu
 
 ```sh
 curl -fsSL -O https://github.com/PatrickRuddiman/JACO/releases/latest/download/jaco_<arch>.deb
 sudo dpkg -i jaco_<arch>.deb
+# Provision external state keys/service credentials before starting.
 sudo systemctl enable --now jaco
 ```
 
@@ -38,6 +45,7 @@ the three satisfies it.
 ```sh
 curl -fsSL -O https://github.com/PatrickRuddiman/JACO/releases/latest/download/jaco_<arch>.rpm
 sudo rpm -i jaco_<arch>.rpm        # or `sudo dnf install ./jaco_<arch>.rpm`
+# Provision external state keys/service credentials before starting.
 sudo systemctl enable --now jaco
 ```
 
@@ -69,6 +77,7 @@ sudo install -m 0644 jacod.yaml /etc/jaco/jacod.yaml
 sudo install -m 0644 jaco.service /lib/systemd/system/jaco.service
 sudo install -m 0644 jaco.socket  /lib/systemd/system/jaco.socket
 sudo systemctl daemon-reload
+# Provision external state keys/service credentials before starting.
 sudo systemctl enable --now jaco
 ```
 
@@ -113,7 +122,8 @@ After a successful install you will find:
 
 ## Post-install state
 
-The daemon comes up in the **uninitialized** state. Every RPC except
+With valid external state keys provisioned, a fresh daemon comes up in the
+**uninitialized** state. Every RPC except
 `Cluster.{Init, Join, Status}` returns `cluster_uninitialized` until
 either of those two transitions runs. From here, either:
 

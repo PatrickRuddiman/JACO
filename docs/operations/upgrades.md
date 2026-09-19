@@ -7,6 +7,13 @@ sources:
 
 # Upgrades
 
+**State-encryption format transition:** upgrading a plaintext cluster to an
+encryption-required release is an explicit exception to the rolling procedure
+below. Stop all members, independently provision the complete external
+keyring, and follow [offline fresh-copy migration](state-encryption.md).
+Do not use rolling self-upgrade or start old binaries against encrypted
+directories. Keyring rotation also requires coordinated offline copies.
+
 JACO is upgraded **one node at a time** with `jaco self-upgrade`. The
 command verifies the release tarball (minisign signature over
 `SHA256SUMS`, plus SHA-256 of the tarball), atomically swaps both
@@ -20,8 +27,9 @@ CLI reference: [`jaco self-upgrade`](../cli/self-upgrade.md).
 JACO's design commits to a **single static binary per node** plus a
 strict version-skew bound: an N+1 CLI must accept commands against an
 N daemon within the same major version. gRPC field additions are
-backward-compatible; raft FSM apply is binary-compatible across
-adjacent versions. So a rolling upgrade — one node up, wait for
+backward-compatible for ordinary feature changes; the state-encryption
+transition explicitly changes the persistence/enrollment contract. For
+format-compatible releases, a rolling upgrade — one node up, wait for
 raft rejoin, move to the next — is the canonical path.
 
 Cluster-wide coordinated upgrade (`jaco cluster upgrade --all`) is

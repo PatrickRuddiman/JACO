@@ -24,6 +24,8 @@ trap 'kill $JACOD_PID 2>/dev/null || true; nft delete table inet jaco 2>/dev/nul
 
 go build -o "$WORK/jacod" ./cmd/jacod
 go build -o "$WORK/jaco"  ./cmd/jaco
+export JACO_STATE_KEY_FILE="$WORK/state-keys.json"
+"$WORK/jaco" state keygen --file "$JACO_STATE_KEY_FILE" --key-id fixture --data-dir "$WORK/data"
 
 mkdir -p "$WORK/data"
 cat > "$WORK/jacod.yaml" <<EOF

@@ -65,7 +65,8 @@ rpm `1` = upgrade):
 - **postinstall** restarts `jaco` after an upgrade **only if** the unit
   was already enabled and active, so the new binary is picked up. A
   fresh install still never auto-enables or auto-starts — the operator
-  must `systemctl enable --now jaco` after editing the config. On an
+  must independently provision [state keys](../operations/state-encryption.md)
+  and configure credentials before `systemctl enable --now jaco`. On an
   upgrade it also performs a **retroactive #151 heal**: if the node holds
   committed raft state (`<data_dir>/raft/log.db`) but `jaco.service` is
   still disabled — the fingerprint of a node initialized on a release

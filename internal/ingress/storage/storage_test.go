@@ -14,6 +14,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	"github.com/PatrickRuddiman/jaco/internal/ingress/storage"
+	"github.com/PatrickRuddiman/jaco/internal/testutil"
 )
 
 type fakeClock struct {
@@ -327,7 +328,7 @@ func newHarnessWithCache(t *testing.T, lessee, cacheDir string) (*storage.JacoSt
 		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
 		return nil
 	}
-	return storage.NewWithCache(st, apply, lessee, time.Now, cacheDir), st, apply
+	return storage.NewWithCache(st, apply, lessee, time.Now, cacheDir, testutil.StateKeys(t)), st, apply
 }
 
 // TestDiskCache_SurvivesRaftWipe — the disk fallback (issue #41) serves an
@@ -413,7 +414,7 @@ func TestDiskCache_LoadReseedBestEffort(t *testing.T) {
 	st := state.New(brokers)
 	follower := storage.NewWithCache(st, func([]byte) error {
 		return errors.New("node is not the leader")
-	}, "node-b", time.Now, dir)
+	}, "node-b", time.Now, dir, testutil.StateKeys(t))
 	got, err := follower.Load(ctx, key)
 	if err != nil {
 		t.Fatalf("Load on follower (apply fails) should still serve disk value: %v", err)

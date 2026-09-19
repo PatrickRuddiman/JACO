@@ -25,6 +25,8 @@ trap 'kill $JACOD_PID 2>/dev/null || true; rm -rf "$WORK"' EXIT
 
 go build -o "$WORK/jacod" ./cmd/jacod
 go build -o "$WORK/jaco"  ./cmd/jaco
+export JACO_STATE_KEY_FILE="$WORK/state-keys.json"
+"$WORK/jaco" state keygen --file "$JACO_STATE_KEY_FILE" --key-id fixture --data-dir "$WORK/data"
 go build -o "$WORK/issuer" ./scripts/test/cmd/issue || {
   # Build the harness binary on-the-fly if the cmd dir doesn't exist.
   mkdir -p "$WORK/issuer-src"

@@ -11,14 +11,14 @@ sources:
 Read the current in-raft spec for a deployment, replica, or route — the
 state JACO **actually stored**, not just the fixed projection `jaco status`
 shows (issue #175). Built for incident response: dump a deployment's
-`compose`/`jaco` spec, a replica's `depends_on` gates, or a domain's path
+`compose`/`jaco` spec with explicit authorization, a replica's `depends_on` gates, or a domain's path
 matches without holding the operator's source compose file.
 
 ## Synopsis
 
 ```
 jaco get deployments
-jaco get deployment <name>
+jaco get deployment <name> [--show-secrets]
 jaco get replicas [--deployment <name>] [--service <name>]
 jaco get replica <id>
 jaco get routes [--domain <domain>]
@@ -37,7 +37,7 @@ Every subcommand accepts the standard transport flags and honors the global
 | command                          | purpose                                                              |
 |----------------------------------|----------------------------------------------------------------------|
 | `jaco get deployments`           | list deployments: name, applied/previous revision, status, services  |
-| `jaco get deployment <name>`     | full spec for one deployment incl. the stored `jaco.yaml` + `compose.yaml` |
+| `jaco get deployment <name>`     | deployment detail; raw manifests omitted unless `--show-secrets` is explicit |
 | `jaco get replicas`              | list replicas: id, deployment, service, state, host, restart count, image |
 | `jaco get replica <id>`          | one replica's spec, state, restart count, and resolved `depends_on` gates |
 | `jaco get routes`                | list ingress routes **including the path-prefix column**             |
@@ -57,8 +57,15 @@ can be served by any node.
 - **table** (default) — human columns; enum values UPPERCASE.
 - **json / yaml** — structured; enum values lowercase `snake_case` (e.g.
   `state: pending`), matching the convention used by `jaco status`.
-  `jaco get deployment <name> -o yaml` embeds the raw `jaco_yaml` and
-  `compose_yaml` as strings so the dump is self-contained.
+  Deployment detail defaults to `spec_redacted: true`, omitting `jaco_yaml`
+  and `compose_yaml`. `--show-secrets` requests the complete resolved
+  manifests for one deployment and reports `spec_redacted: false`.
+
+Routine Status and every deployment Watch event also omit both manifests;
+there is no secret-bearing Watch mode. The CLI strips manifests by default
+even when an older daemon returns them. Explicit export requires an admitted
+operator-token or trusted local-socket identity. Protect the export destination:
+resolved environment values can include credentials.
 
 ### Replica detail
 
@@ -78,11 +85,12 @@ self-diagnosing:
 ## Examples
 
 ```console
-$ jaco get deployment app -o yaml
+$ jaco get deployment app --show-secrets -o yaml
 name: app
 applied_revision: 11
 previous_revision: 10
 status: active
+spec_redacted: false
 services:
   - name: api
     replicas: 2

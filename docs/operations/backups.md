@@ -18,9 +18,8 @@ CLI: [`jaco backup`](../cli/backup-restore.md),
 
 ## What's in the tarball
 
-- `snapshot.bin` — the raw raft snapshot bytes from
-  `raft.Snapshot()`.
-- `meta.json` — `{cluster_id, snapshot_index, snapshot_term,
+- `snapshot.bin` — an authenticated encrypted snapshot envelope.
+- `meta.json` — `{schema_version, cluster_id, snapshot_index, snapshot_term,
   jaco_version, taken_at, leader_at_snapshot}`.
 
 The snapshot is consistent at a **single raft commit index**: every
@@ -28,6 +27,12 @@ deployment, audit event, and cert that committed before that index is
 present; nothing committed after is. The cluster CA cert and key are
 included — restoring on a fresh host stands up the same cluster
 identity.
+
+Schema 2 encrypts the payload and authenticates the exact metadata.
+The wrapping keyring is **not** in the archive. Independently retain the
+required external keys under a separate recovery/access policy. Original
+schema-1 archives remain plaintext until explicitly converted; see
+[state encryption and historical-backup migration](state-encryption.md).
 
 Container state on the original nodes is **not** in the tarball. After
 restore, the runtime on the restored cluster re-pulls images and
@@ -72,12 +77,15 @@ The receiving host MUST have:
 - An empty `$JACO_DATA_DIR` (default `/var/lib/jaco`). Restore refuses
   to overwrite an existing data dir.
 - The daemon **stopped**: `sudo systemctl stop jaco`.
+- The independently provisioned external state keyring, outside the data
+  directory and archive, available to restore and to the restarted daemon.
 
 Then:
 
 ```sh
 sudo systemctl stop jaco
-sudo jaco restore --input cluster-2026-05-25.tar.gz --name $(hostname)
+sudo jaco restore --input cluster-2026-05-25.tar.gz --name $(hostname) \
+  --key-file /etc/jaco/keys/cluster-v1.json
 sudo systemctl start jaco
 jaco cluster status
 ```
@@ -89,6 +97,9 @@ as a single voter with the same cluster id, and emits a
 ## Rejoin the rest of the cluster
 
 Other nodes rejoin via the usual flow:
+
+Provision the identical complete state keyring independently on each member
+before joining; join responses never distribute it.
 
 ```sh
 # on the restored node
@@ -122,3 +133,4 @@ the round-trip at least once before going live:
 - [`jaco backup` / `jaco restore`](../cli/backup-restore.md)
 - [Recovery](recovery.md)
 - [Auth and tokens](../concepts/auth-and-tokens.md)
+- [State encryption and key recovery](state-encryption.md)

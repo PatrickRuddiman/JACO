@@ -15,8 +15,8 @@ sources:
 
 The daemon reads `/etc/jaco/jacod.yaml` at startup. The schema is
 **closed**: any unknown key fails the parse with an error pointing at the
-offending field. A missing file is equivalent to "all defaults" — the
-daemon does not refuse to start when the config is absent.
+offending field. A missing config file uses defaults, but startup still
+requires independently provisioned state-encryption keys.
 
 The path can be overridden with the `JACO_CONFIG` environment variable,
 honored by `cmd/jacod`.
@@ -25,6 +25,7 @@ honored by `cmd/jacod`.
 
 ```yaml
 data_dir:             /var/lib/jaco
+state_key_file:       ""          # external file/env/service credential required
 listen_addr:          0.0.0.0:7000
 cluster_addr:         0.0.0.0:7001
 unix_socket:          /var/run/jaco/jaco.sock
@@ -43,8 +44,9 @@ dns:
 
 All defaults live in `internal/daemon/config/config.go`. The same
 constants seed the `jacod.yaml` template shipped in the packages, so a
-freshly-installed cluster is functional with zero edits provided the
-host has a private-LAN interface JACO can auto-detect.
+freshly-installed cluster can use default network settings when the host
+has a private-LAN interface JACO can auto-detect. External state keys must
+still be provisioned before first start.
 ## Keys
 
 ### `data_dir` (string, required)
@@ -54,6 +56,20 @@ Filesystem path that holds the raft store, snapshots, the node TLS cert
 directory and everything under it MUST be readable + writable by the
 user the daemon runs as (the package installer creates the `jaco`
 system user). A missing directory is created on first boot.
+
+### `state_key_file` (string, external provisioning required)
+
+Absolute path to an independently provisioned versioned cluster keyring.
+The file must be regular, owner-only and outside `data_dir`. Empty resolves
+`JACO_STATE_KEY_FILE`, then `$CREDENTIALS_DIRECTORY/jaco-state-keys`.
+The packaged `jaco` user needs a readable credential; a root-owned `0600`
+source file should be delivered through systemd `LoadCredential`, not made
+world/group-readable.
+
+Missing keys, a mismatched complete ring, unconverted plaintext history,
+incomplete copies and failed authentication stop startup. No default key is
+generated. See [state encryption](operations/state-encryption.md) before
+initial startup, upgrade, key rotation or recovery.
 
 ### `listen_addr` (string, required, `host:port`)
 

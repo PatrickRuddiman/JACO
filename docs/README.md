@@ -64,6 +64,8 @@ Why each subsystem is shaped the way it is.
 
 ## Operations
 
+- [State encryption](operations/state-encryption.md) — external keys, legacy
+  fresh-copy migration, rotation, retention and authenticated recovery.
 - [Migration](operations/migration.md) — move an existing
   docker-compose stack (with volumes) onto a JACO cluster.
 - [Upgrades](operations/upgrades.md) — rolling `jaco self-upgrade`

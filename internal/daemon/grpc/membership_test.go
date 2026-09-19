@@ -15,6 +15,7 @@ import (
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
+	"github.com/PatrickRuddiman/jaco/internal/testutil"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -71,18 +72,23 @@ func TestNodeJoin_SignsCSRAndAddsVoter(t *testing.T) {
 	bFSM := fsm.New(bState, bBrokers)
 	bRaft, err := raftnode.New(raftnode.Config{
 		DataDir: bDir, BindAddr: bAddr, LocalID: "test-host-2", Bootstrap: false, FSM: bFSM, LogOutput: io.Discard,
+		Keys: testutil.StateKeys(t),
 	})
 	if err != nil {
 		t.Fatalf("start node-b raft: %v", err)
 	}
 	t.Cleanup(func() { _ = bRaft.Shutdown() })
 
-	resp, err := c.NodeJoin(context.Background(), &pb.NodeJoinRequest{
+	joinRequest := &pb.NodeJoinRequest{
 		Name:          "test-host-2",
 		JoinToken:     tokenStr,
 		CsrPem:        csrPEM,
 		AdvertiseAddr: bAddr,
-	})
+	}
+	if err := testutil.StateKeys(t).SignJoinRequest(joinRequest); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.NodeJoin(context.Background(), joinRequest)
 	if err != nil {
 		t.Fatalf("NodeJoin: %v", err)
 	}
