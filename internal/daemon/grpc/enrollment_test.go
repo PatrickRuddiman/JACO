@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/x509"
@@ -48,7 +49,12 @@ func TestJoinRejectsInvalidCredentialsBeforePersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"replaced-ca", "wrong-chain", "wrong-key", "wrong-identity", "missing-advertised-san", "expired", "missing-client-eku", "missing-server-eku", "ca-leaf"} {
+	for _, name := range []string{
+		"replaced-ca", "appended-ca", "private-block", "opaque-prefix", "opaque-gap",
+		"opaque-tail", "malformed-prefix", "pem-headers", "wrong-chain", "wrong-key",
+		"wrong-identity", "missing-advertised-san", "expired", "missing-client-eku",
+		"missing-server-eku", "ca-leaf",
+	} {
 		t.Run(name, func(t *testing.T) {
 			serveCert := peerCertificate(t, trustedCA, trustedKey, "peer", net.ParseIP("127.0.0.1"))
 			addr, _ := startRecordingPeer(t, serveCert, func(req *pb.NodeJoinRequest) (*pb.NodeJoinResponse, error) {
@@ -98,8 +104,25 @@ func TestJoinRejectsInvalidCredentialsBeforePersistence(t *testing.T) {
 					return nil, err
 				}
 				returnedCA := trustedCA
-				if name == "replaced-ca" {
+				switch name {
+				case "replaced-ca":
 					returnedCA = otherCA
+				case "appended-ca":
+					returnedCA = bytes.Join([][]byte{trustedCA, otherCA}, []byte("\n"))
+				case "private-block":
+					returnedCA = bytes.Join([][]byte{trustedCA, trustedKey}, []byte("\n"))
+				case "opaque-prefix":
+					returnedCA = bytes.Join([][]byte{[]byte("opaque data"), trustedCA}, []byte("\n"))
+				case "opaque-gap":
+					returnedCA = bytes.Join([][]byte{trustedCA, []byte("opaque data"), trustedCA}, []byte("\n"))
+				case "opaque-tail":
+					returnedCA = bytes.Join([][]byte{trustedCA, []byte("opaque data")}, []byte("\n"))
+				case "malformed-prefix":
+					returnedCA = append([]byte("-----BEGIN CERTIFICATE-----\ninvalid certificate\n"), trustedCA...)
+				case "pem-headers":
+					block, _ := pem.Decode(trustedCA)
+					block.Headers = map[string]string{"Comment": "not certificate data"}
+					returnedCA = pem.EncodeToMemory(block)
 				}
 				return &pb.NodeJoinResponse{
 					ClusterId: "test-cluster", CaCert: returnedCA,

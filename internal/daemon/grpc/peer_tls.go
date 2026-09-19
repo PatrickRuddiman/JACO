@@ -37,8 +37,13 @@ func clusterTrust(caPEM []byte) (*x509.CertPool, []*x509.Certificate, error) {
 	var certs []*x509.Certificate
 	for rest := bytes.TrimSpace(caPEM); len(rest) > 0; rest = bytes.TrimSpace(rest) {
 		block, tail := pem.Decode(rest)
-		if block == nil || block.Type != "CERTIFICATE" {
+		if block == nil || block.Type != "CERTIFICATE" || len(block.Headers) != 0 {
 			return nil, nil, fmt.Errorf("invalid cluster CA PEM")
+		}
+		// pem.Decode can skip opaque text or malformed blocks before a valid block.
+		consumed := bytes.ReplaceAll(rest[:len(rest)-len(tail)], []byte("\r\n"), []byte("\n"))
+		if !bytes.Equal(bytes.TrimSpace(consumed), bytes.TrimSpace(pem.EncodeToMemory(block))) {
+			return nil, nil, fmt.Errorf("cluster CA PEM must contain only canonical certificate blocks")
 		}
 		cert, err := x509.ParseCertificate(block.Bytes)
 		if err != nil {
