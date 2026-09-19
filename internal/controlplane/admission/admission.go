@@ -1,9 +1,7 @@
-// Package admission implements the bearer-token authentication gate for the
-// control-plane gRPC surface. UnaryInterceptor and StreamInterceptor extract
-// `authorization: Bearer <token>` from request metadata, SHA-256 the token,
-// match it against state.Tokens, and attach the resolved identity to the
-// downstream context. Bad tokens surface as Error{code:"token_invalid"};
-// revoked tokens surface as Error{code:"token_revoked"}.
+// Package admission authenticates public operators by bearer token and Internal
+// peers by cluster-CA certificate and live membership. Local Unix callers are
+// trusted by filesystem permissions. Node identities do not grant operator
+// authority.
 package admission
 
 import (
@@ -43,6 +41,16 @@ func IdentityFromContext(ctx context.Context) string {
 	return ""
 }
 
+// BearerIdentity independently authenticates an operator bearer, without the
+// Unix-socket bypass. Used when delegating local or node-originated log reads.
+func BearerIdentity(ctx context.Context, s *state.State) (string, error) {
+	resolved, err := resolveBearer(ctx, s)
+	if err != nil {
+		return "", err
+	}
+	return IdentityFromContext(resolved), nil
+}
+
 // UnauthMethods lists gRPC methods that bypass the bearer-token check. These
 // RPCs gate themselves via a body-carried credential — e.g. NodeJoin verifies
 // the single-use join_token in the request body — or are explicitly safe to
@@ -51,23 +59,15 @@ func IdentityFromContext(ctx context.Context) string {
 var UnauthMethods = map[string]bool{
 	"/jaco.v1.Cluster/NodeJoin": true,
 	"/jaco.v1.Cluster/Status":   true,
-	// Internal.* is the peer-to-peer surface follower nodes use to
-	// forward raft.Apply work to the leader. Today it relies on the
-	// overlay network for auth; peer mTLS lands in a follow-up iter.
-	"/jaco.v1.Internal/Submit":       true,
-	"/jaco.v1.Internal/SignNodeCert": true,
-	"/jaco.v1.Internal/Logs":         true,
-	"/jaco.v1.Internal/EnsureSubnet": true,
 }
 
-// UnaryInterceptor returns a grpc.UnaryServerInterceptor that runs
-// authResolve on every incoming RPC unless the method is unauthenticated.
+// UnaryInterceptor authenticates incoming RPCs according to their service.
 func UnaryInterceptor(s *state.State) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if UnauthMethods[info.FullMethod] {
 			return handler(ctx, req)
 		}
-		newCtx, err := authResolve(ctx, s)
+		newCtx, err := resolveMethod(ctx, s, info.FullMethod)
 		if err != nil {
 			logAdmission(ctx, info.FullMethod, "", err)
 			return nil, err
@@ -96,15 +96,13 @@ func logAdmission(ctx context.Context, method, principal string, err error) {
 	l.Debug("admission accepted", logging.KeyMethod, method, "principal", principal)
 }
 
-// StreamInterceptor returns a grpc.StreamServerInterceptor that runs
-// authResolve on every incoming stream's initial metadata unless the method
-// is unauthenticated.
+// StreamInterceptor authenticates incoming streams according to their service.
 func StreamInterceptor(s *state.State) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		if UnauthMethods[info.FullMethod] {
 			return handler(srv, ss)
 		}
-		newCtx, err := authResolve(ss.Context(), s)
+		newCtx, err := resolveMethod(ss.Context(), s, info.FullMethod)
 		if err != nil {
 			logAdmission(ss.Context(), info.FullMethod, "", err)
 			return err
@@ -120,6 +118,13 @@ type wrappedStream struct {
 }
 
 func (w *wrappedStream) Context() context.Context { return w.ctx }
+
+func resolveMethod(ctx context.Context, s *state.State, method string) (context.Context, error) {
+	if strings.HasPrefix(method, "/jaco.v1.Internal/") {
+		return AuthenticateNode(ctx, s)
+	}
+	return authResolve(ctx, s)
+}
 
 // isUnixPeer reports whether the RPC arrived over the local unix socket.
 // It fails closed: when no peer info is present (ok=false) or the peer's
@@ -142,6 +147,10 @@ func authResolve(ctx context.Context, s *state.State) (context.Context, error) {
 	if isUnixPeer(ctx) {
 		return context.WithValue(ctx, identityCtxKey{}, LocalIdentity), nil
 	}
+	return resolveBearer(ctx, s)
+}
+
+func resolveBearer(ctx context.Context, s *state.State) (context.Context, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return nil, authError("token_invalid", "missing metadata")

@@ -75,7 +75,7 @@ func TestApplyOrForwardCommand_PropagatesForwardError(t *testing.T) {
 }
 
 func TestDialAndSubmit_NoLeaderAddress(t *testing.T) {
-	err := dialAndSubmit(context.Background(), "", []byte("cmd"))
+	err := (&Server{}).dialAndSubmit(context.Background(), "", []byte("cmd"))
 	if err == nil || err.Error() != "no leader gRPC address known" {
 		t.Fatalf("expected no-leader err, got %v", err)
 	}

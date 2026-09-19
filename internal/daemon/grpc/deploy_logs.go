@@ -2,16 +2,15 @@ package grpc
 
 import (
 	"context"
-	"crypto/tls"
 	"io"
 	"sync"
 	"time"
 
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/admission"
 	grpcsrv "github.com/PatrickRuddiman/jaco/internal/controlplane/grpc"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/lifecycle"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/logs"
@@ -52,6 +51,38 @@ func (s *Server) streamDeploymentLogs(req *pb.LogsRequest, stream pb.Deploy_Logs
 		hosts[r.GetHost()] = true
 	}
 
+	ctx, cancel := context.WithCancel(stream.Context())
+	defer cancel()
+	peerCtx := metadata.NewOutgoingContext(ctx, metadata.MD{})
+	addresses := make(map[string]string)
+	for host := range hosts {
+		if host == hostname {
+			continue
+		}
+		md, _ := metadata.FromIncomingContext(stream.Context())
+		if auths := md.Get("authorization"); len(auths) != 0 {
+			if _, err := admission.BearerIdentity(stream.Context(), st); err != nil {
+				return err
+			}
+			peerCtx = metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", auths[0]))
+		} else {
+			r := s.Raft()
+			if admission.IdentityFromContext(stream.Context()) != admission.LocalIdentity || r == nil || !r.IsLeader() {
+				return status.Error(codes.PermissionDenied,
+					"logs_fanout_denied: use an operator bearer over the public endpoint or the leader's local socket")
+			}
+		}
+		for _, candidate := range st.Nodes.List() {
+			if candidate.GetHostname() == host {
+				addresses[host] = candidate.GetGrpcAddress()
+				break
+			}
+		}
+		if addresses[host] == "" {
+			return status.Errorf(codes.Unavailable, "logs_peer_unavailable: %s", host)
+		}
+	}
+
 	var sendMu sync.Mutex
 	safe := func(ll *pb.LogLine) error {
 		sendMu.Lock()
@@ -68,35 +99,27 @@ func (s *Server) streamDeploymentLogs(req *pb.LogsRequest, stream pb.Deploy_Logs
 		if h == hostname {
 			go func() {
 				defer wg.Done()
-				ms := mutexSender{ctx: stream.Context(), send: safe}
+				ms := mutexSender{ctx: ctx, send: safe}
 				if err := s.streamLocalLogs(req, ms); err != nil {
 					errCh <- err
+					cancel()
 				}
 			}()
 			continue
 		}
-		var addr string
-		for _, candidate := range st.Nodes.List() {
-			if candidate.GetHostname() == h {
-				addr = candidate.GetGrpcAddress()
-				break
-			}
-		}
-		if addr == "" {
-			wg.Done()
-			continue
-		}
 		go func(addr string) {
 			defer wg.Done()
-			conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})))
+			conn, err := s.dialPeer(addr)
 			if err != nil {
 				errCh <- err
+				cancel()
 				return
 			}
 			defer conn.Close()
-			peerStream, err := pb.NewInternalClient(conn).Logs(stream.Context(), req)
+			peerStream, err := pb.NewInternalClient(conn).Logs(peerCtx, req)
 			if err != nil {
 				errCh <- err
+				cancel()
 				return
 			}
 			for {
@@ -106,19 +129,24 @@ func (s *Server) streamDeploymentLogs(req *pb.LogsRequest, stream pb.Deploy_Logs
 				}
 				if err != nil {
 					errCh <- err
+					cancel()
 					return
 				}
 				if err := safe(ll); err != nil {
 					errCh <- err
+					cancel()
 					return
 				}
 			}
-		}(addr)
+		}(addresses[h])
 	}
 	wg.Wait()
 	close(errCh)
 	for err := range errCh {
 		if err != nil {
+			if _, ok := status.FromError(err); ok {
+				return err
+			}
 			return status.Errorf(codes.Internal, "logs_stream: %v", err)
 		}
 	}
@@ -174,6 +202,8 @@ func (s *Server) streamLocalLogs(req *pb.LogsRequest, sender logsSender) error {
 		return nil
 	}
 
+	ctx, cancel := context.WithCancel(sender.Context())
+	defer cancel()
 	opts := logs.Options{Follow: req.GetFollow()}
 	if s := req.GetSinceSeconds(); s > 0 {
 		opts.Since = time.Duration(s) * time.Second
@@ -187,19 +217,29 @@ func (s *Server) streamLocalLogs(req *pb.LogsRequest, sender logsSender) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			containerID, _, err := lifecycle.Inspect(sender.Context(), s.docker, rep.GetId())
+			containerID, _, err := lifecycle.Inspect(ctx, s.docker, rep.GetId())
 			if err != nil || containerID == "" {
 				return
 			}
-			ch, err := logs.Stream(sender.Context(), s.docker, rep.GetId(), containerID, hostname, opts)
+			ch, err := logs.Stream(ctx, s.docker, rep.GetId(), containerID, hostname, opts)
 			if err != nil {
 				errCh <- err
+				cancel()
 				return
 			}
-			for ll := range ch {
-				if err := sender.Send(ll); err != nil {
-					errCh <- err
+			for {
+				select {
+				case <-ctx.Done():
 					return
+				case ll, ok := <-ch:
+					if !ok {
+						return
+					}
+					if err := sender.Send(ll); err != nil {
+						errCh <- err
+						cancel()
+						return
+					}
 				}
 			}
 		}()
@@ -209,6 +249,9 @@ func (s *Server) streamLocalLogs(req *pb.LogsRequest, sender logsSender) error {
 
 	for err := range errCh {
 		if err != nil {
+			if _, ok := status.FromError(err); ok {
+				return err
+			}
 			return status.Errorf(codes.Internal, "logs_stream: %v", err)
 		}
 	}

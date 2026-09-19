@@ -88,6 +88,9 @@ func bootstrapTLSConfig(hostname string) (*tls.Config, *dynamicTLS, error) {
 		MinVersion:     tls.VersionTLS12,
 		NextProtos:     []string{"h2"},
 		GetCertificate: d.GetCertificate,
+		// Public bearer APIs and enrollment share this listener. Internal RPCs
+		// verify the requested certificate against live cluster state.
+		ClientAuth: tls.RequestClientCert,
 	}, d, nil
 }
 

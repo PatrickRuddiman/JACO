@@ -41,20 +41,16 @@ func TestStreamInterceptor_AttachesIdentityOnValidToken(t *testing.T) {
 	}
 }
 
-func TestStreamInterceptor_UnauthMethodBypassesResolve(t *testing.T) {
+func TestStreamInterceptor_RejectsUnauthenticatedInternalLogs(t *testing.T) {
 	st := newStateWithToken("alice", "s3cret", false)
-	handler := func(_ any, ss grpc.ServerStream) error {
-		// No identity should be attached.
-		if id := admission.IdentityFromContext(ss.Context()); id != "" {
-			t.Errorf("unauth method got identity = %q", id)
-		}
+	handler := func(_ any, _ grpc.ServerStream) error {
+		t.Error("unauthenticated Internal.Logs reached handler")
 		return nil
 	}
 	info := &grpc.StreamServerInfo{FullMethod: "/jaco.v1.Internal/Logs"}
-	// No bearer token at all — UnauthMethods should bypass resolve.
 	stream := &stubStream{ctx: context.Background()}
-	if err := admission.StreamInterceptor(st)(nil, stream, info, handler); err != nil {
-		t.Errorf("unauth method err = %v", err)
+	if err := admission.StreamInterceptor(st)(nil, stream, info, handler); status.Code(err) != codes.Unauthenticated {
+		t.Errorf("Internal.Logs = %v, want Unauthenticated", err)
 	}
 }
 

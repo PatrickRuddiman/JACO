@@ -2,10 +2,13 @@ package grpc
 
 import (
 	"context"
+	"sync"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/admission"
 	"github.com/PatrickRuddiman/jaco/internal/discovery/ipam"
 	"github.com/PatrickRuddiman/jaco/internal/logging"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
@@ -15,17 +18,8 @@ import (
 // utilization warning thresholds.
 const subnetPoolSize = 256
 
-// internalServer implements pb.InternalServer — the peer-to-peer service
-// follower nodes use to forward raft.Apply work to the leader. Today it
-// ships Submit (used by the runtime to forward ReplicaObserved updates).
-// SignNodeCert + Logs land in later iters.
-//
-// Authentication: the peer mTLS scheme described in the slice isn't wired
-// yet (v0 uses plaintext TCP, expecting Tailscale / WireGuard to wrap the
-// wire), so Submit is in admission.UnauthMethods. The body's command_bytes
-// is itself unstructured raft data — a malicious sender can apply arbitrary
-// FSM commands. This is fine on a trusted overlay network and gets locked
-// down once peer mTLS lands.
+// internalServer is the authenticated node-to-node service. Its command
+// allowlist is deliberately narrower than the local leader's FSM interface.
 type internalServer struct {
 	pb.UnimplementedInternalServer
 	server *Server
@@ -34,7 +28,7 @@ type internalServer struct {
 // Submit applies command_bytes to the local raft log. Returns the assigned
 // log index. Refuses when raft isn't open (pre-Init) or this node isn't
 // the leader — the caller is expected to retry against the actual leader.
-func (i *internalServer) Submit(_ context.Context, req *pb.SubmitRequest) (*pb.SubmitResponse, error) {
+func (i *internalServer) Submit(ctx context.Context, req *pb.SubmitRequest) (*pb.SubmitResponse, error) {
 	r := i.server.Raft()
 	if r == nil {
 		return nil, status.Error(codes.Unavailable, "raft_unavailable: daemon has no raft state")
@@ -45,7 +39,23 @@ func (i *internalServer) Submit(_ context.Context, req *pb.SubmitRequest) (*pb.S
 	if len(req.GetCommandBytes()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "command_bytes is required")
 	}
-	idx, err := r.Apply(req.GetCommandBytes(), 0)
+	cmd := &pb.Command{}
+	if err := (proto.UnmarshalOptions{RecursionLimit: 32}).Unmarshal(req.GetCommandBytes(), cmd); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid_command")
+	}
+	if cmd.Payload == nil || len(cmd.ProtoReflect().GetUnknown()) != 0 {
+		return nil, status.Error(codes.InvalidArgument, "invalid_command")
+	}
+	if err := i.server.authorizeInternalCommand(ctx, cmd); err != nil {
+		logging.FromContext(ctx, i.server.srvLog).Info("internal command denied",
+			"principal", admission.IdentityFromContext(ctx), logging.KeyReason, status.Convert(err).Message())
+		return nil, err
+	}
+	data, err := proto.Marshal(cmd)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "marshal_command_failed")
+	}
+	idx, err := r.Apply(data, 0)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "raft_apply: %v", err)
 	}
@@ -58,7 +68,18 @@ func (i *internalServer) Submit(_ context.Context, req *pb.SubmitRequest) (*pb.S
 // pb.Deploy_LogsServer are both aliases for grpc.ServerStreamingServer
 // [LogLine], so streamLocalLogs takes either.
 func (i *internalServer) Logs(req *pb.LogsRequest, stream pb.Internal_LogsServer) error {
-	return i.server.streamLocalLogs(req, stream)
+	if err := i.server.authorizeInternalLogs(stream.Context()); err != nil {
+		return err
+	}
+	var mu sync.Mutex
+	return i.server.streamLocalLogs(req, mutexSender{ctx: stream.Context(), send: func(line *pb.LogLine) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if err := i.server.authorizeInternalLogs(stream.Context()); err != nil {
+			return err
+		}
+		return stream.Send(line)
+	}})
 }
 
 // EnsureSubnet idempotently allocates the per-host /24 for
@@ -67,7 +88,7 @@ func (i *internalServer) Logs(req *pb.LogsRequest, stream pb.Internal_LogsServer
 // The leader is the single allocator, so the CIDR it computes lands in the
 // SubnetAllocate command (the FSM just stores it) — keeping Apply
 // deterministic across nodes.
-func (i *internalServer) EnsureSubnet(_ context.Context, req *pb.EnsureSubnetRequest) (*pb.EnsureSubnetResponse, error) {
+func (i *internalServer) EnsureSubnet(ctx context.Context, req *pb.EnsureSubnetRequest) (*pb.EnsureSubnetResponse, error) {
 	r := i.server.Raft()
 	if r == nil {
 		return nil, status.Error(codes.Unavailable, "raft_unavailable: daemon has no raft state")
@@ -77,6 +98,9 @@ func (i *internalServer) EnsureSubnet(_ context.Context, req *pb.EnsureSubnetReq
 	}
 	if req.GetDeployment() == "" || req.GetNetwork() == "" || req.GetHost() == "" {
 		return nil, status.Error(codes.InvalidArgument, "deployment, network and host are required")
+	}
+	if err := i.server.authorizeInternalSubnet(ctx, req); err != nil {
+		return nil, err
 	}
 
 	allocator := i.server.IPAMAllocator()
