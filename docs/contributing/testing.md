@@ -160,11 +160,13 @@ manual smoke run the relevant PR documents:
 
 - [`tests/samples/jaco/smoke-volumes/`](../../tests/samples/jaco/smoke-volumes/README.md)
   — two co-located deployments that prove JACO scopes named compose
-  volumes per deployment (`jaco_<deployment>_<key>`), plus an opt-out
+  volumes per cluster/deployment/key (`jaco_v2_<digest>`), plus an opt-out
   probe for the `volumes.<key>.name:` escape hatch. Companion unit
   test `internal/runtime/compose/smoke_fixtures_test.go` pins the
   fixture against `ToContainerSpec` so a refactor surfaces locally
-  before the live smoke. Cross-linked from
+  before the live smoke. The fake-Docker lifecycle regressions also cover
+  `orders/prod_data` versus `orders_prod/data` with `network_mode: none`.
+  Cross-linked from
   [`tests/isolation/README.md`](../../tests/isolation/README.md);
   promotion into the privileged 3-node isolation rig is the
   follow-up.

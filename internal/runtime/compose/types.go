@@ -3,7 +3,11 @@
 // docker-engine-friendly ContainerSpec for the runtime slice.
 package compose
 
-import "time"
+import (
+	"time"
+
+	"github.com/compose-spec/compose-go/v2/types"
+)
 
 // ContainerSpec is the moby-friendly view of one replica's container. The
 // runtime/lifecycle package translates this into docker.ContainerCreate +
@@ -91,23 +95,23 @@ type ContainerSpec struct {
 
 	// User+DNS+host knobs (issue #117). All zero values mean "docker
 	// default applies" (no override emitted to the engine).
-	Hostname   string
-	Domainname string
-	ExtraHosts []string // "host:ip" entries appended to /etc/hosts
-	DNS        []string // overrides the runtime-resolved DNSServers when non-empty
-	DNSSearch  []string
-	DNSOptions []string
-	Init       *bool   // nil = docker default; non-nil = explicit override
-	ShmSizeBytes int64  // 0 = docker default
+	Hostname     string
+	Domainname   string
+	ExtraHosts   []string // "host:ip" entries appended to /etc/hosts
+	DNS          []string // overrides the runtime-resolved DNSServers when non-empty
+	DNSSearch    []string
+	DNSOptions   []string
+	Init         *bool // nil = docker default; non-nil = explicit override
+	ShmSizeBytes int64 // 0 = docker default
 
 	// Namespace knobs (issue #118). Strings forwarded verbatim into the
 	// matching HostConfig modes; empty string means "docker default".
-	IpcMode       string
-	PidMode       string
-	UTSMode       string
-	UsernsMode    string
-	CgroupnsMode  string // compose `cgroup:` (host|private)
-	CgroupParent  string
+	IpcMode      string
+	PidMode      string
+	UTSMode      string
+	UsernsMode   string
+	CgroupnsMode string // compose `cgroup:` (host|private)
+	CgroupParent string
 
 	// Host device bind-mounts (issue #115). Each entry maps directly to a
 	// docker DeviceMapping (PathOnHost / PathInContainer / CgroupPermissions).
@@ -192,6 +196,10 @@ type Mount struct {
 	Source   string // host path for bind, volume name for volume
 	Target   string // path inside the container
 	ReadOnly bool
+	// DefaultVolumeKey identifies managed storage without decoding Source.
+	// Empty for explicit name/external overrides, binds and anonymous volumes.
+	DefaultVolumeKey string
+	External         bool // Existing operator-managed storage; never create it.
 }
 
 // DeviceMapping is a single host→container device bind-mount (issue #115).
@@ -257,10 +265,12 @@ type SpecOptions struct {
 	// VolumeNameOverrides maps the bare compose top-level volume key to the
 	// literal docker volume name the operator declared via
 	// `volumes.<key>.name:`. When the key is present, mountsFromCompose uses
-	// the literal verbatim (no `jaco_<deployment>_` prefix) — matching
+	// the literal verbatim (no generated identity) — matching
 	// docker-compose's "name: is the explicit, unprefixed name" semantics.
-	// Nil / empty → every named volume gets the deployment prefix.
+	// Nil / empty → named volumes get a managed identity unless external.
 	VolumeNameOverrides map[string]string
+	// VolumeDefinitions retains the normalized top-level external flags.
+	VolumeDefinitions types.Volumes
 }
 
 // ValidationError is the typed result Validate returns when the compose file

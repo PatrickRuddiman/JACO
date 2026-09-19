@@ -19,16 +19,16 @@ func TestSmokeFixtures_DocumentedInvariants(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "tests", "samples", "jaco", "smoke-volumes")
 
 	// Default-scoped pair: front and back must produce two distinct
-	// jaco_<deployment>_<key> sources for the same compose service.
+	// managed volume sources for the same compose service.
 	front := smokeMount(t, filepath.Join(root, "front.compose.yml"), "vol-front")
 	back := smokeMount(t, filepath.Join(root, "back.compose.yml"), "vol-back")
 	if front.Source == back.Source {
 		t.Fatalf("smoke fixtures collide: front=%q back=%q (same docker volume)", front.Source, back.Source)
 	}
-	if got, want := front.Source, "jaco_vol-front_data"; got != want {
+	if got, want := front.Source, compose.DefaultVolumeName("", "vol-front", "data"); got != want {
 		t.Errorf("front Source = %q, want %q", got, want)
 	}
-	if got, want := back.Source, "jaco_vol-back_data"; got != want {
+	if got, want := back.Source, compose.DefaultVolumeName("", "vol-back", "data"); got != want {
 		t.Errorf("back Source = %q, want %q", got, want)
 	}
 
@@ -67,6 +67,7 @@ func smokeMount(t *testing.T, path, deployment string) compose.Mount {
 		Deployment:          deployment,
 		Service:             "redis",
 		VolumeNameOverrides: overrides,
+		VolumeDefinitions:   project.Volumes,
 	})
 	if len(spec.Mounts) != 1 {
 		t.Fatalf("%s: Mounts len = %d, want 1; got %+v", path, len(spec.Mounts), spec.Mounts)
