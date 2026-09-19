@@ -12,7 +12,7 @@ This file is generated from `go.mod`; regenerate after dependency changes.
 
 ## Apache-2.0 (87)
 
-- `cel.dev/expr` v0.25.1 — <https://cel.dev/expr>
+- `cel.dev/expr` v0.25.2 — <https://cel.dev/expr>
 - `cloud.google.com/go/auth` v0.18.2 — <https://cloud.google.com/go/auth>
 - `cloud.google.com/go/auth/oauth2adapt` v0.2.8 — <https://cloud.google.com/go/auth/oauth2adapt>
 - `cloud.google.com/go/compute/metadata` v0.9.0 — <https://cloud.google.com/go/compute/metadata>
@@ -73,7 +73,7 @@ This file is generated from `go.mod`; regenerate after dependency changes.
 - `go.opentelemetry.io/contrib/propagators/b3` v1.43.0 — <https://go.opentelemetry.io/contrib/propagators/b3>
 - `go.opentelemetry.io/contrib/propagators/jaeger` v1.43.0 — <https://go.opentelemetry.io/contrib/propagators/jaeger>
 - `go.opentelemetry.io/contrib/propagators/ot` v1.43.0 — <https://go.opentelemetry.io/contrib/propagators/ot>
-- `go.opentelemetry.io/otel` v1.43.0 — <https://go.opentelemetry.io/otel>
+- `go.opentelemetry.io/otel` v1.44.0 — <https://go.opentelemetry.io/otel>
 - `go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc` v0.19.0 — <https://go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc>
 - `go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp` v0.19.0 — <https://go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp>
 - `go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc` v1.43.0 — <https://go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc>
@@ -86,18 +86,18 @@ This file is generated from `go.mod`; regenerate after dependency changes.
 - `go.opentelemetry.io/otel/exporters/stdout/stdoutmetric` v1.43.0 — <https://go.opentelemetry.io/otel/exporters/stdout/stdoutmetric>
 - `go.opentelemetry.io/otel/exporters/stdout/stdouttrace` v1.43.0 — <https://go.opentelemetry.io/otel/exporters/stdout/stdouttrace>
 - `go.opentelemetry.io/otel/log` v0.19.0 — <https://go.opentelemetry.io/otel/log>
-- `go.opentelemetry.io/otel/metric` v1.43.0 — <https://go.opentelemetry.io/otel/metric>
-- `go.opentelemetry.io/otel/sdk` v1.43.0 — <https://go.opentelemetry.io/otel/sdk>
+- `go.opentelemetry.io/otel/metric` v1.44.0 — <https://go.opentelemetry.io/otel/metric>
+- `go.opentelemetry.io/otel/sdk` v1.44.0 — <https://go.opentelemetry.io/otel/sdk>
 - `go.opentelemetry.io/otel/sdk/log` v0.19.0 — <https://go.opentelemetry.io/otel/sdk/log>
-- `go.opentelemetry.io/otel/sdk/metric` v1.43.0 — <https://go.opentelemetry.io/otel/sdk/metric>
-- `go.opentelemetry.io/otel/trace` v1.43.0 — <https://go.opentelemetry.io/otel/trace>
+- `go.opentelemetry.io/otel/sdk/metric` v1.44.0 — <https://go.opentelemetry.io/otel/sdk/metric>
+- `go.opentelemetry.io/otel/trace` v1.44.0 — <https://go.opentelemetry.io/otel/trace>
 - `go.opentelemetry.io/proto/otlp` v1.10.0 — <https://go.opentelemetry.io/proto/otlp>
 - `go.step.sm/crypto` v0.77.1 — <https://go.step.sm/crypto>
 - `go.yaml.in/yaml/v2` v2.4.4 — <https://go.yaml.in/yaml/v2>
 - `go.yaml.in/yaml/v4` v4.0.0-rc.4 — <https://go.yaml.in/yaml/v4>
-- `google.golang.org/genproto/googleapis/api` v0.0.0-20260401024825-9d38bb4040a9 — <https://google.golang.org/genproto/googleapis/api>
-- `google.golang.org/genproto/googleapis/rpc` v0.0.0-20260401024825-9d38bb4040a9 — <https://google.golang.org/genproto/googleapis/rpc>
-- `google.golang.org/grpc` v1.81.1 — <https://google.golang.org/grpc>
+- `google.golang.org/genproto/googleapis/api` v0.0.0-20260526163538-3dc84a4a5aaa — <https://google.golang.org/genproto/googleapis/api>
+- `google.golang.org/genproto/googleapis/rpc` v0.0.0-20260526163538-3dc84a4a5aaa — <https://google.golang.org/genproto/googleapis/rpc>
+- `google.golang.org/grpc` v1.83.2 — <https://google.golang.org/grpc>
 - `google.golang.org/grpc/cmd/protoc-gen-go-grpc` v1.5.1 — <https://google.golang.org/grpc/cmd/protoc-gen-go-grpc>
 
 ## MIT (74)
@@ -197,18 +197,18 @@ This file is generated from `go.mod`; regenerate after dependency changes.
 - `github.com/spf13/pflag` v1.0.10 — <https://github.com/spf13/pflag>
 - `github.com/tailscale/tscert` v0.0.0-20251216020129-aea342f6d747 — <https://github.com/tailscale/tscert>
 - `github.com/xhit/go-str2duration/v2` v2.1.0 — <https://github.com/xhit/go-str2duration/v2>
-- `golang.org/x/crypto` v0.52.0 — <https://golang.org/x/crypto>
+- `golang.org/x/crypto` v0.55.0 — <https://golang.org/x/crypto>
 - `golang.org/x/crypto/x509roots/fallback` v0.0.0-20260213171211-a408498e5541 — <https://golang.org/x/crypto/x509roots/fallback>
 - `golang.org/x/exp` v0.0.0-20251023183803-a4bb9ffd2546 — <https://golang.org/x/exp>
-- `golang.org/x/mod` v0.35.0 — <https://golang.org/x/mod>
-- `golang.org/x/net` v0.55.0 — <https://golang.org/x/net>
+- `golang.org/x/mod` v0.38.0 — <https://golang.org/x/mod>
+- `golang.org/x/net` v0.58.0 — <https://golang.org/x/net>
 - `golang.org/x/oauth2` v0.36.0 — <https://golang.org/x/oauth2>
-- `golang.org/x/sync` v0.20.0 — <https://golang.org/x/sync>
-- `golang.org/x/sys` v0.45.0 — <https://golang.org/x/sys>
-- `golang.org/x/term` v0.43.0 — <https://golang.org/x/term>
-- `golang.org/x/text` v0.37.0 — <https://golang.org/x/text>
+- `golang.org/x/sync` v0.22.0 — <https://golang.org/x/sync>
+- `golang.org/x/sys` v0.47.0 — <https://golang.org/x/sys>
+- `golang.org/x/term` v0.45.0 — <https://golang.org/x/term>
+- `golang.org/x/text` v0.41.0 — <https://golang.org/x/text>
 - `golang.org/x/time` v0.15.0 — <https://golang.org/x/time>
-- `golang.org/x/tools` v0.44.0 — <https://golang.org/x/tools>
+- `golang.org/x/tools` v0.48.0 — <https://golang.org/x/tools>
 - `google.golang.org/api` v0.271.0 — <https://google.golang.org/api>
 - `google.golang.org/protobuf` v1.36.11 — <https://google.golang.org/protobuf>
 - `howett.net/plist` v1.0.0 — <https://howett.net/plist>
