@@ -58,6 +58,8 @@ func TestInternalRPCRejectsInvalidPeersOnEveryMethod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	nonmemberCert := nodeRPCCertificate(t, "outsider", caPEM, caKey)
+	foreignCert := nodeRPCCertificate(t, "worker", otherCA, otherKey)
 	cases := []struct {
 		name   string
 		cert   *tls.Certificate
@@ -66,8 +68,8 @@ func TestInternalRPCRejectsInvalidPeersOnEveryMethod(t *testing.T) {
 	}{
 		{name: "anonymous", code: codes.Unauthenticated},
 		{name: "operator bearer without node certificate", bearer: true, code: codes.Unauthenticated},
-		{name: "nonmember", cert: certPointer(nodeRPCCertificate(t, "outsider", caPEM, caKey)), code: codes.PermissionDenied},
-		{name: "wrong CA", cert: certPointer(nodeRPCCertificate(t, "worker", otherCA, otherKey)), code: codes.Unauthenticated},
+		{name: "nonmember", cert: &nonmemberCert, code: codes.PermissionDenied},
+		{name: "wrong CA", cert: &foreignCert, code: codes.Unauthenticated},
 	}
 	for name, mutate := range map[string]func(*x509.Certificate){
 		"expired":       func(c *x509.Certificate) { c.NotAfter = time.Now().Add(-time.Minute) },
@@ -122,8 +124,6 @@ func TestInternalRPCRejectsInvalidPeersOnEveryMethod(t *testing.T) {
 		})
 	}
 }
-
-func certPointer(cert tls.Certificate) *tls.Certificate { return &cert }
 
 func TestInternalRPCRechecksLiveTrustOnExistingConnection(t *testing.T) {
 	s := internalRPCServer(t)
