@@ -208,6 +208,7 @@ func BuildCaddyConfig(routes []Route, tcpRoutes []TCPRoute, replicas []ReplicaOb
 	}
 
 	root := map[string]any{
+		"admin": map[string]any{"disabled": true},
 		"apps": map[string]any{
 			"http": map[string]any{
 				"servers": map[string]any{

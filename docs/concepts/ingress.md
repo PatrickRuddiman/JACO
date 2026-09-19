@@ -18,6 +18,13 @@ for compose-declared `ports:` entries.
 
 Code: [`internal/ingress/`](../../internal/ingress).
 
+Embedded Caddy has its administration API disabled. JACO applies generated
+configs and forced certificate reloads in-process, without a listener on
+`localhost:2019`. The optional external-process mode instead uses an
+owner-only Unix administration socket; see
+[Ingress administration](../configuration.md#ingress-administration) for
+the required deployment setup and migration from TCP administration.
+
 ## What every node listens on
 
 - `:80` and `:443` — Caddy reverse-proxy for declared HTTP(S) routes.
