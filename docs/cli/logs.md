@@ -37,7 +37,22 @@ else fails with `expected <deployment>/<service>, got "…"`.
 
 ## Auth
 
-Operator token (TCP) or unix-socket trust (local).
+Operator token (TCP) or unix-socket trust (local). Peer fanout uses
+mutually authenticated TLS and forwards the original operator token;
+the receiving node validates it again. A peer certificate by itself
+does not grant arbitrary workload-log access.
+Authority is rechecked before each peer log line, so applied token
+revocation, member removal, or CA replacement stops further disclosure.
+A failed peer stream cancels the remaining fanout and returns an error,
+rather than silently reporting an incomplete stream as successful.
+
+The current leader can fan out logs for its local unix-socket operator
+without a bearer token. On a follower, tokenless unix-socket requests
+can read locally hosted replicas only. If the request also needs remote
+replicas, it fails before emitting any lines with guidance to use an
+operator bearer over `--server`, or the leader's local socket. This
+intentional restriction prevents every cluster member from acquiring
+unrestricted cross-host log-reading authority.
 
 ## Behavior
 
@@ -74,7 +89,8 @@ Follow live:
 jaco logs --server $LEADER hello/web --follow
 ```
 
-On-node, no token needed:
+On the leader, no token needed for cluster-wide fanout (on a follower,
+this tokenless form is limited to locally hosted replicas):
 
 ```sh
 sudo jaco logs hello/web -f

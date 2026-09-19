@@ -5,6 +5,8 @@ sources:
   - internal/controlplane/grpc/cluster.go
   - internal/controlplane/ca/
   - internal/daemon/admission/
+  - internal/daemon/grpc/internal_authorization.go
+  - internal/daemon/grpc/peer_tls.go
 ---
 
 # Auth and tokens
@@ -21,8 +23,9 @@ Source-of-truth code:
 ### Operator token
 
 A 64-character hex string bound to an **identity name** (e.g.
-`bootstrap`, `alice`, `ci-deploy`). Used for every state-changing
-RPC over the cross-host gRPC listener. Issued by:
+`bootstrap`, `alice`, `ci-deploy`). Used for public operator RPCs
+over the cross-host gRPC listener. Node-to-node RPCs use a separate,
+restricted certificate identity described below. Issued by:
 
 - `jaco cluster init` — prints the first one once. Identity
   `bootstrap`. Carries `allows_privileged = false`.
@@ -143,6 +146,82 @@ upsert/remove carry `registry` + `username` only — symmetric with
 rotate a credential is to `login` again with the new secret; there is
 no read-back.
 
+## Internal RPC authorization
+
+Network placement is not authentication. `Internal.Submit`, `Logs`,
+`EnsureSubnet`, and the currently unimplemented `SignNodeCert` require
+a TLS client certificate signed by the current cluster CA, valid for
+client authentication, whose common name and SAN identify a current
+member in `state.Nodes`. Admission rechecks certificate validity, CA
+trust, and membership for every RPC, including on existing connections.
+Internal log streams recheck membership, CA/certificate validity, and
+operator-token or current-leader authority before releasing each line.
+Revocations take effect once applied to the receiving node's state.
+Already admitted unary work can finish in Raft; removing a node does not
+roll back in-flight commands.
+An operator bearer token alone does not grant access to these methods.
+`SignNodeCert` remains unimplemented; there is no `Internal.Query` API.
+
+Every peer dial presents `$JACO_DATA_DIR/node/<hostname>.crt` and
+`.key`, and verifies the destination against `node/ca.crt` and its
+advertised hostname/IP. Missing credentials fail closed; there is no
+anonymous or skip-verification fallback for Internal RPCs.
+
+An admitted node is **not an operator**:
+
+| Operation | Network caller authority |
+|---|---|
+| `Submit` observations | Only replicas currently assigned to that node; host and deployment fields are derived from the assignment |
+| `Submit` node status/discovery | Only the caller's own node; a new gRPC address must match its certificate SAN |
+| `Submit` ingress storage | Dedicated ACME blob, challenge and lock operations; lease ownership is caller-bound, lifetimes are server-bounded, challenges refer to configured TLS routes |
+| `Submit` audit | Only isolation and certificate lifecycle events, attributed to `node:<hostname>` with server timestamps |
+| `Submit` administration | Rejected: tokens, deployments, membership, registry credentials, scheduler desired state, raw subnet mutations, and **all batches**, including nested batches |
+| `EnsureSubnet` | Only the caller's host and a network used by its assigned workload, using the runtime's network projection |
+| `Logs` | A member forwarding the original valid operator bearer, or the authenticated current leader performing fanout |
+
+The scheduler still applies desired state locally on the leader. Operator
+writes still go through their public APIs and validation, including
+privileged-workload admission. Followers return `no_leader` as before;
+the CLI retries configured endpoints with the original operator token.
+No shared administrative bearer is created for daemons.
+
+All current nodes run ingress and therefore share ingress storage
+authority. This is not a tenant isolation boundary or Byzantine defense:
+the cluster CA private key and other replicated secrets remain available
+to admitted cluster members. A compromised member holding the signing
+key can impersonate other node identities. Certificate checks and
+operation scoping do not repair that separate trust compromise or
+authenticate the Raft transport.
+
+### Upgrade and credential recovery
+
+Older daemons do not present client certificates on Internal RPCs.
+Plan a coordinated upgrade of all nodes; mixed-version forwarding fails
+closed and can interrupt reconciliation, subnet allocation, ACME, and log
+fanout. Restrict network access to the control port during the maintenance
+window rather than restoring the old anonymous exemptions.
+
+Before upgrading, verify that each node has its own matching certificate
+and private key, the independently trusted cluster CA, and SANs covering
+its advertised addresses. Existing certificates issued by JACO already
+include client authentication. Keep private keys restricted to the daemon
+account; never copy one node's key to another. After upgrading, check
+membership, scheduling/observations, subnet allocation, ingress issuance,
+and cross-host logs. An invalid or missing certificate is a repair/rejoin
+condition, not a reason to bypass verification.
+
+If the old Internal listener was reachable by an untrusted actor, treat
+the cluster as potentially compromised: an injected token could have
+authorized backup and other administrative APIs. Investigate unexpected
+tokens, nodes, deployments and audit entries; audit history alone is not
+proof of safety. Revoke/reissue operator and join credentials, rotate
+exposed workload and registry secrets, and replace exposed ACME keys.
+If the CA signing key may have escaped, replacing bearer tokens is
+insufficient: plan a controlled cluster trust rebuild and node
+re-enrollment with fresh keys and independently distributed CA trust.
+There is no online CA rotation or node renewal RPC. Do not blindly
+restore unreviewed state or credentials from a suspect backup.
+
 ## The unix-socket trust boundary
 
 On a cluster node, the local daemon listens on
@@ -175,8 +254,9 @@ Every other RPC returns
 This is what `jaco cluster status` on a fresh node calls, so liveness
 probes work before the cluster exists.
 
-After Init or Join completes, the gate flips and the
-standard token / socket-trust admission applies to every RPC.
+After Init or Join completes, the gate flips to operator or node
+admission as described above. `Cluster.Status` remains public and
+`Cluster.NodeJoin` authenticates its body-carried join credential.
 
 ## Which auth path does each command use?
 

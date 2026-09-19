@@ -1,12 +1,9 @@
-// Package grpc builds the gRPC server jacod listens on. v1 opens a unix
-// socket listener; TLS-over-TCP for cross-host control lands once the
-// daemon transitions through Init/Join and has a real cluster CA cert
-// (later iters of task 38).
+// Package grpc serves local control over a filesystem-restricted Unix socket
+// and cross-host control over TLS, with separate operator and node admission.
 package grpc
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -56,6 +53,7 @@ import (
 // + the InitGate that governs which RPCs accept while uninitialized.
 type Server struct {
 	gs           *grpc.Server
+	tcpGS        *grpc.Server
 	listener     net.Listener // unix socket — local control
 	tcpListener  net.Listener // cross-host control; nil when ListenAddr unset
 	gate         *admission.InitGate
@@ -179,8 +177,8 @@ type Options struct {
 	// for ongoing operator RPCs. Empty → no cross-host listener (single
 	// node only).
 	//
-	// v0 ships plaintext TCP — Tailscale / WireGuard is expected to wrap
-	// the connection. TLS-with-cluster-CA is a follow-up iter.
+	// TCP always uses TLS. Internal callers additionally require a verified
+	// member certificate; network placement alone grants no authority.
 	ListenAddr string
 
 	// ListenAdvertiseAddr is the host:port peers should be told to dial
@@ -337,7 +335,7 @@ func New(opts Options) (*Server, error) {
 	// request_id and attach request_id/method/peer to the context logger;
 	// the existing gate + admission interceptors run inside it, so their
 	// log lines (and every downstream handler's) carry the request_id.
-	gs := grpc.NewServer(
+	serverOpts := []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(
 			logging.UnaryServerInterceptor(logging.Subsystem(logger, "daemon/grpc")),
 			gate.UnaryInterceptor(lazyUnary),
@@ -346,16 +344,17 @@ func New(opts Options) (*Server, error) {
 			logging.StreamServerInterceptor(logging.Subsystem(logger, "daemon/grpc")),
 			gate.StreamInterceptor(lazyStream),
 		),
-	)
+	}
+	gs := grpc.NewServer(serverOpts...)
 
 	// Optional cross-host TCP listener. Empty ListenAddr → single-node
 	// daemon (unix socket only). We open this NOW so a failure surfaces
 	// before Init/Join rather than mid-flight. The TCP listener is
-	// always TLS-wrapped — pre-Init with a self-signed bootstrap cert
-	// (joiners dial with InsecureSkipVerify; the join_token is the
-	// trust anchor); rebindTLS swaps in the cluster-CA-signed cert
-	// after OpenRaft persists certs.
+	// initially served with a self-signed bootstrap cert; rebindTLS swaps in
+	// the cluster-CA-signed cert after OpenRaft persists certs. Peer dialers
+	// require that cluster identity and reject the bootstrap certificate.
 	var tcpLis net.Listener
+	var tcpGS *grpc.Server
 	var tcpAddr string
 	var dynTLS *dynamicTLS
 	if opts.ListenAddr != "" {
@@ -370,7 +369,10 @@ func New(opts Options) (*Server, error) {
 			_ = raw.Close()
 			return nil, fmt.Errorf("bootstrap TLS: %w", err)
 		}
-		tcpLis = tls.NewListener(raw, btls)
+		tcpLis = raw
+		// Native gRPC credentials expose the authenticated TLS connection in
+		// peer.AuthInfo; wrapping only the listener loses that identity.
+		tcpGS = grpc.NewServer(append(serverOpts, grpc.Creds(credentials.NewTLS(btls)))...)
 		tcpAddr = raw.Addr().String()
 		dynTLS = dyn
 	}
@@ -391,6 +393,7 @@ func New(opts Options) (*Server, error) {
 	}
 	*server = Server{
 		gs:           gs,
+		tcpGS:        tcpGS,
 		listener:     lis,
 		tcpListener:  tcpLis,
 		gate:         gate,
@@ -422,8 +425,6 @@ func New(opts Options) (*Server, error) {
 		server:        server,
 	}
 	server.cluster = cluster
-	pb.RegisterClusterServer(gs, cluster)
-	pb.RegisterInternalServer(gs, &internalServer{server: server})
 
 	// Register the four lazily-resolved control-plane services. Their
 	// target handlers get filled by wireControlPlane in startSubsystems
@@ -433,11 +434,18 @@ func New(opts Options) (*Server, error) {
 	server.audit = &auditProxy{}
 	server.watch = &watchProxy{}
 	server.registry = &registryProxy{}
-	pb.RegisterTokensServer(gs, server.tokens)
-	pb.RegisterDeployServer(gs, server.deploy)
-	pb.RegisterAuditServer(gs, server.audit)
-	pb.RegisterWatchServer(gs, server.watch)
-	pb.RegisterRegistryCredentialsServer(gs, server.registry)
+	for _, transport := range []*grpc.Server{gs, tcpGS} {
+		if transport == nil {
+			continue
+		}
+		pb.RegisterClusterServer(transport, cluster)
+		pb.RegisterInternalServer(transport, &internalServer{server: server})
+		pb.RegisterTokensServer(transport, server.tokens)
+		pb.RegisterDeployServer(transport, server.deploy)
+		pb.RegisterAuditServer(transport, server.audit)
+		pb.RegisterWatchServer(transport, server.watch)
+		pb.RegisterRegistryCredentialsServer(transport, server.registry)
+	}
 
 	return server, nil
 }
@@ -646,7 +654,7 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 			ctx, data,
 			func(b []byte) (uint64, error) { return node.Apply(b, 0) },
 			func(ctx context.Context, b []byte) error {
-				return dialAndSubmit(ctx, leaderGRPCAddr(st, node), b)
+				return s.dialAndSubmit(ctx, leaderGRPCAddr(st, node), b)
 			},
 		)
 	}
@@ -718,7 +726,7 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 				ctx, data,
 				func(b []byte) (uint64, error) { return node.Apply(b, 0) },
 				func(ctx context.Context, b []byte) error {
-					return dialAndSubmit(ctx, leaderGRPCAddr(st, node), b)
+					return s.dialAndSubmit(ctx, leaderGRPCAddr(st, node), b)
 				},
 			)
 		}
@@ -862,7 +870,7 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 				context.Background(), cmd,
 				func(b []byte) (uint64, error) { return node.Apply(b, 0) },
 				func(ctx context.Context, b []byte) error {
-					return dialAndSubmit(ctx, leaderGRPCAddr(st, node), b)
+					return s.dialAndSubmit(ctx, leaderGRPCAddr(st, node), b)
 				},
 			)
 		}
@@ -1069,7 +1077,7 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 				})
 				return fmt.Errorf("submit: no leader gRPC address known")
 			}
-			conn, dialErr := grpc.NewClient(leaderAddr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})))
+			conn, dialErr := s.dialPeer(leaderAddr)
 			if dialErr != nil {
 				submitErrLogOnce.Do(func() {
 					s.srvLog.Error("submit: dial leader failed", "leader_addr", leaderAddr, "error", dialErr)
@@ -1109,7 +1117,7 @@ func (s *Server) startSubsystems(node *raftnode.Node, st *state.State, brokers *
 			if leaderAddr == "" {
 				return "", fmt.Errorf("ensureSubnet: no leader gRPC address known")
 			}
-			conn, dialErr := grpc.NewClient(leaderAddr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})))
+			conn, dialErr := s.dialPeer(leaderAddr)
 			if dialErr != nil {
 				return "", fmt.Errorf("ensureSubnet: dial leader %s: %w", leaderAddr, dialErr)
 			}
@@ -1168,8 +1176,7 @@ func (s *Server) Membership() *raftmembership.Reconciler {
 
 // Serve blocks until Stop is called or one of the listeners errors. When a
 // cross-host TCP listener is configured, it runs alongside the unix socket
-// on the same grpc.Server (so Cluster RPCs are visible identically on both
-// transports).
+// with the same services and admission policy as the unix socket.
 func (s *Server) Serve() error {
 	s.mu.Lock()
 	if s.started {
@@ -1189,7 +1196,7 @@ func (s *Server) Serve() error {
 	}()
 	if s.tcpListener != nil {
 		go func() {
-			err := s.gs.Serve(s.tcpListener)
+			err := s.tcpGS.Serve(s.tcpListener)
 			if errors.Is(err, grpc.ErrServerStopped) {
 				err = nil
 			}
@@ -1213,12 +1220,18 @@ func (s *Server) Stop(ctx context.Context) {
 	stopped := make(chan struct{})
 	go func() {
 		s.gs.GracefulStop()
+		if s.tcpGS != nil {
+			s.tcpGS.GracefulStop()
+		}
 		close(stopped)
 	}()
 	select {
 	case <-stopped:
 	case <-ctx.Done():
 		s.gs.Stop()
+		if s.tcpGS != nil {
+			s.tcpGS.Stop()
+		}
 	}
 	_ = os.Remove(s.socketPath)
 
@@ -1297,7 +1310,7 @@ func (s *Server) publishSelf(ctx context.Context, node *raftnode.Node, st *state
 	if leaderAddr == "" {
 		return fmt.Errorf("no leader gRPC address known")
 	}
-	conn, err := grpc.NewClient(leaderAddr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})))
+	conn, err := s.dialPeer(leaderAddr)
 	if err != nil {
 		return fmt.Errorf("dial leader: %w", err)
 	}
