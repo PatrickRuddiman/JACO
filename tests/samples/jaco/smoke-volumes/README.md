@@ -1,7 +1,7 @@
 # smoke-volumes — per-deployment volume-isolation probe
 
 Fixture pair for the live smoke test that proves JACO scopes named
-volumes per deployment (`jaco_<deployment>_<key>`). Until this is
+volumes per cluster/deployment/key (`jaco_v2_<digest>`). Until this is
 promoted into the privileged `tests/isolation` rig, it lives here as
 the reviewable artifact for the manual smoke run documented in the PR
 that introduces the change.
@@ -10,8 +10,8 @@ that introduces the change.
 
 1. **Default isolation.** Two deployments declaring the same bare
    volume key (`data`) on the same host produce two distinct docker
-   volumes (`jaco_vol-front_data` and `jaco_vol-back_data`) — they do
-   NOT silently share storage.
+   volumes with distinct digests and ownership labels — they do NOT
+   silently share storage.
 2. **Disjoint backing storage.** Writing a sentinel into one volume
    does NOT appear under the same path in the other. This is the
    teeth of invariant (1) — the names alone are not enough; the
@@ -20,6 +20,13 @@ that introduces the change.
    `volumes.<key>.name: <literal>` at the compose top level, JACO uses
    the literal docker volume name verbatim (unprefixed). This is the
    compose-portable escape hatch for sharing storage across stacks.
+
+Run these probes only on a disposable testbed. Existing legacy probe
+volumes can require deliberate adoption; do not delete or relabel them
+to bypass an ownership or migration error. The automated fake-Docker
+regressions in `internal/runtime/lifecycle/volume_identity_test.go`
+also cover ambiguous tuple boundaries, legacy data, ownership races,
+external-volume existence and same-source adoption without live Docker.
 
 ## Files
 
@@ -73,18 +80,20 @@ ssh azureuser@<n1> 'sudo docker ps --format "{{.Names}}\t{{.Status}}" | grep vol
 #   expected (both Up):  jaco_vol-front-redis-0   Up …
 #                        jaco_vol-back-redis-0    Up …
 
-# Invariant (1) — distinct, deployment-scoped docker volumes:
-ssh azureuser@<n1> 'sudo docker volume ls --format "{{.Name}}" | grep _data'
-#   expected: jaco_vol-front_data
-#             jaco_vol-back_data
-#   (NO bare `data` line)
+# Invariant (1) — distinct volumes identified by ownership labels:
+ssh azureuser@<n1> 'sudo docker volume ls \
+  --filter label=jaco.volume_identity=2 --filter label=jaco.volume_key=data \
+  --format "{{.Name}}\t{{.Labels}}"'
+#   expected: two distinct jaco_v2_<digest> names, one labelled
+#   jaco.deployment=vol-front, the other jaco.deployment=vol-back,
+#   both carrying the test cluster's jaco.cluster_id.
 
-# Invariant (2) — disjoint backing storage:
-ssh azureuser@<n1> 'sudo docker run --rm \
-  -v jaco_vol-front_data:/d busybox sh -c "echo front > /d/who"'
-ssh azureuser@<n1> 'sudo docker run --rm \
-  -v jaco_vol-back_data:/d busybox sh -c "cat /d/who 2>/dev/null \
-      && echo COLLISION || echo isolated"'
+# Invariant (2) — probe the mounted data, without guessing volume names
+# or accidentally creating empty probe volumes with docker run -v:
+ssh azureuser@<n1> 'sudo docker exec jaco_vol-front-redis-0 \
+  sh -c "echo front > /data/who"'
+ssh azureuser@<n1> 'sudo docker exec jaco_vol-back-redis-0 \
+  sh -c "if test -e /data/who; then echo COLLISION; exit 1; else echo isolated; fi"'
 #   expected: isolated     (COLLISION = hard fail)
 
 # Invariant (3) — top-level `name:` opt-out. Re-applying with a
@@ -107,11 +116,12 @@ Tear-down (admin endpoint, both flags required):
 ```sh
 ssh azureuser@<n1> "sudo jaco delete vol-front --server $LEADER --token $TOKEN"
 ssh azureuser@<n1> "sudo jaco delete vol-back  --server $LEADER --token $TOKEN"
-# Container removal does NOT cascade-delete its volume (docker
-# semantics). Prune the probe volumes for a clean bed:
-ssh azureuser@<n1> 'sudo docker volume rm \
-  jaco_vol-front_data jaco_vol-back_data smoke-shared-data'
 ```
+
+Container removal does not delete its volumes. Retain them by default.
+On a disposable bed, inspect the exact names, ownership labels and
+consumers before manually removing only volumes created for this probe.
+Never infer ownership from a legacy name or run a blanket volume prune.
 
 The bed itself and the bench workload alongside are left in place
 for the next smoke.

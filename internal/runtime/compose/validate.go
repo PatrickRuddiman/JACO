@@ -78,8 +78,8 @@ var allowedServiceFields = map[string]bool{
 	// these, Postgres/Redis/nginx/Kafka get the wrong shutdown signal or
 	// not enough time to flush on `jaco rm` / replica rotation — silent
 	// data-loss-shaped behavior.
-	"stop_signal":        true,
-	"stop_grace_period":  true,
+	"stop_signal":       true,
+	"stop_grace_period": true,
 
 	// Trivial HostConfig/Config passthroughs (issue #117). Each maps to
 	// one docker field; no JACO semantics layered on top.
@@ -614,7 +614,7 @@ type rawCompose struct {
 //
 // Keys whose body is empty / nil / `{}` are NOT in the result: those are
 // the default-scoped named volumes that mountsFromCompose rewrites to
-// `jaco_<deployment>_<key>`.
+// a managed cluster/deployment/key identity.
 //
 // We re-parse the raw YAML rather than reading `project.Volumes[k].Name`
 // because compose-go defaults Name to `<projectName>_<key>` when the
@@ -648,7 +648,7 @@ func TopLevelVolumeNames(rawYAML []byte) (map[string]string, error) {
 // returns the operator-explicit docker volume name plus ok=true when the
 // operator opted out of JACO's per-deployment scoping. Returns ok=false
 // for empty / `{}` bodies — those default-scoped entries take the
-// `jaco_<deployment>_<key>` prefix in mountsFromCompose.
+// managed identity in mountsFromCompose.
 func topLevelVolumeName(key string, body any) (string, bool) {
 	m, ok := body.(map[string]any)
 	if !ok {

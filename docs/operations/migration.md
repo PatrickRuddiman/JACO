@@ -3,6 +3,7 @@ sources:
   - internal/runtime/compose/
   - internal/runtime/lifecycle/
   - internal/runtime/volumes/
+  - internal/runtime/reconciler/
   - internal/controlplane/grpc/jaco_spec.go
 ---
 
@@ -47,17 +48,92 @@ For a service mount like `pgdata:/var/lib/postgresql/data`:
 | | volume name actually used |
 |---|---|
 | `docker compose up` | `<project>_pgdata` (project defaults to the compose file's directory name) |
-| `jaco apply` | `jaco_<deployment>_pgdata` (the deployment name from `jaco.yaml`) |
+| `jaco apply` | `jaco_v2_<digest>` (cluster ID, deployment name and volume key) |
 
-JACO scopes every declared named volume to the deployment so two
-stacks that happen to use the same bare key (`pgdata`, `data`,
-`logs`, `cache`, …) cannot collide on a shared local docker volume
+Default named volumes use a full, lowercase SHA-256 digest of the
+**cluster ID, deployment and compose volume key**. Each component is
+encoded as its UTF-8 byte length in decimal, a colon, then its bytes,
+in that order. Length framing removes the ambiguity of joining names
+with underscores. The result is always a 72-character Docker-safe name
 ([`internal/runtime/compose/spec.go`](../../internal/runtime/compose/spec.go)).
-The scheme matches the existing per-deployment convention used for
-networks (`jaco_<deployment>_<network>`) and container names
-(`<deployment>-<service>-<index>`). The prefix never appears inside
-the container — the service still reaches the volume at its declared
-mount path.
+Names remain stable across replicas, redeploys and daemon restarts.
+The persisted cluster ID survives JACO backup/restore; initializing a
+new cluster creates a different identity. A control-plane backup does
+**not** back up Docker volume contents.
+
+JACO creates default volumes with `jaco.volume_identity=2`,
+`jaco.cluster_id`, `jaco.deployment` and `jaco.volume_key` labels.
+Every required label and the returned Docker name must match before
+reuse, including when Docker returns an existing volume during a
+concurrent create. Unlabelled or differently owned volumes are not
+claimed automatically. The mount path inside the container is unchanged.
+
+Find a managed volume by its labels, not by guessing its digest:
+
+```sh
+docker volume ls --filter label=jaco.volume_identity=2 \
+  --filter label=jaco.deployment=myapp --filter label=jaco.volume_key=pgdata
+```
+
+Also filter `jaco.cluster_id=<cluster-id>` when multiple clusters use the
+same engine. Network names are unchanged by this volume naming scheme.
+
+### Upgrading legacy default volumes
+
+Older JACO versions used `jaco_<deployment>_<key>`. These names are
+ambiguous: `orders` + `prod_data` and `orders_prod` + `data` both name
+`jaco_orders_prod_data`. An unlabelled volume, or a single remaining
+container using it, is not proof of exclusive ownership.
+
+**Plan the storage decision before upgrading a stateful deployment.**
+If an owned v2 volume does not exist but the old name does, JACO reports
+`PENDING / volume_migration_required` instead of creating an empty
+replacement. It also refuses to switch an existing container's default
+mount to a different volume, even if the v2 volume already exists.
+A missing volume still referenced by an existing container must be
+recovered rather than recreated empty.
+
+These checks run before stopping, restarting or replacing that container.
+Running containers remain running; stopped containers remain stopped.
+The runtime cancels their periodic health watcher while blocked and reports
+the migration status. `PENDING` does not trigger the automatic
+health restarter. Starts and future replacements remain blocked until
+the operator resolves the storage decision; this is not a live migration.
+JACO never copies, renames, deletes or automatically adopts legacy data.
+
+For deliberate **same-source adoption**:
+
+1. On the pinned Docker host, inspect the exact volume and every current
+   consumer. Verify its application data, deployment history and a usable
+   backup; do not infer ownership from the old name alone.
+   ```sh
+   docker volume inspect jaco_orders_prod_data
+   docker ps -a --filter volume=jaco_orders_prod_data \
+     --format '{{.ID}} {{.Names}} {{.Status}}'
+   ```
+2. If colliding workloads already shared data, quiesce them and plan
+   application-specific recovery or separation. New names cannot unmix
+   existing data. Do not automatically pin both deployments to the old
+   volume unless that sharing is now intentional.
+3. Pin the service to the host with the verified data. Set the exact
+   existing name and require its presence:
+   ```yaml
+   volumes:
+     prod_data:
+       name: jaco_orders_prod_data
+       external: true
+   ```
+4. Apply the manifest and inspect `jaco status`. The runtime retries on
+   its normal reconcile/safety tick (up to 30 seconds, then health polling).
+   A running container already using this same source can be retained
+   without a roll; no ownership labels or data are changed.
+
+`external: true` is important: if the volume is absent on the selected
+engine, JACO reports `external_volume_missing` instead of creating empty
+storage. Do not remove that flag just to bypass a missing-data error.
+Changing to a **different** source is a separate, deliberate data migration;
+top-level volume edits alone do not force a container roll. Do not delete
+a production deployment merely to change its volume name.
 
 ### Sharing a volume across stacks
 
@@ -79,15 +155,21 @@ volumes:
 ```
 
 The same escape hatch covers `external: true` — compose's "this volume
-already exists, don't manage it" contract — which JACO recognises and
-also leaves unprefixed.
+already exists, don't manage it" contract. JACO checks that the exact
+volume exists on the engine and leaves its name, driver and labels alone.
+Without an explicit `name:`, an external volume uses its compose key.
+An explicit `name:` **without** `external: true` still permits Docker to
+create the volume if absent; use `external: true` whenever existing data
+is required.
 
 `driver:` and `driver_opts:` on the top-level entry are still
-**silently dropped**. A volume backed by an NFS or cloud driver becomes
+**silently dropped for newly created volumes**. A request for a new
+volume backed by an NFS or cloud driver becomes
 a plain `local`-driver volume on each node. If your current stack gets
 shared storage through a volume **driver**, that does not carry over —
-flatten it to a plain named volume plus an explicit data copy, or
-front it with application-level replication.
+pre-provision and verify it as external, flatten it to a plain named
+volume plus an explicit data copy, or front it with application-level
+replication.
 
 ### Bind mounts are not preflighted
 
@@ -319,35 +401,41 @@ psql "postgres://postgres@<node-2-host>:5432/" < dump.sql
 
 ### Or copy the raw volume into the destination volume
 
-The source volume on the old host is `<project>_pgdata`. The
-destination depends on whether you let JACO scope the volume to its
-deployment (default — recommended) or pin the literal name via the
-`volumes.<key>.name:` escape hatch.
-
-Default (deployment-scoped): the destination volume on the cluster
-node is `jaco_<deployment>_pgdata`. Substitute the deployment name
-from your `jaco.yaml` (e.g. `myapp` → `jaco_myapp_pgdata`).
+The source volume on the old host is `<project>_pgdata`. For pre-seeding
+data, choose an explicit destination name and use `external: true`.
+Do not guess a generated v2 name or forge JACO ownership labels.
+The following example uses `myapp-imported-pgdata`; verify that this
+destination name is unused before creating it. Never restore over an
+existing volume without a separate backup and an intentional recovery plan.
+Raw database copies require an application-consistent, quiesced source.
 
 ```sh
-# On the OLD host — confirm the real name, then export the live volume.
-docker volume ls | grep pgdata
+# On the OLD host — inspect the exact name before exporting quiesced data.
+docker volume inspect <project>_pgdata &&
 docker run --rm -v <project>_pgdata:/from:ro -v "$PWD":/backup \
   alpine tar czf /backup/pgdata.tgz -C /from .
 
 # Copy to the node you pinned the service to.
 scp pgdata.tgz node-2:/tmp/
 
-# On node-2 — create the deployment-scoped volume JACO will mount, then load it.
-docker volume create jaco_myapp_pgdata
-docker run --rm -v jaco_myapp_pgdata:/to -v /tmp:/backup:ro \
+# On node-2 — deliberately create the verified-unused destination, then load it.
+docker volume create myapp-imported-pgdata
+docker run --rm -v myapp-imported-pgdata:/to -v /tmp:/backup:ro \
   alpine sh -c 'cd /to && tar xzf /backup/pgdata.tgz'
 ```
 
-If you'd rather keep using the volume name your old stack created
-(e.g. you've already taken a snapshot named `myproject_pgdata` and
-want JACO to mount it in place), set
-`volumes: { pgdata: { name: myproject_pgdata } }` in the compose file.
-JACO uses that literal verbatim and skips the deployment prefix.
+Verify the restored data before apply, then declare:
+
+```yaml
+volumes:
+  pgdata:
+    name: myapp-imported-pgdata
+    external: true
+```
+
+To retain verified existing data in place instead, use its exact old
+name (for example `myproject_pgdata`) with `external: true`. JACO uses
+that literal verbatim, without creating or claiming a replacement.
 
 ### Bind mounts
 
@@ -410,9 +498,9 @@ the replication and failover policy.
 
 | compose feature | behavior under JACO |
 |---|---|
-| Volume name prefix | replaced — JACO uses `jaco_<deployment>_<key>` (not `<project>_<key>`) |
-| Top-level `volumes:` `name:` / `external:` | honored as the unprefixed opt-out (compose-portable escape hatch) |
-| Top-level `volumes:` `driver:` / `driver_opts:` | dropped; every volume becomes a plain `local`-driver volume on each node |
+| Default volume identity | `jaco_v2_<digest>` over cluster/deployment/key, with ownership validation; ambiguous legacy names require deliberate adoption |
+| Top-level `volumes:` `name:` / `external:` | honored as the unprefixed opt-out; external volumes must already exist on the selected engine |
+| Top-level `volumes:` `driver:` / `driver_opts:` | dropped when creating volumes; pre-existing external volumes retain their configuration |
 | Volume data across nodes | not replicated; pin stateful services, move data manually |
 | Bind mount to a missing host path | not rejected; an empty directory is auto-created |
 | `build:` | ignored — JACO pulls images, never builds |

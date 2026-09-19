@@ -26,6 +26,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/runtime/health"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/lifecycle"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/pull"
+	"github.com/PatrickRuddiman/jaco/internal/runtime/volumes"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
@@ -322,6 +323,7 @@ func (r *Reconciler) runStart(workCtx, watchCtx context.Context, rep *pb.Replica
 		ReplicaIndex:        int(rep.GetIndex()),
 		RaftIndex:           rep.GetRaftIndex(),
 		VolumeNameOverrides: volumeOverrides,
+		VolumeDefinitions:   project.Volumes,
 	})
 	// Start-ordering gate (issue #130). Evaluated before subnet alloc,
 	// image pull, and lifecycle.Start so a stuck dep doesn't waste pulls
@@ -416,6 +418,21 @@ func (r *Reconciler) runStart(workCtx, watchCtx context.Context, rep *pb.Replica
 		NetworkModeResolver: r.resolveNetworkModeTarget,
 	})
 	if err != nil {
+		var ve *volumes.Error
+		if errors.As(err, &ve) && workCtx.Err() == nil {
+			// FAILED/DEGRADED would trigger the health restarter. Preserve
+			// the container and stop health reports from hiding this gate.
+			r.watcher.Stop(rep.GetId())
+			if r.submit != nil {
+				if submitErr := r.submit(workCtx, &pb.ReplicaObserved{
+					Id: rep.GetId(), State: pb.ReplicaState_REPLICA_STATE_PENDING,
+					Code: ve.Code, Message: ve.Message, ContainerId: containerID, Host: r.hostname,
+					Details: map[string]string{"deployment": rep.GetDeployment(), "volume": ve.Path},
+				}); submitErr != nil {
+					r.logger.Error("volume preflight status failed", logging.KeyReplicaID, rep.GetId(), "error", submitErr)
+				}
+			}
+		}
 		return fmt.Errorf("lifecycle.Start: %w", err)
 	}
 	r.logger.Info("replica container started",

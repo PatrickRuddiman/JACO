@@ -1,6 +1,8 @@
 package compose_test
 
 import (
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/compose-spec/compose-go/v2/types"
@@ -39,15 +41,48 @@ func loadAppSpec(t *testing.T, body, deployment string, overrides map[string]str
 		Deployment:          deployment,
 		Service:             "app",
 		VolumeNameOverrides: overrides,
+		VolumeDefinitions:   project.Volumes,
 	})
 	return spec.Mounts
 }
 
-// TestToContainerSpec_VolumeUsesDeploymentPrefix — a bare top-level
-// `data: {}` declaration scopes the resulting docker volume to
-// `jaco_<deployment>_data`, isolating it from any other deployment that
-// happens to use the same volume key.
-func TestToContainerSpec_VolumeUsesDeploymentPrefix(t *testing.T) {
+func TestDefaultVolumeNameStructuredIdentity(t *testing.T) {
+	tuples := [][3]string{
+		{"cluster-x", "orders", "prod_data"},
+		{"cluster-x", "orders_prod", "data"},
+		{"cluster-x", "a", "b_c"},
+		{"cluster-x", "a_b", "c"},
+		{"cluster-x", "a_", "b"},
+		{"cluster-x", "a", "_b"},
+		{"cluster-x", "a-b", "c.d"},
+		{"cluster-x", "a", "b-c.d"},
+		{"cluster-x_a", "orders", "data"},
+		{"cluster-x", "a_orders", "data"},
+		{"cluster-y", "orders", "prod_data"},
+		{"cluster-x", strings.Repeat("long_", 200), strings.Repeat("key_", 200)},
+	}
+	validName := regexp.MustCompile(`^jaco_v2_[0-9a-f]{64}$`)
+	seen := make(map[string][3]string)
+	for _, tuple := range tuples {
+		name := compose.DefaultVolumeName(tuple[0], tuple[1], tuple[2])
+		if !validName.MatchString(name) {
+			t.Fatalf("invalid or unbounded Docker name %q", name)
+		}
+		if previous, exists := seen[name]; exists && previous != tuple {
+			t.Fatalf("tuples %q and %q collide on %q", previous, tuple, name)
+		}
+		seen[name] = tuple
+		if again := compose.DefaultVolumeName(tuple[0], tuple[1], tuple[2]); again != name {
+			t.Fatalf("unstable identity: %q then %q", name, again)
+		}
+	}
+	const stable = "jaco_v2_e30bc45973c18a0b1c8c9aaf729bba3079cb73038827e5217fedc21e2c8fd8b5"
+	if got := compose.DefaultVolumeName("cluster-x", "orders", "prod_data"); got != stable {
+		t.Fatalf("persisted identity changed: %q, want %q", got, stable)
+	}
+}
+
+func TestToContainerSpec_VolumeUsesDeploymentIdentity(t *testing.T) {
 	mounts := loadAppSpec(t, volumeBody, "stack-a", nil)
 	if len(mounts) != 1 {
 		t.Fatalf("Mounts len = %d, want 1; got %+v", len(mounts), mounts)
@@ -56,7 +91,7 @@ func TestToContainerSpec_VolumeUsesDeploymentPrefix(t *testing.T) {
 	if got.Type != types.VolumeTypeVolume {
 		t.Errorf("Type = %q, want %q", got.Type, types.VolumeTypeVolume)
 	}
-	if want := "jaco_stack-a_data"; got.Source != want {
+	if want := compose.DefaultVolumeName("", "stack-a", "data"); got.Source != want {
 		t.Errorf("Source = %q, want %q", got.Source, want)
 	}
 	if got.Target != "/data" {
@@ -95,7 +130,7 @@ volumes:
 }
 
 // TestToContainerSpec_BindMountUnchanged — bind mounts (Type "bind",
-// Source is a host path) are never rewritten. The deployment prefix
+// Source is a host path) are never rewritten. The managed identity
 // only applies to named volumes.
 func TestToContainerSpec_BindMountUnchanged(t *testing.T) {
 	body := `services:
@@ -122,7 +157,7 @@ func TestToContainerSpec_BindMountUnchanged(t *testing.T) {
 
 // TestToContainerSpec_AnonymousVolumeUnchanged — anonymous volumes
 // (compose `volumes: [/data]` — only a target, no source) become Type
-// "volume" with Source "" after compose-go's normalisation. The prefix
+// "volume" with Source "" after compose-go's normalisation. The identity
 // helper must leave the empty source alone so docker generates a name.
 func TestToContainerSpec_AnonymousVolumeUnchanged(t *testing.T) {
 	body := `services:
@@ -163,10 +198,10 @@ func TestToContainerSpec_TwoDeploymentsSameKeyDistinctVolume(t *testing.T) {
 	if front == back {
 		t.Fatalf("two deployments collide on Source %q (same backing volume)", front)
 	}
-	if want := "jaco_vol-front_data"; front != want {
+	if want := compose.DefaultVolumeName("", "vol-front", "data"); front != want {
 		t.Errorf("front Source = %q, want %q", front, want)
 	}
-	if want := "jaco_vol-back_data"; back != want {
+	if want := compose.DefaultVolumeName("", "vol-back", "data"); back != want {
 		t.Errorf("back Source = %q, want %q", back, want)
 	}
 }

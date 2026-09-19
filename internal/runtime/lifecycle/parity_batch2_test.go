@@ -128,6 +128,9 @@ func (f *fakeDocker) ImagePull(context.Context, string, image.PullOptions) (io.R
 func (f *fakeDocker) VolumeCreate(context.Context, volume.CreateOptions) (volume.Volume, error) {
 	return volume.Volume{}, nil
 }
+func (f *fakeDocker) VolumeInspect(context.Context, string) (volume.Volume, error) {
+	panic("unexpected VolumeInspect")
+}
 func (f *fakeDocker) NetworkConnect(context.Context, string, string, *network.EndpointSettings) error {
 	return nil
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/runtime/compose"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/dockerx"
 	"github.com/PatrickRuddiman/jaco/internal/runtime/pull"
+	"github.com/PatrickRuddiman/jaco/internal/runtime/volumes"
 )
 
 const (
@@ -57,7 +58,6 @@ type IsolationGate struct {
 	// state.ReplicasObserved + state.ReplicasDesired; tests pass an
 	// inline fn (or nil for `none` / no network_mode).
 	NetworkModeResolver NetworkModeResolver
-
 }
 
 // Start brings spec's container up. Idempotent on the (replica_id, raft_index)
@@ -97,6 +97,13 @@ func StartWithPullState(ctx context.Context, d dockerx.Docker, spec compose.Cont
 	existing, err := findContainerByReplicaID(ctx, d, spec.ReplicaID)
 	if err != nil {
 		return "", fmt.Errorf("list containers: %w", err)
+	}
+	existingID := ""
+	if existing != nil {
+		existingID = existing.ID
+	}
+	if err := volumes.EnsureMounts(ctx, d, spec, existingID); err != nil {
+		return existingID, fmt.Errorf("volume preflight: %w", err)
 	}
 	if existing != nil {
 		if matchesRaftIndex(existing.Labels, spec.RaftIndex) {

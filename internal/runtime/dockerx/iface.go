@@ -28,6 +28,7 @@ type Docker interface {
 	ContainerLogs(ctx context.Context, containerID string, opts container.LogsOptions) (io.ReadCloser, error)
 	ImagePull(ctx context.Context, ref string, opts image.PullOptions) (io.ReadCloser, error)
 	VolumeCreate(ctx context.Context, opts volume.CreateOptions) (volume.Volume, error)
+	VolumeInspect(ctx context.Context, name string) (volume.Volume, error)
 	NetworkConnect(ctx context.Context, networkID, containerID string, config *network.EndpointSettings) error
 	NetworkCreate(ctx context.Context, name string, options network.CreateOptions) (network.CreateResponse, error)
 	NetworkRemove(ctx context.Context, networkID string) error

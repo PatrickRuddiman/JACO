@@ -598,14 +598,24 @@ running or self-gated as a follower — check:
   the CLI refuses to render a suffrage from a follower's stale view
   of raft configuration.
 
-## Unexpected `jaco_<deployment>_<key>` volume names on disk
+## Volume identity conflicts or migration required
 
-Not an error. As of v0.2.0, every named volume declared in a compose
-file lands on each docker host as `jaco_<deployment>_<key>` (e.g.
-`jaco_app_pgdata`) instead of the bare `<key>` it would carry under
-`docker compose up`. This stops two unrelated JACO deployments that
-happen to declare the same bare key (`data`, `pgdata`, `logs`, …) on
-the same host from silently mounting the same backing storage.
+Default volumes now use `jaco_v2_<digest>` derived from the persisted
+cluster ID, deployment and volume key. JACO verifies ownership labels
+before mounting them. Older `jaco_<deployment>_<key>` names can collide;
+for example, `orders/prod_data` and `orders_prod/data` both used
+`jaco_orders_prod_data`.
+
+| Status code | Meaning and safe response |
+|---|---|
+| `volume_migration_required` | Legacy data, a different existing mount, or a missing previously mounted volume prevents safe startup/replacement. Verify the data, consumers, backup and host placement before explicitly adopting the correct existing name with `external: true`, or recover missing data first |
+| `volume_identity_conflict` | A generated name is unlabelled, belongs to a different identity, or carries inconsistent metadata. Do not relabel or delete it to silence the error; investigate the ownership conflict |
+| `external_volume_missing` | The requested external volume does not exist on this engine. Restore/provision the intended data or correct placement; do not remove `external: true` to permit an empty replacement |
+
+The replica reports `PENDING` with the reason and retained container ID.
+Storage rejection does not stop or restart an existing container, and
+the automatic health restarter does not act on this status. Resolve it
+before a planned restart or upgrade of a stateful workload.
 
 - The path inside the container is unchanged — the service still
   reaches its volume at the mount path it declared.
@@ -614,12 +624,12 @@ the same host from silently mounting the same backing storage.
 - The compose-portable escape hatch is `volumes.<key>.name:
   <literal>` (or `external: true`) at the top level of the compose
   file — JACO uses the literal docker volume name verbatim,
-  unprefixed, so the storage can be shared across stacks or pre-seeded
-  outside JACO.
+  unprefixed. Use `external: true` when existing data is required; a
+  literal name alone still permits creation when absent.
 
 See [Migration → How JACO names volumes](migration.md#how-jaco-names-volumes)
-for the full mechanics and the migration path for a stack that
-previously assumed bare names.
+for ownership-label lookup and the deliberate, no-copy legacy adoption
+procedure. JACO does not automatically copy, rename, delete or adopt data.
 
 ## Spurious follower log lines (silenced)
 
@@ -726,4 +736,3 @@ loop every query forever. Same error shape for any `10.244.*.1`
 (JACO bridge gateway). Remove the entry; the daemon parses
 `/etc/resolv.conf` at startup and uses every real upstream there
 automatically.
-
