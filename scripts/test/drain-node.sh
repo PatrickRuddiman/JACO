@@ -4,12 +4,18 @@
 # migrates the follower's replica off before the node leaves.
 #
 # Gated by JACO_DRAIN_NODE_FORCE=1.
+# Requires util-linux unshare, hostname, and CAP_SYS_ADMIN for UTS isolation.
 
 set -euo pipefail
 
 if [[ "${JACO_DRAIN_NODE_FORCE:-0}" != "1" ]]; then
   echo "SKIP drain-node.sh: set JACO_DRAIN_NODE_FORCE=1 to enable."
   exit 0
+fi
+
+if ! unshare --uts -- sh -c 'hostname jaco-preflight' 2>/dev/null; then
+  echo "FAIL drain-node.sh: requires unshare, hostname, and CAP_SYS_ADMIN with UTS namespace creation permitted." >&2
+  exit 1
 fi
 
 cd "$(dirname "$0")/../.."
@@ -36,16 +42,19 @@ EOF
 mkconfig 1 27200 27201
 mkconfig 2 27300 27301
 
-JACO_CONFIG="$WORK/jacod-1.yaml" "$WORK/jacod" >"$WORK/jacod-1.log" 2>&1 &
+JACO_CONFIG="$WORK/jacod-1.yaml" unshare --uts -- sh -c 'hostname "$1" && exec "$2"' sh \
+  jaco-1 "$WORK/jacod" >"$WORK/jacod-1.log" 2>&1 &
 JACOD1_PID=$!
-JACO_CONFIG="$WORK/jacod-2.yaml" "$WORK/jacod" >"$WORK/jacod-2.log" 2>&1 &
+JACO_CONFIG="$WORK/jacod-2.yaml" unshare --uts -- sh -c 'hostname "$1" && exec "$2"' sh \
+  jaco-2 "$WORK/jacod" >"$WORK/jacod-2.log" 2>&1 &
 JACOD2_PID=$!
 sleep 2
 
 TOKEN=$("$WORK/jaco" cluster init --socket "$WORK/jaco-1.sock" --name drain 2>&1 | awk '/operator_token:/ {print $2}')
+export JACO_CA_CERT="$WORK/data-1/node/ca.crt"
 sleep 1
-JOIN_TOK=$(JACO_TOKEN="$TOKEN" "$WORK/jaco" node issue-join-token --server 127.0.0.1:27200 2>&1 | awk '/^Join token:/ {print $3}')
-"$WORK/jaco" node join --socket "$WORK/jaco-2.sock" --peer 127.0.0.1:27200 --token "$JOIN_TOK" || { echo "FAIL: join"; exit 1; }
+JOIN_TOK=$(JACO_TOKEN="$TOKEN" "$WORK/jaco" node issue-join-token --server 127.0.0.1:27200 --node-name jaco-2 --san 127.0.0.1 2>&1 | grep -oE -- '--token=[^ ]+' | head -1 | cut -d= -f2)
+"$WORK/jaco" node join --socket "$WORK/jaco-2.sock" --peer 127.0.0.1:27200 --token "$JOIN_TOK" --ca-cert "$WORK/data-1/node/ca.crt" || { echo "FAIL: join"; exit 1; }
 sleep 2
 
 cat > "$WORK/jaco.yaml" <<'EOF'
@@ -66,7 +75,7 @@ sleep 3
 
 # Remove node-2 gracefully (force=false). Should drain replicas onto
 # node-1 before returning.
-HOST2=$(JACO_TOKEN="$TOKEN" "$WORK/jaco" node list --server 127.0.0.1:27200 2>&1 | awk '!/odin/ && /NODE_STATUS/ {print $1; exit}')
+HOST2=$(JACO_TOKEN="$TOKEN" "$WORK/jaco" node list --server 127.0.0.1:27200 2>&1 | awk '$1 == "jaco-2" && /NODE_STATUS/ {print $1; exit}')
 [[ -z "$HOST2" ]] && { echo "FAIL: couldn't find second node hostname"; exit 1; }
 
 JACO_TOKEN="$TOKEN" "$WORK/jaco" node remove "$HOST2" --server 127.0.0.1:27200 \

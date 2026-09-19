@@ -88,15 +88,21 @@ against the daemon's version, seeds a fresh raft store from
 `snapshot.bin`, and writes a marker so the daemon emits a
 `RESTORE_COMPLETED` audit event on its first boot.
 
-After restore, start the daemon and confirm the cluster comes up as a
-single voter:
+After restore, check the [node credentials and advertised addresses](../operations/recovery.md#restored-node-credentials-and-addresses):
+Raft startup rejects invalid CA/keypair/CN/SANs. With absent legacy
+endpoint metadata or a changed node ID, use an already covered IP, not
+assumed alias reissuance. Then start the daemon and confirm a single voter:
 
 ```sh
 sudo systemctl start jaco
 jaco cluster status
 ```
 
-Additional nodes rejoin via the usual `jaco node join` flow.
+Additional nodes rejoin via the [scoped enrollment flow](node.md):
+independently provision the authentic restored cluster CA, issue a
+separate hostname/SAN-scoped token per node, and pass the CA file to
+`jaco node join --peer <member>:7000 --token <single-use> --ca-cert <trusted-ca.pem>`.
+Check [legacy certificates before upgrading/rejoining](../operations/upgrades.md#peer-tls-and-enrollment-compatibility).
 
 ### Exit codes
 

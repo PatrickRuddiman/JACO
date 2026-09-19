@@ -78,6 +78,16 @@ Then:
 ```sh
 sudo systemctl stop jaco
 sudo jaco restore --input cluster-2026-05-25.tar.gz --name $(hostname)
+```
+
+Before starting, verify the node CA/keypair, certificate CN, and
+advertised SANs. With absent legacy endpoint metadata or a changed node
+ID, use an already covered IP rather than assuming DNS aliases will be
+reissued. See [Restored-node credentials and addresses](recovery.md#restored-node-credentials-and-addresses)
+for the current startup checks and the separate, unmerged Raft TLS
+restore contract.
+
+```sh
 sudo systemctl start jaco
 jaco cluster status
 ```
@@ -88,18 +98,32 @@ as a single voter with the same cluster id, and emits a
 
 ## Rejoin the rest of the cluster
 
-Other nodes rejoin via the usual flow:
+Provision each replacement node with the restored cluster's authentic
+CA bundle over verified SSH or trusted configuration management. Check
+the restored member's certificate covers the address used for `--peer`;
+see the [TLS preflight](upgrades.md#peer-tls-and-enrollment-compatibility)
+for older certificates. Preserve existing state/keys until an approved
+re-enrollment or recovery plan accounts for them.
+
+Issue a separate scoped token for each joining daemon:
 
 ```sh
 # on the restored node
-JACO_TOKEN=<operator_token> jaco node issue-join-token
+sudo jaco node issue-join-token --node-name <joining-hostname> \
+  --san <joining-private-ip> --show-ca
 ```
 
 then on each other node:
 
 ```sh
-sudo jaco node join --peer <restored-node>:7000 --token <single-use>
+sudo jaco node join --peer <restored-node>:7000 --token <single-use> \
+  --ca-cert /path/to/cluster-ca.crt
 ```
+
+Use the daemon's OS/configured hostname and approve every other
+advertised Raft/gRPC host or extra dial alias with repeatable `--san`.
+The CA must already be provisioned; the join response is not a source
+of trust. Unscoped legacy tokens from the backup must be reissued.
 
 Once every node is back as `READY`, the cluster is fully restored.
 Deployments, routes, certs, and IPAM allocations come back exactly as

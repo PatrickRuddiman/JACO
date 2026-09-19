@@ -104,18 +104,32 @@ sudo jaco cluster init
 # prints: cluster_id=… operator_token=<64 hex chars> — save the token
 ```
 
-Mint a single-use 24h join token on the leader (operator-authenticated):
+On an existing member's local Unix socket, mint a single-use 24h token
+for one joining daemon:
 
 ```sh
-JACO_TOKEN=<operator_token> jaco node issue-join-token
-# prints: token=… leader_addrs=…
+sudo jaco node issue-join-token --node-name <joining-hostname> \
+  --san <joining-private-ip> --show-ca
+# prints a join command and the public cluster CA PEM
 ```
+
+`--node-name` must match the joining daemon's OS/configured hostname.
+The hostname is implicitly approved; add a repeatable `--san` for every
+other advertised Raft/gRPC host and every extra IP or DNS alias you
+intend to dial. Issue a separate token for each node.
+
+Independently provision the cluster CA PEM file on the joining host
+using verified SSH or trusted configuration management from this
+authenticated existing member. The certificate is public, but its
+authenticity matters; neither the token nor a join response establishes
+server trust. See [Getting started](docs/getting-started.md).
 
 On each follower (gRPC port defaults to `7000`, see
 `/etc/jaco/jacod.yaml::listen_addr`):
 
 ```sh
-sudo jaco node join --peer <leader-host>:7000 --token <single-use>
+sudo jaco node join --peer <leader-host>:7000 --token <single-use> \
+  --ca-cert /path/to/cluster-ca.crt
 ```
 
 After all nodes report `READY` in `jaco node list`, ship a deployment.
@@ -126,6 +140,7 @@ token:
 ```sh
 export JACO_TOKEN=<operator_token>
 export LEADER=<leader-host>:7000
+export JACO_CA_CERT=/path/to/cluster-ca.crt  # independently provisioned on this operator host
 
 jaco apply  --server $LEADER path/to/jaco.yaml
 jaco status --server $LEADER my-deployment           # -w to follow
@@ -137,14 +152,25 @@ jaco node   list --server $LEADER
 
 The cross-host **gRPC control plane** (`listen_addr`, default `:7000`)
 runs over **TLS**: each daemon presents a node certificate signed by the
-cluster CA, and the CLI and peer daemons verify against that CA (cert
-pinning). The operator bearer token plus the single-use join token still
-authenticate the caller on top of the transport.
+cluster CA. Clients verify the CA chain, validity, server-auth usage,
+and exact dial IP/DNS SAN — not a pinned leaf certificate. Joining nodes
+must receive the CA independently and verify the server **before**
+sending their identity-scoped, single-use join token. Operator bearer
+tokens authorize operator RPCs separately from this server verification.
+
+All daemon peer gRPC dials, including forwarding and logs, reload the
+local `node/ca.crt` trust bundle on each new connection. Missing/invalid
+trust or a mismatched SAN fails explicitly; no bootstrap or forwarding
+hop skips verification. Ordinary trusted leaf renewal/key rotation
+needs no pin update. Planned CA changes require independent provisioning
+of overlapping bundles; a remote RPC cannot replace trusted roots.
 
 The **raft transport** (`cluster_addr`, default `:7001`) is still
-plaintext TCP — run it over a private network or overlay you control. A
-few bootstrap hops (a node join before it holds the CA, and some
-follower→leader forwarding) negotiate TLS without verifying the peer.
+plaintext TCP — run it over a private network or overlay you control.
+Server verification does not add Internal caller authorization or client
+mTLS. The CA signing key remains shared among members; compromised
+signing authority and certificate revocation remain separate concerns.
+See [Auth and tokens](docs/concepts/auth-and-tokens.md).
 
 Discovery subsystems (WireGuard mesh, nftables firewall, per-bridge DNS)
 are kernel-gated — when the host lacks the relevant kernel feature

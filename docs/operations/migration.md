@@ -12,6 +12,16 @@ This guide takes a stack you run today with `docker compose up` on a
 single host — including mounted volumes — and moves it onto a multi-node
 JACO cluster.
 
+For an existing cluster moving to mandatory peer CA/SAN verification,
+first follow the [certificate and enrollment upgrade preflight](upgrades.md#peer-tls-and-enrollment-compatibility).
+Legacy certificates may need approved re-enrollment or independently
+provisioned replacements; do not wipe live state or keys to bypass
+verification.
+If migration includes restoring legacy state or changing the node ID,
+use an already covered IP and follow
+[restored-node credential/address checks](recovery.md#restored-node-credentials-and-addresses);
+do not assume automatic DNS-alias preservation or certificate reissuance.
+
 JACO consumes the **same `docker-compose.yml`** plus a small
 [`jaco.yaml`](../manifests/jaco-yaml.md) overlay that declares the
 cluster-level concerns the single-host file never had: how many
@@ -130,11 +140,21 @@ sudo jaco cluster init
 # Save the printed operator_token — it cannot be recovered.
 
 export JACO_TOKEN=<operator_token>
-jaco node issue-join-token            # prints the join command
+sudo jaco node issue-join-token --node-name <node-2-hostname> \
+  --san <node-2-private-ip> --show-ca
 
-# nodes 2 and 3
-sudo jaco node join --peer <node-1-host>:7000 --token <single-use>
+# node 2: first securely provision this CA file from authenticated node 1
+sudo jaco node join --peer <node-1-host>:7000 --token <node-2-single-use> \
+  --ca-cert /path/to/cluster-ca.crt
 ```
+
+Use the joining daemon's actual OS/configured hostname. It is implicitly
+approved; repeat `--san` for every other advertised Raft/gRPC host and
+any extra dialable IP or DNS alias. Transfer the public CA using verified
+SSH or trusted configuration management, never by trusting an unverified
+TLS response. Repeat issuance for **node 3's own identity and SANs** and
+join with its separately scoped, single-use token and the independently
+provisioned CA bundle.
 
 Confirm all three are `ready`:
 

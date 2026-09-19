@@ -5,13 +5,14 @@
 # operator by bootstrap.sh. Idempotent.
 #
 # Usage (as root, on the node):
-#   sudo bash install-node.sh <deb-path> <registry-host:port> [vnet-cidr]
+#   sudo bash install-node.sh <deb-path> <registry-host:port> [vnet-cidr] [node-private-ip]
 
 set -euo pipefail
 
-DEB="${1:?usage: install-node.sh <deb-path> <registry-host:port> [vnet-cidr]}"
+DEB="${1:?usage: install-node.sh <deb-path> <registry-host:port> [vnet-cidr] [node-private-ip]}"
 REGISTRY_HOST="${2:?registry host:port (e.g. 172.16.0.4:5000)}"
 VNET_CIDR="${3:-172.16.0.0/16}"
+NODE_PRIVATE_IP="${4:-}"
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -57,8 +58,14 @@ echo "[install-node] pinning acme_ca=${ACME_CA}"
 sed -i '/^acme_ca:/d' "$CONF"
 echo "acme_ca: ${ACME_CA}" >> "$CONF"
 
+# Match the advertised endpoints to the private IP approved in the join token.
+if [[ -n "$NODE_PRIVATE_IP" ]]; then
+  sed -i '/^listen_addr:/d; /^cluster_addr:/d' "$CONF"
+  printf 'listen_addr: %s:7000\ncluster_addr: %s:7001\n' "$NODE_PRIVATE_IP" "$NODE_PRIVATE_IP" >> "$CONF"
+fi
+
 # The package ships the daemon as jaco.service (not jacod.service). Restart so
-# the acme_ca change is picked up (jacod does not hot-reload config).
+# the config changes are picked up (jacod does not hot-reload config).
 systemctl enable jaco
 systemctl restart jaco
 

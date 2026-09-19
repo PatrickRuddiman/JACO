@@ -4,12 +4,18 @@
 # host.
 #
 # Gated by JACO_SCHEDULER_SPREAD_FORCE=1.
+# Requires util-linux unshare, hostname, and CAP_SYS_ADMIN for UTS isolation.
 
 set -euo pipefail
 
 if [[ "${JACO_SCHEDULER_SPREAD_FORCE:-0}" != "1" ]]; then
   echo "SKIP scheduler-spread.sh: set JACO_SCHEDULER_SPREAD_FORCE=1 to enable."
   exit 0
+fi
+
+if ! unshare --uts -- sh -c 'hostname jaco-preflight' 2>/dev/null; then
+  echo "FAIL scheduler-spread.sh: requires unshare, hostname, and CAP_SYS_ADMIN with UTS namespace creation permitted." >&2
+  exit 1
 fi
 
 cd "$(dirname "$0")/../.."
@@ -33,7 +39,8 @@ wg_port: 5182$n
 log_level: info
 ipam_pool: 10.244.0.0/16
 EOF
-  JACO_CONFIG="$WORK/jacod-$n.yaml" "$WORK/jacod" >"$WORK/jacod-$n.log" 2>&1 &
+  JACO_CONFIG="$WORK/jacod-$n.yaml" unshare --uts -- sh -c 'hostname "$1" && exec "$2"' sh \
+    "jaco-$n" "$WORK/jacod" >"$WORK/jacod-$n.log" 2>&1 &
   PIDS+=("$!")
 }
 start_node 1 28300 28310
@@ -42,10 +49,11 @@ start_node 3 28500 28510
 sleep 2
 
 TOKEN=$("$WORK/jaco" cluster init --socket "$WORK/jaco-1.sock" --name spread 2>&1 | awk '/operator_token:/ {print $2}')
+export JACO_CA_CERT="$WORK/data-1/node/ca.crt"
 sleep 1
 for sock in jaco-2 jaco-3; do
-  JOIN=$(JACO_TOKEN="$TOKEN" "$WORK/jaco" node issue-join-token --server 127.0.0.1:28300 2>&1 | awk '/^Join token:/ {print $3}')
-  "$WORK/jaco" node join --socket "$WORK/$sock.sock" --peer 127.0.0.1:28300 --token "$JOIN"
+  JOIN=$(JACO_TOKEN="$TOKEN" "$WORK/jaco" node issue-join-token --server 127.0.0.1:28300 --node-name "$sock" --san 127.0.0.1 2>&1 | grep -oE -- '--token=[^ ]+' | head -1 | cut -d= -f2)
+  "$WORK/jaco" node join --socket "$WORK/$sock.sock" --peer 127.0.0.1:28300 --token "$JOIN" --ca-cert "$WORK/data-1/node/ca.crt"
 done
 sleep 3
 

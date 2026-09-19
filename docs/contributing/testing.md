@@ -102,16 +102,18 @@ and asserts:
   it never reaches ready and other nodes report
   `isolation_unavailable` for it.
 
-Requires CAP_NET_ADMIN + CAP_NET_RAW + kernel WG + nftables + docker.
+Requires CAP_NET_ADMIN + CAP_NET_RAW + CAP_SYS_ADMIN, util-linux
+`unshare`, `hostname`, kernel WG, nftables, and docker.
 CI runs it under a privileged runner; locally, set `JACO_RIG_FORCE=1`
-to confirm the host has what it needs.
+to opt in. Namespace creation must also be allowed by the runner's
+kernel/seccomp policy; see the hostname isolation requirements below.
 
 ## Other E2E rigs
 
 Under [`scripts/test/`](../../scripts/test):
 
 - `apply-deploy.sh` — applies a manifest pair, asserts convergence.
-- `cluster-join.sh` — bootstraps + joins a 3-node cluster.
+- `cluster-join.sh` — bootstraps + joins a 2-node cluster.
 - `drain-node.sh` — exercises the graceful drain path.
 - `ingress-acme.sh` — drives ACME issuance against Pebble.
 - `install.sh` — runs the .deb/.rpm install + uninstall +
@@ -125,6 +127,32 @@ Under [`scripts/test/`](../../scripts/test):
 
 Each self-skips unless its `JACO_*_FORCE=1` env is set, so the
 integration workflow can sweep them all in sequence.
+
+### Local multi-daemon hostnames and enrollment trust
+
+`cluster-join.sh`, `drain-node.sh`, `logs-fanout.sh`,
+`scheduler-spread.sh`, and `isolation-rig.sh` give every daemon its own
+Linux UTS namespace and actual hostname (`jaco-1`, `jaco-2`, etc.).
+`jacod` has no public hostname config/flag; setting shell `HOSTNAME`
+would not change its `os.Hostname()` identity. Each token approves the
+matching namespace hostname plus the shared loopback dial IP,
+`127.0.0.1`, so an existing member's identity is never reused for joining.
+
+All five require util-linux `unshare`, the `hostname` utility, and
+CAP_SYS_ADMIN with UTS namespace creation permitted. Once explicitly
+enabled, a failed isolated-hostname preflight aborts **before building**;
+there is no fallback to shared hostnames. Daemons use `exec` without
+`unshare --fork`, preserving the PID tracked by cleanup. Only UTS is
+isolated: networking, Docker, and filesystems remain shared. Run these
+rigs on a dedicated privileged test runner, not a live cluster host.
+
+The CA comes directly from `$WORK/data-1/node/ca.crt`, created by the
+leader's local Unix-socket `cluster init`. Joins reference that file;
+operator TCP calls use it through `JACO_CA_CERT`. The
+[SSH sample bootstrap](../../tests/samples/jaco/bootstrap/README.md)
+instead transfers the existing member's CA over already authenticated
+SSH with independently verified host keys. Neither path fetches initial
+CA trust through the join peer or trusts a join-response replacement.
 
 ## Samples bench
 

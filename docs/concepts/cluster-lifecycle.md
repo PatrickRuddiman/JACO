@@ -39,8 +39,9 @@ sudo jaco cluster init
 What the daemon does:
 
 1. Generates a cluster id (UUID) and an Ed25519 cluster CA.
-2. Generates a node TLS cert signed by the CA, persists it under
-   `$JACO_DATA_DIR/node/`.
+2. Generates a node TLS cert signed by the CA, including its hostname,
+   explicit advertised DNS aliases, and local/private IPs in the SANs,
+   then persists it under `$JACO_DATA_DIR/node/`.
 3. Initializes raft with `BootstrapCluster=true` and a single voter
    (itself).
 4. Applies a seed `Command{ClusterInit}` carrying the cluster id, CA
@@ -55,30 +56,49 @@ generated locally and never replicated.
 
 ## Join (subsequent nodes)
 
-Two steps. First, on an initialized node, mint a single-use, 24-hour
-token:
+First verify the joining daemon's OS/configured hostname and advertised
+addresses. On an initialized node's authenticated local socket, mint a
+single-use, 24-hour token scoped to that node:
 
 ```sh
-JACO_TOKEN=<op> jaco node issue-join-token --server <leader>:7000
+sudo jaco node issue-join-token --node-name <joining-hostname> \
+  --san <joining-private-ip> --show-ca
 ```
 
-The hashed token plus an expiry is written to raft as a
-`JoinToken{}` entity. The plaintext is printed once.
+The hostname is implicitly approved; repeat `--san` for every other
+advertised Raft/gRPC host and any extra private/interface IP or DNS
+alias that peers or operators will dial. The hashed token, identity,
+SAN scope, and expiry are written to raft as a `JoinToken{}` entity.
+The plaintext is printed once. Use a separate token for each node.
 
-Second, on the joining node:
+Independently provision the public cluster CA PEM on the joining node
+from an authenticated existing member, using verified SSH or trusted
+configuration management. `--show-ca` displays it over the existing
+member's authenticated socket/CA-verifying operator TLS connection.
+Do not obtain initial trust from a join response.
+
+Then, on the joining node:
 
 ```sh
-sudo jaco node join --peer <leader>:7000 --token <hex>
+sudo jaco node join --peer <leader>:7000 --token <hex> --ca-cert /path/to/cluster-ca.crt
 ```
 
 What the joining daemon does:
 
-1. Generates a CSR locally.
-2. Dials `--peer` over TLS, presents the join token plus the CSR.
-3. The leader validates the token (marks `consumed_at`), signs the
-   CSR, returns the cluster CA + signed cert + raft peer set.
-4. The joining daemon writes the cert + key, opens its raft node, and
-   dials the existing peers.
+1. Receives the independently provisioned CA bytes from the local CLI
+   and generates a CSR locally.
+2. Dials `--peer` over TLS, verifying the CA chain, validity,
+   server-auth usage, and exact dial IP/DNS SAN **before** presenting
+   the join token and CSR. Missing/invalid trust fails explicitly.
+3. The leader checks token scope, expiry, consumption, and the CSR
+   signature, then signs only the token-approved SANs, marks
+   `consumed_at`, and returns the cluster CA + signed cert + raft peer
+   set. Arbitrary CSR aliases do not expand the approved identity.
+4. The joiner checks that the returned CA belongs to the supplied
+   bundle and the leaf matches its private key, approved identity,
+   advertised hosts, and server/client-auth EKUs. Only then does it
+   persist the supplied trust bundle (not a remote replacement), cert,
+   and key, open its raft node, and dial the existing peers.
 5. The leader raft-applies `Command{NodeJoin{hostname, address}}`; the
    new node appears in `state.Nodes` and `jaco node list` on every
    member.
@@ -88,7 +108,15 @@ What the joining daemon does:
    the [odd-count rule](#voter-set-policy) below.
 
 The join token is single-use. A consumed token cannot be reused; a
-fresh one must be issued.
+fresh one must be issued. Unknown or legacy unscoped tokens must also
+be reissued with `--node-name` and the required `--san` approvals.
+`JACO_CA_CERT` or an existing `/var/lib/jaco/node/ca.crt` can supply
+the CA path instead of the flag; there is no missing-CA fallback.
+
+Peer gRPC dials continue verifying CA + SAN after enrollment and reload
+`node/ca.crt` on each new connection. Existing certificates without
+required advertised SANs need the
+[upgrade preflight](../operations/upgrades.md#peer-tls-and-enrollment-compatibility).
 
 ## Voter-set policy
 
@@ -190,6 +218,10 @@ with `node hosts pinned replicas: [...]`.
 
 Per-replica drain timeout is 5 minutes. Exceeding it aborts the drain
 with `pending: drain_timeout` visible in `jaco status`.
+
+Removing membership does not revoke its certificate or undo access
+to the cluster's replicated CA signing key. See
+[Auth and tokens](auth-and-tokens.md#peer-grpc-verification-and-certificate-changes).
 
 ## Failure modes
 

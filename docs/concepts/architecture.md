@@ -116,20 +116,30 @@ multi-host clusters via the two-binary path described above. The earlier
 open gaps are now implemented:
 
 - **Cross-host gRPC TLS** — the listener serves a node certificate
-  signed by the cluster CA; the CLI and peer daemons verify against the
-  CA (cert pinning), with the operator bearer token authenticating the
-  caller on top.
+  signed by the cluster CA; the CLI and peer daemons verify the CA
+  chain, validity, server-auth usage, and exact dial IP/DNS SAN.
+  Enrollment requires an independently provisioned CA before sending
+  its identity-scoped join token. Operator bearer tokens authorize
+  operator RPCs separately from server verification.
 - Follower → leader forwarding of `ReplicaObserved` updates.
 - The Caddy v2 ingress reload loop integrated with the rebuild debounce
   window.
 - Rollout state-machine integration with the scheduler's reconcile.
 - The drain step machine for `jaco node remove`.
 
-Known remaining item (this is the canonical list; other pages link here
-instead of repeating it): the **raft transport** (`:7001`) is still
-plaintext TCP — run it over a private network or overlay you control. A
-few bootstrap hops (a node join before it holds the CA, and follower →
-leader submit/log forwarding) negotiate TLS without verifying the peer.
+All daemon gRPC peer dials, including follower → leader submit/log
+forwarding, verify against the current local `node/ca.crt` bundle on
+each new connection; missing/invalid trust fails explicitly. Trusted
+CA-signed leaf renewal/key rotation needs no leaf-pin update.
+Changing trusted CAs requires independent out-of-band bundle
+provisioning, not automatic acceptance of an RPC response.
+
+Known remaining boundaries: the **raft transport** (`:7001`) is still
+plaintext TCP — run it over a private network or overlay you control.
+Server verification does not add Internal caller authorization or client
+mTLS. The shared/replicated CA signing key still leaves compromised
+trusted signing authority outside this protection, and removing a node
+is not certificate revocation. See [Auth and tokens](auth-and-tokens.md).
 
 A handful of CLI subcommands (`rollback`, `delete`, `token *`,
 `node list`) currently require `--server`; the unix-socket path for
