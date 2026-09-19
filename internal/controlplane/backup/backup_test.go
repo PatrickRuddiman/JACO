@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -188,6 +189,17 @@ func TestExportImport_RoundTripPreservesBootstrapToken(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Import: %v", err)
 	}
+	originalKey, err := os.ReadFile(filepath.Join(aDir, "node", "node-a.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredKey, err := os.ReadFile(filepath.Join(bDir, "node", "node-a.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(originalKey, restoredKey) {
+		t.Fatal("restore reused the original node private key")
+	}
 
 	// The restore.txt marker must be present so the daemon can emit
 	// RESTORE_COMPLETED on first boot (task 17).
@@ -220,6 +232,17 @@ func TestExportImport_RoundTripPreservesBootstrapToken(t *testing.T) {
 	// Cluster meta should also have survived.
 	if got := stB.Cluster.Get().GetClusterId(); got != clusterID {
 		t.Errorf("restored cluster_id = %q, want %q", got, clusterID)
+	}
+}
+
+func TestImportRejectsUnsafeLocalIdentity(t *testing.T) {
+	for _, id := range []string{".", "..", "../other-node", `..\other-node`} {
+		t.Run(id, func(t *testing.T) {
+			err := backup.Import(backup.ImportOptions{DataDir: t.TempDir(), LocalID: id, Reader: bytes.NewReader(nil)})
+			if err == nil || !strings.Contains(err.Error(), "LocalID") {
+				t.Fatalf("invalid identity was not rejected before restore: %v", err)
+			}
+		})
 	}
 }
 

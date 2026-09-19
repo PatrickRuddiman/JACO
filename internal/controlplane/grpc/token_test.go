@@ -18,6 +18,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/fsm"
 	grpcsrv "github.com/PatrickRuddiman/jaco/internal/controlplane/grpc"
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/raft/rafttest"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
@@ -74,9 +75,8 @@ func setupTwoNodeCluster(t *testing.T) *twoNodeCluster {
 	a.Cluster = pb.NewClusterClient(conn)
 	a.Audit = pb.NewAuditClient(conn)
 
-	// --- Node B: raft up, join via A's gRPC, then start B's gRPC. ---
+	// --- Node B: enroll before starting its authenticated Raft listener. ---
 	bDir := t.TempDir()
-	b := openClusterNode(t, "node-b", bDir, bRaft)
 
 	ctxOp := authContext(bootRes.OperatorToken)
 	issueResp, err := a.Cluster.IssueJoinToken(ctxOp, &pb.IssueJoinTokenRequest{})
@@ -96,6 +96,8 @@ func setupTwoNodeCluster(t *testing.T) *twoNodeCluster {
 	if err != nil {
 		t.Fatalf("NodeJoin: %v", err)
 	}
+	rafttest.WriteCredentials(t, bDir, "node-b", joinResp.GetSignedCert(), bKey, joinResp.GetCaCert())
+	b := openClusterNode(t, "node-b", bDir, bRaft)
 
 	b.Server = startGRPCServer(t, freePort(t), joinResp.GetSignedCert(), bKey, joinResp.GetCaCert(), b.State, b.Brokers, b.Raft)
 	b.GrpcAddr = b.Server.Addr().String()

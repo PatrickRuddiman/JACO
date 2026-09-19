@@ -14,6 +14,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/fsm"
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/raft/membership"
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/raft/rafttest"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 )
@@ -35,7 +36,8 @@ func TestReconciler_PromotesAndDemotesAcrossMembershipChanges(t *testing.T) {
 	for i := range addrs {
 		addrs[i] = freePort(t)
 	}
-	leader, leaderState, _ := bootNode(t, "node-1", addrs[0], true)
+	caCert, caKey := rafttest.NewCA(t)
+	leader, leaderState, _ := bootNode(t, "node-1", addrs[0], true, caCert, caKey)
 	waitForLeaderLocal(t, leader, 5*time.Second)
 
 	// Spawn a reconciler with a quick tick + tiny PromoteAfter so the
@@ -78,24 +80,24 @@ func TestReconciler_PromotesAndDemotesAcrossMembershipChanges(t *testing.T) {
 	// the controlplane handler does), wait for the reconciler to
 	// observe the new configuration. Target stays at 1 — joiner stays
 	// nonvoter.
-	_, _, node2 := bootNode(t, "node-2", addrs[1], false)
+	_, _, node2 := bootNode(t, "node-2", addrs[1], false, caCert, caKey)
 	addNonvoter(t, leader, "node-2", addrs[1])
 	mustVoters(t, 1, "2 members (bug-003 case)")
 	requireSuffrage(t, leader, "node-2", hraft.Nonvoter)
 
 	// Step 2 -> 3: target jumps to 3; both nonvoters get promoted.
-	_, _, node3 := bootNode(t, "node-3", addrs[2], false)
+	_, _, node3 := bootNode(t, "node-3", addrs[2], false, caCert, caKey)
 	addNonvoter(t, leader, "node-3", addrs[2])
 	mustVoters(t, 3, "3 members")
 
 	// Step 3 -> 4: target stays at 3, 4th node stays nonvoter.
-	_, _, node4 := bootNode(t, "node-4", addrs[3], false)
+	_, _, node4 := bootNode(t, "node-4", addrs[3], false, caCert, caKey)
 	addNonvoter(t, leader, "node-4", addrs[3])
 	mustVoters(t, 3, "4 members")
 	requireSuffrage(t, leader, "node-4", hraft.Nonvoter)
 
 	// Step 4 -> 5: target jumps to 5; both pending nonvoters promote.
-	_, _, node5 := bootNode(t, "node-5", addrs[4], false)
+	_, _, node5 := bootNode(t, "node-5", addrs[4], false, caCert, caKey)
 	addNonvoter(t, leader, "node-5", addrs[4])
 	mustVoters(t, 5, "5 members")
 
@@ -132,9 +134,10 @@ func TestReconciler_PromotesAndDemotesAcrossMembershipChanges(t *testing.T) {
 // first node). Returns the raft handle so the test can issue follower-
 // only operations, plus the underlying State for the few tests that
 // peek at the FSM.
-func bootNode(t *testing.T, id, addr string, bootstrap bool) (*raftnode.Node, *state.State, *raftnode.Node) {
+func bootNode(t *testing.T, id, addr string, bootstrap bool, caCert, caKey []byte) (*raftnode.Node, *state.State, *raftnode.Node) {
 	t.Helper()
 	dir := t.TempDir()
+	rafttest.Issue(t, dir, id, caCert, caKey)
 	brokers := watch.NewRegistry()
 	st := state.New(brokers)
 	f := fsm.New(st, brokers)

@@ -25,6 +25,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/ca"
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/raft/rafttest"
 	dgrpc "github.com/PatrickRuddiman/jaco/internal/daemon/grpc"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
@@ -36,9 +38,10 @@ type fakePeer struct {
 	clusterID     string
 	signedCertPEM []byte
 	caCertPEM     []byte
+	caKeyPEM      []byte
 	peerAddrs     []string
 
-	mu      sync.Mutex // protects lastReq
+	mu      sync.Mutex // protects lastReq and signedCertPEM
 	lastReq *pb.NodeJoinRequest
 
 	rejectWith error // when non-nil, NodeJoin returns this error
@@ -49,8 +52,15 @@ func (f *fakePeer) NodeJoin(_ context.Context, req *pb.NodeJoinRequest) (*pb.Nod
 		return nil, f.rejectWith
 	}
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.lastReq = req
-	f.mu.Unlock()
+	if len(f.caKeyPEM) != 0 {
+		cert, err := ca.SignNodeCSR(req.GetCsrPem(), f.caCertPEM, f.caKeyPEM)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "sign CSR: %v", err)
+		}
+		f.signedCertPEM = cert
+	}
 	return &pb.NodeJoinResponse{
 		ClusterId:  f.clusterID,
 		SignedCert: f.signedCertPEM,
@@ -137,11 +147,12 @@ func newDaemon(t *testing.T) (*dgrpc.Server, pb.ClusterClient, string) {
 // --- tests -----------------------------------------------------------
 
 func TestJoin_DialsPeerAndPersistsCerts(t *testing.T) {
+	caCert, caKey := rafttest.NewCA(t)
 	peer := &fakePeer{
-		clusterID:     "cluster-xyz",
-		signedCertPEM: []byte("-----BEGIN CERTIFICATE-----\nFAKE_SIGNED\n-----END CERTIFICATE-----\n"),
-		caCertPEM:     []byte("-----BEGIN CERTIFICATE-----\nFAKE_CA\n-----END CERTIFICATE-----\n"),
-		peerAddrs:     []string{"127.0.0.1:7001"},
+		clusterID: "cluster-xyz",
+		caCertPEM: caCert,
+		caKeyPEM:  caKey,
+		peerAddrs: []string{"127.0.0.1:7001"},
 	}
 	peerAddr := startFakePeer(t, peer)
 
@@ -165,8 +176,12 @@ func TestJoin_DialsPeerAndPersistsCerts(t *testing.T) {
 		}
 	}
 	// Cert content matches what the peer returned.
+	peer.mu.Lock()
+	got := peer.lastReq
+	wantCert := peer.signedCertPEM
+	peer.mu.Unlock()
 	gotCert, _ := os.ReadFile(filepath.Join(dataDir, "node", "node-b.crt"))
-	if string(gotCert) != string(peer.signedCertPEM) {
+	if string(gotCert) != string(wantCert) {
 		t.Errorf("cert content mismatch")
 	}
 	gotCA, _ := os.ReadFile(filepath.Join(dataDir, "node", "ca.crt"))
@@ -184,9 +199,6 @@ func TestJoin_DialsPeerAndPersistsCerts(t *testing.T) {
 	}
 
 	// The peer received our CSR + name + join_token.
-	peer.mu.Lock()
-	got := peer.lastReq
-	peer.mu.Unlock()
 	if got == nil {
 		t.Fatalf("peer never saw NodeJoin")
 	}

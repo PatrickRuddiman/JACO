@@ -1,5 +1,6 @@
 ---
 sources:
+  - internal/controlplane/raft/
   - internal/daemon/config/
   - internal/daemon/netdetect/
   - internal/daemon/grpc/heartbeat.go
@@ -74,8 +75,26 @@ to be an exact value. A pinned value is honored verbatim.
 
 ### `cluster_addr` (string, required, `host:port`)
 
-Raft TCP transport. Same resolution semantics as `listen_addr`. MUST
-differ from `listen_addr`. Default `0.0.0.0:7001`.
+Raft transport over **mandatory mutual TLS 1.3**. Same bind/advertise
+resolution semantics as `listen_addr`. MUST differ from `listen_addr`.
+Default `0.0.0.0:7001`. There is no plaintext or skip-verification mode,
+including on loopback, private LANs, or encrypted overlays.
+
+Before opening Raft, the daemon requires `node/ca.crt`,
+`node/<hostname>.crt`, and `node/<hostname>.key` under `data_dir`. Init
+and enrollment write these before starting Raft; restore provisions a
+fresh node keypair from the recovered cluster CA before network startup.
+Missing, mismatched, expired, or untrusted credentials fail closed.
+
+The node certificate must be a non-CA leaf with the hostname/Raft server
+ID in both its common name and SANs, and permit both server and client
+authentication. Outbound verification uses that logical server ID,
+not an IP address inferred from a network interface. Only the persisted
+cluster CA is trusted; system certificate roots are not used.
+
+See [Raft transport and trust](concepts/networking.md#raft-transport-and-trust)
+and the [plaintext-to-TLS cutover](operations/upgrades.md#plaintext-to-tls-raft-cutover)
+before upgrading an existing cluster.
 
 ### `unix_socket` (string, required)
 

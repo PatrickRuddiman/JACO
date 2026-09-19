@@ -24,6 +24,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/fsm"
 	grpcsrv "github.com/PatrickRuddiman/jaco/internal/controlplane/grpc"
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/raft/rafttest"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
@@ -106,24 +107,6 @@ func TestNodeJoin_TwoNodeClusterAndSingleUseToken(t *testing.T) {
 	go func() { _ = srv.Serve() }()
 	t.Cleanup(srv.Stop)
 
-	// 4. Start node B's raft on bRaftAddr (no bootstrap; waits to be added).
-	bDir := t.TempDir()
-	bBrokers := watch.NewRegistry()
-	bState := state.New(bBrokers)
-	bFSM := fsm.New(bState, bBrokers)
-	bRaft, err := raftnode.New(raftnode.Config{
-		DataDir:   bDir,
-		BindAddr:  bRaftAddr,
-		LocalID:   "node-b",
-		Bootstrap: false,
-		FSM:       bFSM,
-		LogOutput: io.Discard,
-	})
-	if err != nil {
-		t.Fatalf("start node-b raft: %v", err)
-	}
-	t.Cleanup(func() { _ = bRaft.Shutdown() })
-
 	// 5. Dial A with the CA pinned. ServerName matches the cert's DNS SAN
 	//    (the node hostname), which is what bootstrap signed.
 	client := dialClusterClient(t, srv.Addr().String(), aCACert, "node-a")
@@ -140,7 +123,7 @@ func TestNodeJoin_TwoNodeClusterAndSingleUseToken(t *testing.T) {
 	}
 
 	// 7. Build B's CSR and call NodeJoin (unauthenticated).
-	_, bCSR, err := ca.GenerateNodeKeypair("node-b")
+	bKey, bCSR, err := ca.GenerateNodeKeypair("node-b")
 	if err != nil {
 		t.Fatalf("GenerateNodeKeypair: %v", err)
 	}
@@ -159,6 +142,13 @@ func TestNodeJoin_TwoNodeClusterAndSingleUseToken(t *testing.T) {
 	if len(joinResp.GetCaCert()) == 0 {
 		t.Errorf("NodeJoin returned empty ca_cert")
 	}
+	bDir := t.TempDir()
+	rafttest.WriteCredentials(t, bDir, "node-b", joinResp.GetSignedCert(), bKey, joinResp.GetCaCert())
+	b := openClusterNode(t, "node-b", bDir, bRaftAddr)
+	waitFor(t, 5*time.Second, "node-b catches up", func() bool {
+		_, ok := b.State.Nodes.Get("node-b")
+		return ok
+	})
 
 	// 8. NodeList must surface both A and B within 5s of replication.
 	var listResp *pb.NodeListResponse
@@ -241,30 +231,21 @@ func TestNodeRemove_EvictsFromRaftAndState(t *testing.T) {
 	go func() { _ = srv.Serve() }()
 	t.Cleanup(srv.Stop)
 
-	bDir := t.TempDir()
-	bRaft, err := raftnode.New(raftnode.Config{
-		DataDir: bDir, BindAddr: bRaftAddr, LocalID: "node-b",
-		Bootstrap: false,
-		FSM:       fsm.New(state.New(watch.NewRegistry()), watch.NewRegistry()),
-		LogOutput: io.Discard,
-	})
-	if err != nil {
-		t.Fatalf("start node-b raft: %v", err)
-	}
-	t.Cleanup(func() { _ = bRaft.Shutdown() })
-
 	client := dialClusterClient(t, srv.Addr().String(), aCACert, "node-a")
 	ctxOp := metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+bootRes.OperatorToken)
 
 	issueResp, _ := client.IssueJoinToken(ctxOp, &pb.IssueJoinTokenRequest{})
-	_, bCSR, _ := ca.GenerateNodeKeypair("node-b")
-	_, err = client.NodeJoin(context.Background(), &pb.NodeJoinRequest{
+	bKey, bCSR, _ := ca.GenerateNodeKeypair("node-b")
+	joinResp, err := client.NodeJoin(context.Background(), &pb.NodeJoinRequest{
 		Name: "node-b", JoinToken: issueResp.GetToken(), CsrPem: bCSR,
 		AdvertiseAddr: bRaftAddr,
 	})
 	if err != nil {
 		t.Fatalf("NodeJoin: %v", err)
 	}
+	bDir := t.TempDir()
+	rafttest.WriteCredentials(t, bDir, "node-b", joinResp.GetSignedCert(), bKey, joinResp.GetCaCert())
+	openClusterNode(t, "node-b", bDir, bRaftAddr)
 	waitFor(t, 5*time.Second, "2 nodes", func() bool {
 		r, _ := client.NodeList(ctxOp, &pb.NodeListRequest{})
 		return r != nil && len(r.GetNodes()) == 2

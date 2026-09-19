@@ -13,6 +13,7 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/ca"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/fsm"
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/raft/rafttest"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
@@ -56,27 +57,12 @@ func TestNodeJoin_SignsCSRAndAddsVoter(t *testing.T) {
 	}
 
 	// Generate a node CSR as the joining peer would.
-	_, csrPEM, err := ca.GenerateNodeKeypair("test-host-2")
+	bKey, csrPEM, err := ca.GenerateNodeKeypair("test-host-2")
 	if err != nil {
 		t.Fatalf("GenerateNodeKeypair: %v", err)
 	}
 
-	// Start a real second raft node so AddVoter can heartbeat it (without
-	// this, quorum collapses and the batch Apply fails with
-	// "leadership lost while committing log").
 	bAddr := freePort(t)
-	bDir := t.TempDir()
-	bBrokers := watch.NewRegistry()
-	bState := state.New(bBrokers)
-	bFSM := fsm.New(bState, bBrokers)
-	bRaft, err := raftnode.New(raftnode.Config{
-		DataDir: bDir, BindAddr: bAddr, LocalID: "test-host-2", Bootstrap: false, FSM: bFSM, LogOutput: io.Discard,
-	})
-	if err != nil {
-		t.Fatalf("start node-b raft: %v", err)
-	}
-	t.Cleanup(func() { _ = bRaft.Shutdown() })
-
 	resp, err := c.NodeJoin(context.Background(), &pb.NodeJoinRequest{
 		Name:          "test-host-2",
 		JoinToken:     tokenStr,
@@ -98,6 +84,18 @@ func TestNodeJoin_SignsCSRAndAddsVoter(t *testing.T) {
 	if len(resp.GetPeerAddrs()) == 0 {
 		t.Errorf("peer_addrs empty (should include the leader)")
 	}
+	bDir := t.TempDir()
+	rafttest.WriteCredentials(t, bDir, "test-host-2", resp.GetSignedCert(), bKey, resp.GetCaCert())
+	bBrokers := watch.NewRegistry()
+	bState := state.New(bBrokers)
+	bRaft, err := raftnode.New(raftnode.Config{
+		DataDir: bDir, BindAddr: bAddr, LocalID: "test-host-2",
+		FSM: fsm.New(bState, bBrokers), LogOutput: io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("start node-b raft: %v", err)
+	}
+	t.Cleanup(func() { _ = bRaft.Shutdown() })
 
 	// State should show the joined node as READY (auto-promote in
 	// NodeJoin batch — iter 15). Without READY status the scheduler

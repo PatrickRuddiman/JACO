@@ -24,10 +24,12 @@ import (
 	hraft "github.com/hashicorp/raft"
 	boltdb "github.com/hashicorp/raft-boltdb/v2"
 
+	"github.com/PatrickRuddiman/jaco/internal/controlplane/ca"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/fsm"
 	raftnode "github.com/PatrickRuddiman/jaco/internal/controlplane/raft"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/state"
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/watch"
+	"github.com/PatrickRuddiman/jaco/internal/daemon/netdetect"
 	"github.com/PatrickRuddiman/jaco/internal/logging"
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 	"google.golang.org/protobuf/proto"
@@ -177,6 +179,9 @@ func Import(opts ImportOptions) error {
 	if opts.LocalID == "" {
 		return fmt.Errorf("LocalID is required")
 	}
+	if opts.LocalID == "." || opts.LocalID == ".." || strings.ContainsAny(opts.LocalID, `/\`) {
+		return fmt.Errorf("LocalID must be a node hostname, not a path")
+	}
 	logger := opts.Logger
 	if logger == nil {
 		logger = logging.Discard()
@@ -222,7 +227,7 @@ func Import(opts ImportOptions) error {
 	}
 
 	// In-memory transport is sufficient for RecoverCluster — no network needed
-	// during recovery; the real TCP transport binds when `jaco serve` runs.
+	// during recovery; the TLS transport binds when `jaco serve` runs.
 	_, transport := hraft.NewInmemTransport(hraft.ServerAddress(opts.LocalID))
 
 	configuration := hraft.Configuration{
@@ -259,6 +264,9 @@ func Import(opts ImportOptions) error {
 	if err := hraft.RecoverCluster(raftCfg, recoveryFSM, logStore, logStore, snapStore, transport, configuration); err != nil {
 		return fmt.Errorf("RecoverCluster: %w", err)
 	}
+	if err := restoreNodeCredentials(opts.DataDir, opts.LocalID, st.Cluster.Get()); err != nil {
+		return fmt.Errorf("restore node credentials: %w", err)
+	}
 
 	// Marker for the daemon's first-boot audit emission.
 	markerPath := filepath.Join(opts.DataDir, "restore.txt")
@@ -269,6 +277,30 @@ func Import(opts ImportOptions) error {
 	}
 	logger.Info("backup restore finished",
 		"cluster_id", meta.ClusterID, "snapshot_index", meta.SnapshotIndex, "bytes", len(snapshotBytes))
+	return nil
+}
+
+func restoreNodeCredentials(dataDir, localID string, meta *pb.ClusterMeta) error {
+	if meta == nil || len(meta.GetCaCert()) == 0 || len(meta.GetCaKey()) == 0 {
+		return fmt.Errorf("cluster CA missing from recovered state")
+	}
+	key, csr, err := ca.GenerateNodeKeypair(localID, netdetect.LocalIPs()...)
+	if err != nil {
+		return err
+	}
+	cert, err := ca.SignNodeCSR(csr, meta.GetCaCert(), meta.GetCaKey())
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(dataDir, "node")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	for name, data := range map[string][]byte{localID + ".crt": cert, localID + ".key": key, "ca.crt": meta.GetCaCert()} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			return fmt.Errorf("write %s: %w", name, err)
+		}
+	}
 	return nil
 }
 

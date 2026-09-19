@@ -89,6 +89,20 @@ Action:
 
 See [Backups](backups.md) for the full export → restore workflow.
 
+Restore now issues a **new node private key and certificate** for `--name`
+using the cluster CA from the offline recovered state. It persists the CA
+and node credentials before the restored Raft listener can start, so
+recovery does not require an unauthenticated bootstrap connection. Use a
+trusted backup: this preserves the backup's CA rather than rotating a
+potentially compromised authority. See
+[historical plaintext exposure](upgrades.md#secrets-exposed-by-historical-plaintext-replication).
+
+If startup fails with `raft TLS`, check the node hostname/Raft ID and the
+CA, certificate, key, and validity period under `data_dir/node`. Restore
+the correct credentials through a trusted management path; do not remove
+Raft state, create an unrelated CA, or disable verification to bypass the
+error.
+
 ## Pinned replica is `pending`
 
 Symptoms: `jaco status <dep>/<svc>` reports
