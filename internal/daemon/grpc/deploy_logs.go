@@ -54,11 +54,11 @@ func (s *Server) streamDeploymentLogs(req *pb.LogsRequest, stream pb.Deploy_Logs
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
 	peerCtx := metadata.NewOutgoingContext(ctx, metadata.MD{})
-	addresses := make(map[string]string)
-	for host := range hosts {
-		if host == hostname {
-			continue
-		}
+	remoteCount := len(hosts)
+	if hosts[hostname] {
+		remoteCount--
+	}
+	if remoteCount > 0 {
 		md, _ := metadata.FromIncomingContext(stream.Context())
 		if auths := md.Get("authorization"); len(auths) != 0 {
 			if _, err := admission.BearerIdentity(stream.Context(), st); err != nil {
@@ -71,6 +71,12 @@ func (s *Server) streamDeploymentLogs(req *pb.LogsRequest, stream pb.Deploy_Logs
 				return status.Error(codes.PermissionDenied,
 					"logs_fanout_denied: use an operator bearer over the public endpoint or the leader's local socket")
 			}
+		}
+	}
+	addresses := make(map[string]string, remoteCount)
+	for host := range hosts {
+		if host == hostname {
+			continue
 		}
 		for _, candidate := range st.Nodes.List() {
 			if candidate.GetHostname() == host {
