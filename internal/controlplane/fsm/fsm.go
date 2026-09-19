@@ -185,12 +185,15 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 			Name:             da.GetDeployment(),
 			AppliedRevision:  da.GetRevision(),
 			PreviousRevision: prevRev,
-			Status:           pb.DeploymentStatus_DEPLOYMENT_STATUS_ACTIVE,
-			JacoYaml:         da.GetJacoYaml(),
-			ComposeYaml:      da.GetComposeYaml(),
-			Services:         da.GetServices(),
-			AcmeEmail:        da.GetAcmeEmail(),
-			UpdatedAt:        cmd.GetTs(),
+			Status:           pb.DeploymentStatus_DEPLOYMENT_STATUS_PENDING,
+			StatusDetails: map[string]string{
+				"reason": "waiting for desired replicas to converge",
+			},
+			JacoYaml:    da.GetJacoYaml(),
+			ComposeYaml: da.GetComposeYaml(),
+			Services:    da.GetServices(),
+			AcmeEmail:   da.GetAcmeEmail(),
+			UpdatedAt:   cmd.GetTs(),
 		}, idx)
 		desiredServices := make(map[string]struct{}, len(da.GetServices()))
 		for _, service := range da.GetServices() {
@@ -308,6 +311,8 @@ func (f *FSM) applyPayload(cmd *pb.Command, idx uint64) (pb.AuditEventType, map[
 	case *pb.Command_ReplicaDesiredUpsert:
 		r := p.ReplicaDesiredUpsert.GetReplica()
 		if r != nil {
+			// The previous observation describes the superseded desired revision.
+			f.State.ReplicasObserved.Remove(r.GetId(), idx)
 			r.RaftIndex = idx
 			f.State.ReplicasDesired.Apply(r, idx)
 		}

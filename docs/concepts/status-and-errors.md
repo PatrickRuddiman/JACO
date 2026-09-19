@@ -94,8 +94,14 @@ A `failed` replica is not retried automatically beyond the
 
 | status     | meaning                                                                                  |
 |------------|------------------------------------------------------------------------------------------|
-| `pending`  | scheduling cannot proceed; `status_details` carries `reason` and supporting fields, surfaced in the `jaco status` `DETAILS` column |
-| `active`   | every desired replica has converged                                                      |
+| `pending`  | the current revision is still converging, or scheduling cannot proceed; `status_details` carries the reason surfaced in the `jaco status` `DETAILS` column |
+| `active`   | every replica in the current desired target exists and reports `running`                 |
+
+`active` is the canonical machine-readable rollout-ready signal. Readiness is
+evaluated against the scheduler's complete target for the current revision, so
+a desired replica that is absent, `pulling`, or `failed` keeps the deployment
+`pending`. Historical observations and replicas for services removed from the
+current revision are outside that target and do not block convergence.
 
 ## Node status
 

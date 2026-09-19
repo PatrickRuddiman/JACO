@@ -333,6 +333,34 @@ func TestApply_DeploymentStatusUpdate_PatchesStatus(t *testing.T) {
 	}
 }
 
+func TestApply_DeploymentApplyStartsPending(t *testing.T) {
+	f, s, _ := newFSM(t)
+	applyCmd(t, f, 1, &pb.Command{
+		Payload: &pb.Command_DeploymentApply{DeploymentApply: &pb.DeploymentApply{
+			Deployment: "sample", Revision: 1,
+		}},
+	})
+
+	d, _ := s.Deployments.Get("sample")
+	if got := d.GetStatus(); got != pb.DeploymentStatus_DEPLOYMENT_STATUS_PENDING {
+		t.Errorf("status = %v, want PENDING until desired replicas converge", got)
+	}
+}
+
+func TestApply_DeploymentApplyExplainsPendingConvergence(t *testing.T) {
+	f, s, _ := newFSM(t)
+	applyCmd(t, f, 1, &pb.Command{
+		Payload: &pb.Command_DeploymentApply{DeploymentApply: &pb.DeploymentApply{
+			Deployment: "sample", Revision: 1,
+		}},
+	})
+
+	d, _ := s.Deployments.Get("sample")
+	if got := d.GetStatusDetails()["reason"]; got != "waiting for desired replicas to converge" {
+		t.Errorf("reason = %q, want convergence explanation", got)
+	}
+}
+
 func TestApply_DeploymentStatusUpdate_SkipsUnknown(t *testing.T) {
 	f, _, _ := newFSM(t)
 	applyCmd(t, f, 1, &pb.Command{
@@ -380,6 +408,29 @@ func TestApply_ReplicaDesiredUpsertAndRemove(t *testing.T) {
 	}
 	if s.RestartCounters.Len() != 0 {
 		t.Errorf("RestartCounters.Len after remove = %d, want 0", s.RestartCounters.Len())
+	}
+}
+
+func TestApply_ReplicaDesiredUpsertInvalidatesPriorObservation(t *testing.T) {
+	f, s, _ := newFSM(t)
+	applyCmd(t, f, 1, &pb.Command{
+		Payload: &pb.Command_ReplicaDesiredUpsert{ReplicaDesiredUpsert: &pb.ReplicaDesiredUpsert{
+			Replica: &pb.ReplicaDesired{Id: "r1", Deployment: "d", Service: "s", Host: "h1"},
+		}},
+	})
+	applyCmd(t, f, 2, &pb.Command{
+		Payload: &pb.Command_ReplicaObservedUpdate{ReplicaObservedUpdate: &pb.ReplicaObservedUpdate{
+			Replica: &pb.ReplicaObserved{Id: "r1", State: pb.ReplicaState_REPLICA_STATE_RUNNING},
+		}},
+	})
+	applyCmd(t, f, 3, &pb.Command{
+		Payload: &pb.Command_ReplicaDesiredUpsert{ReplicaDesiredUpsert: &pb.ReplicaDesiredUpsert{
+			Replica: &pb.ReplicaDesired{Id: "r1", Deployment: "d", Service: "s", Host: "h2"},
+		}},
+	})
+
+	if _, ok := s.ReplicasObserved.Get("r1"); ok {
+		t.Fatal("superseded desired replica retained its prior RUNNING observation")
 	}
 }
 
@@ -661,7 +712,7 @@ func TestApply_JoinTokenIssueAndConsume(t *testing.T) {
 		t.Errorf("join token not keyed by hex(hashed_secret)")
 	}
 	applyCmd(t, f, 2, &pb.Command{
-		Ts: timestampOf(200),
+		Ts:      timestampOf(200),
 		Payload: &pb.Command_JoinTokenConsume{JoinTokenConsume: &pb.JoinTokenConsume{HashedSecret: hash}},
 	})
 	tok, _ := s.JoinTokens.Get(hex.EncodeToString(hash))

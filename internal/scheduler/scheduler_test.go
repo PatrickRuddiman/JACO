@@ -59,6 +59,17 @@ const legacyOnlyCompose = `services:
     image: nginx:1.27
 `
 
+const crmCompose = `services:
+  crm-db:
+    image: postgres:18
+  crm-rest:
+    image: postgrest/postgrest:v12
+  crm:
+    image: example/crm:latest
+  crm-oauth2:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7
+`
+
 // fakeLeader lets tests flip leadership on/off.
 type fakeLeader struct{ leader bool }
 
@@ -145,6 +156,45 @@ func applyDeploymentRevision(
 	}
 	if result := f.Apply(&hraft.Log{Index: *raftIdx, Data: data}); result != nil {
 		t.Fatalf("apply DeploymentApply: %v", result)
+	}
+}
+
+func seedCRMDeployment(t *testing.T, s *scheduler.Scheduler, f *fsm.FSM, raftIdx *uint64) {
+	t.Helper()
+	seedNode(t, f, "node-a", raftIdx)
+
+	*raftIdx++
+	cmd := &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_DeploymentApply{
+		DeploymentApply: &pb.DeploymentApply{
+			Deployment:  "app",
+			Revision:    24,
+			ComposeYaml: []byte(crmCompose),
+			Services: []*pb.ServiceSpec{
+				{Name: "crm-db", Replicas: 1, Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD},
+				{Name: "crm-rest", Replicas: 1, Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD},
+				{Name: "crm", Replicas: 1, Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD},
+				{Name: "crm-oauth2", Replicas: 1, Placement: pb.ServiceSpec_PLACEMENT_MODE_SPREAD},
+			},
+		},
+	}}
+	data, err := proto.Marshal(cmd)
+	if err != nil {
+		t.Fatalf("marshal DeploymentApply: %v", err)
+	}
+	f.Apply(&hraft.Log{Index: *raftIdx, Data: data})
+	s.Reconcile(context.Background())
+}
+
+func observeCRMReplicas(st *state.State, replicaState pb.ReplicaState) {
+	for i, id := range [...]string{
+		"app-crm-db-0",
+		"app-crm-rest-0",
+		"app-crm-0",
+		"app-crm-oauth2-0",
+	} {
+		st.ReplicasObserved.Apply(&pb.ReplicaObserved{
+			Id: id, State: replicaState,
+		}, uint64(100+i))
 	}
 }
 
@@ -718,6 +768,216 @@ func TestReconcile_RemovedServiceCleanupIsIdempotent(t *testing.T) {
 	s.Reconcile(context.Background())
 	if applyCount != afterCleanup {
 		t.Fatalf("second reconcile issued %d additional raft applies, want 0", applyCount-afterCleanup)
+	}
+}
+
+func TestReconcile_AllCurrentDesiredReplicasRunningActivatesDeployment(t *testing.T) {
+	s, st, f, _ := newScheduler(t, true)
+	var raftIdx uint64
+	seedCRMDeployment(t, s, f, &raftIdx)
+	observeCRMReplicas(st, pb.ReplicaState_REPLICA_STATE_RUNNING)
+	s.Reconcile(context.Background())
+
+	dep, _ := st.Deployments.Get("app")
+	if got := dep.GetStatus(); got != pb.DeploymentStatus_DEPLOYMENT_STATUS_ACTIVE {
+		t.Errorf("status = %v, want ACTIVE after every current desired replica is RUNNING", got)
+	}
+}
+
+func TestReconcile_PullingCurrentReplicaDemotesDeployment(t *testing.T) {
+	s, st, f, _ := newScheduler(t, true)
+	var raftIdx uint64
+	seedCRMDeployment(t, s, f, &raftIdx)
+	observeCRMReplicas(st, pb.ReplicaState_REPLICA_STATE_RUNNING)
+	s.Reconcile(context.Background())
+
+	st.ReplicasObserved.Apply(&pb.ReplicaObserved{
+		Id: "app-crm-db-0", State: pb.ReplicaState_REPLICA_STATE_PULLING,
+	}, 200)
+	s.Reconcile(context.Background())
+
+	dep, _ := st.Deployments.Get("app")
+	if got := dep.GetStatus(); got != pb.DeploymentStatus_DEPLOYMENT_STATUS_PENDING {
+		t.Errorf("status = %v, want PENDING while a current desired replica is PULLING", got)
+	}
+}
+
+func TestReconcile_CurrentRevisionConvergenceIgnoresRemovedServiceFailures(t *testing.T) {
+	s, st, f, _ := newScheduler(t, true)
+	var raftIdx uint64
+	seedCRMDeployment(t, s, f, &raftIdx)
+
+	st.ReplicasObserved.Apply(&pb.ReplicaObserved{
+		Id: "app-crm-db-0", State: pb.ReplicaState_REPLICA_STATE_PULLING,
+	}, 200)
+	st.ReplicasObserved.Apply(&pb.ReplicaObserved{
+		Id: "app-crm-0", State: pb.ReplicaState_REPLICA_STATE_RUNNING,
+	}, 201)
+	st.ReplicasObserved.Apply(&pb.ReplicaObserved{
+		Id: "app-crm-oauth2-0", State: pb.ReplicaState_REPLICA_STATE_RUNNING,
+	}, 202)
+	st.ReplicasObserved.Apply(&pb.ReplicaObserved{
+		Id: "app-website-0", State: pb.ReplicaState_REPLICA_STATE_FAILED,
+	}, 203)
+	st.ReplicasObserved.Apply(&pb.ReplicaObserved{
+		Id: "app-dex-0", State: pb.ReplicaState_REPLICA_STATE_FAILED,
+	}, 204)
+
+	s.Reconcile(context.Background())
+	dep, _ := st.Deployments.Get("app")
+	if got := dep.GetStatus(); got != pb.DeploymentStatus_DEPLOYMENT_STATUS_PENDING {
+		t.Fatalf("status = %v, want PENDING with crm-db PULLING and crm-rest absent", got)
+	}
+
+	st.ReplicasObserved.Apply(&pb.ReplicaObserved{
+		Id: "app-crm-db-0", State: pb.ReplicaState_REPLICA_STATE_RUNNING,
+	}, 205)
+	st.ReplicasObserved.Apply(&pb.ReplicaObserved{
+		Id: "app-crm-rest-0", State: pb.ReplicaState_REPLICA_STATE_FAILED,
+	}, 206)
+	s.Reconcile(context.Background())
+	dep, _ = st.Deployments.Get("app")
+	if got := dep.GetStatus(); got != pb.DeploymentStatus_DEPLOYMENT_STATUS_PENDING {
+		t.Fatalf("status = %v, want PENDING with current crm-rest replica FAILED", got)
+	}
+
+	st.ReplicasObserved.Apply(&pb.ReplicaObserved{
+		Id: "app-crm-rest-0", State: pb.ReplicaState_REPLICA_STATE_RUNNING,
+	}, 207)
+	s.Reconcile(context.Background())
+	dep, _ = st.Deployments.Get("app")
+	if got := dep.GetStatus(); got != pb.DeploymentStatus_DEPLOYMENT_STATUS_ACTIVE {
+		t.Fatalf("status = %v, want ACTIVE after all current desired replicas converge", got)
+	}
+	if _, ok := st.ReplicasObserved.Get("app-website-0"); !ok {
+		t.Fatal("stale website observation was removed; fixture no longer proves it is ignored")
+	}
+	if _, ok := st.ReplicasObserved.Get("app-dex-0"); !ok {
+		t.Fatal("stale dex observation was removed; fixture no longer proves it is ignored")
+	}
+}
+
+func TestReconcile_ActiveConvergenceStatusIsIdempotent(t *testing.T) {
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	f := fsm.New(st, brokers)
+	var (
+		raftIdx    uint64
+		applyCount int
+	)
+	applier := func(data []byte) error {
+		raftIdx++
+		applyCount++
+		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
+		return nil
+	}
+	s := scheduler.New(st, brokers, &fakeLeader{leader: true}, applier, nil)
+	seedCRMDeployment(t, s, f, &raftIdx)
+	observeCRMReplicas(st, pb.ReplicaState_REPLICA_STATE_RUNNING)
+	s.Reconcile(context.Background())
+
+	afterActivation := applyCount
+	s.Reconcile(context.Background())
+	if applyCount != afterActivation {
+		t.Fatalf("steady ACTIVE reconcile issued %d additional raft applies, want 0", applyCount-afterActivation)
+	}
+}
+
+func TestReconcile_BlockedPendingStatusIsIdempotent(t *testing.T) {
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	f := fsm.New(st, brokers)
+	var (
+		raftIdx    uint64
+		applyCount int
+	)
+	applier := func(data []byte) error {
+		raftIdx++
+		applyCount++
+		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
+		return nil
+	}
+	s := scheduler.New(st, brokers, &fakeLeader{leader: true}, applier, nil)
+	seedNode(t, f, "node-a", &raftIdx)
+
+	raftIdx++
+	cmd := &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_DeploymentApply{
+		DeploymentApply: &pb.DeploymentApply{
+			Deployment:  "pinned",
+			Revision:    1,
+			ComposeYaml: []byte(sampleCompose),
+			Services: []*pb.ServiceSpec{{
+				Name:      "web",
+				Replicas:  1,
+				Placement: pb.ServiceSpec_PLACEMENT_MODE_HOSTS,
+				Hosts:     []string{"node-z"},
+			}},
+		},
+	}}
+	data, err := proto.Marshal(cmd)
+	if err != nil {
+		t.Fatalf("marshal DeploymentApply: %v", err)
+	}
+	f.Apply(&hraft.Log{Index: raftIdx, Data: data})
+
+	s.Reconcile(context.Background())
+	afterPending := applyCount
+	s.Reconcile(context.Background())
+	if applyCount != afterPending {
+		t.Fatalf("steady blocked PENDING reconcile issued %d additional raft applies, want 0", applyCount-afterPending)
+	}
+}
+
+func TestReconcile_MultipleBlockedServicesDoNotAlternatePendingReason(t *testing.T) {
+	brokers := watch.NewRegistry()
+	st := state.New(brokers)
+	f := fsm.New(st, brokers)
+	var (
+		raftIdx    uint64
+		applyCount int
+	)
+	applier := func(data []byte) error {
+		raftIdx++
+		applyCount++
+		f.Apply(&hraft.Log{Index: raftIdx, Data: data})
+		return nil
+	}
+	s := scheduler.New(st, brokers, &fakeLeader{leader: true}, applier, nil)
+	seedNode(t, f, "node-a", &raftIdx)
+
+	raftIdx++
+	cmd := &pb.Command{Ts: timestamppb.Now(), Payload: &pb.Command_DeploymentApply{
+		DeploymentApply: &pb.DeploymentApply{
+			Deployment:  "pinned",
+			Revision:    1,
+			ComposeYaml: []byte(sampleCompose),
+			Services: []*pb.ServiceSpec{
+				{
+					Name:      "web",
+					Replicas:  1,
+					Placement: pb.ServiceSpec_PLACEMENT_MODE_HOSTS,
+					Hosts:     []string{"node-z"},
+				},
+				{
+					Name:      "api",
+					Replicas:  1,
+					Placement: pb.ServiceSpec_PLACEMENT_MODE_HOSTS,
+					Hosts:     []string{"node-z"},
+				},
+			},
+		},
+	}}
+	data, err := proto.Marshal(cmd)
+	if err != nil {
+		t.Fatalf("marshal DeploymentApply: %v", err)
+	}
+	f.Apply(&hraft.Log{Index: raftIdx, Data: data})
+
+	s.Reconcile(context.Background())
+	afterPending := applyCount
+	s.Reconcile(context.Background())
+	if applyCount != afterPending {
+		t.Fatalf("unchanged blocked services issued %d additional raft applies, want 0", applyCount-afterPending)
 	}
 }
 

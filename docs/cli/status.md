@@ -42,8 +42,10 @@ Renders up to four tables, in order:
 - **Deployments** — `DEPLOYMENT, REVISION, PREVIOUS, STATUS, DETAILS`.
   Status is one of `PENDING`, `ACTIVE` (see
   [Status and errors](../concepts/status-and-errors.md)). `DETAILS`
-  carries the scheduler's `reason` when a deployment is `PENDING` (e.g. an
-  unschedulable `placement: hosts` pin); blank for `ACTIVE`.
+  carries the scheduler's `reason` when a deployment is `PENDING` (for
+  example, replicas are still converging or a `placement: hosts` pin is
+  unschedulable); blank for `ACTIVE`. `ACTIVE` is emitted only after every
+  replica in the current desired target reports `RUNNING`.
 - **Replicas** — `REPLICA_ID, STATE, HOST, CONTAINER_ID,
   LAST_HEALTH_AT, REASON`. State is from the closed
   `pending | pulling | running | degraded | updating | failed | stopped`
@@ -110,11 +112,15 @@ form below (replica `state`, deployment `status`):
 With `-w`, json output is a stream of concatenated JSON snapshots (a valid
 `jq` input); yaml output separates snapshots with `---` document breaks.
 
-Example — poll for rollout convergence with `jq`:
+Example — poll the canonical rollout-ready signal with `jq`:
 
 ```sh
-jaco status mydeploy -o json | jq -e '.replicas | all(.state == "running")'
+jaco status mydeploy -o json | jq -e '.deployments[0].status == "active"'
 ```
+
+Do not infer rollout readiness with `.replicas | all(.state == "running")`.
+An absent desired replica is necessarily absent from that array, so the
+expression can be true before the complete desired set exists.
 
 ## Exit codes
 
