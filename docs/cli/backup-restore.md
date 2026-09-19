@@ -42,6 +42,19 @@ index/term, JACO version, taken-at timestamp, leader-at-snapshot) into
 a gzipped tar file at `--output`. The RPC has a 5-minute deadline; the
 CLI prints the total byte count on success.
 
+On Unix, the CLI stages the archive with owner-only permissions (`0600`,
+or stricter under the caller's umask), then atomically replaces an existing
+regular destination only after the stream completes and the file is
+synced and closed. Failed or canceled transfers leave the previous backup
+intact. Symlinks (including dangling links), directories, and special files
+are rejected; overwriting a hard-linked file does not change its other links.
+
+The output directory must be owned by the invoking user or root and must
+not be group/world-writable unless it has the sticky bit (for example,
+`/tmp`). Prefer a private `0700` backup directory. On Windows, use a directory
+with a private ACL: Unix permission bits and atomic-rename guarantees do
+not apply. See [safe storage and older archives](../operations/backups.md#store-backups-safely).
+
 The snapshot is consistent at a single raft commit index, so the
 restored cluster will reflect every deployment committed before that
 index and none committed after.
@@ -49,7 +62,7 @@ index and none committed after.
 ### Exit codes
 
 - `0` — backup written.
-- `1` — auth, transport, or write error.
+- `1` — auth, transport, cancellation, or filesystem error.
 
 ### Examples
 
