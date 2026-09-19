@@ -1,25 +1,25 @@
 add table inet jaco
 delete table inet jaco
 table inet jaco {
-    set dep_net_other_default {
+    set dep_net_pg3e56six4bdt7skhvfo4n4bpueuymi3vxwpm4ktdji7zzpfq2nq {
         type ipv4_addr
         flags interval
         elements = { 10.244.2.0/24 }
     }
 
-    set dep_net_other_metrics {
+    set dep_net_sg2cfh26wcvgdhsvhtomfjn4r62pgrefnxtez3n72g4e2ned7kuq {
         type ipv4_addr
         flags interval
         elements = { 10.244.3.0/24 }
     }
 
-    set dep_net_sample_backend {
+    set dep_net_hr64it2y5pkynqwnjxakmpgyl54f2t4bm6w62nu45sdcga7illjq {
         type ipv4_addr
         flags interval
         elements = { 10.244.1.0/24 }
     }
 
-    set dep_net_sample_frontend {
+    set dep_net_obib5vqxlyo37i6k7l6y7fijjgqjyj27nuyyxboihyg46wwzdk5q {
         type ipv4_addr
         flags interval
         elements = { 10.244.0.0/24 }
@@ -33,11 +33,10 @@ table inet jaco {
 
     chain forward {
         type filter hook forward priority 0; policy accept;
-        ct state established,related accept
-        ip saddr @dep_net_other_default ip daddr @dep_net_other_default accept
-        ip saddr @dep_net_other_metrics ip daddr @dep_net_other_metrics accept
-        ip saddr @dep_net_sample_backend ip daddr @dep_net_sample_backend accept
-        ip saddr @dep_net_sample_frontend ip daddr @dep_net_sample_frontend accept
+        ip saddr @dep_net_pg3e56six4bdt7skhvfo4n4bpueuymi3vxwpm4ktdji7zzpfq2nq ip daddr @dep_net_pg3e56six4bdt7skhvfo4n4bpueuymi3vxwpm4ktdji7zzpfq2nq accept
+        ip saddr @dep_net_sg2cfh26wcvgdhsvhtomfjn4r62pgrefnxtez3n72g4e2ned7kuq ip daddr @dep_net_sg2cfh26wcvgdhsvhtomfjn4r62pgrefnxtez3n72g4e2ned7kuq accept
+        ip saddr @dep_net_hr64it2y5pkynqwnjxakmpgyl54f2t4bm6w62nu45sdcga7illjq ip daddr @dep_net_hr64it2y5pkynqwnjxakmpgyl54f2t4bm6w62nu45sdcga7illjq accept
+        ip saddr @dep_net_obib5vqxlyo37i6k7l6y7fijjgqjyj27nuyyxboihyg46wwzdk5q ip daddr @dep_net_obib5vqxlyo37i6k7l6y7fijjgqjyj27nuyyxboihyg46wwzdk5q accept
         ip saddr @jaco_pool ip daddr @jaco_pool drop
     }
 

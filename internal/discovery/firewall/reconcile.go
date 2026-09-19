@@ -69,7 +69,7 @@ type Reconciler struct {
 	// Nil-safe: when unset, Tick runs every interval as before.
 	ReadyGate func() bool
 
-	// degraded tracks whether the last Tick saw an Apply failure.
+	// degraded tracks whether the last Tick saw a render or Apply failure.
 	degraded bool
 }
 
@@ -80,11 +80,26 @@ func (r *Reconciler) logger() *slog.Logger {
 	return logging.Discard()
 }
 
+func (r *Reconciler) isolationUnavailable(ctx context.Context, operation string, cause error) error {
+	r.degraded = true
+	r.logger().Error(operation+" failed", "error", cause)
+	if err := r.UpdateStatus(ctx, "isolation_unavailable", cause.Error()); err != nil {
+		r.logger().Error("UpdateStatus(isolation_unavailable) failed", "error", err, "isolation_error", cause)
+	}
+	return fmt.Errorf("%s: %w", operation, cause)
+}
+
 // Tick runs one reconcile pass. Returns nil when the live ruleset matches
 // expected (no work to do) or an Apply succeeded; returns an error when
-// Apply failed (the daemon should already have been marked
+// rendering or Apply failed (the daemon should already have been marked
 // isolation_unavailable via UpdateStatus).
 func (r *Reconciler) Tick(ctx context.Context) error {
+	expected := r.Render()
+	ruleset, err := Render(expected)
+	if err != nil {
+		return r.isolationUnavailable(ctx, "render ruleset", err)
+	}
+
 	// Re-assert the intra-pool SNAT exemption first — it lives in Docker's
 	// nat POSTROUTING (outside table inet jaco / its SelfTest), so it must be
 	// checked every tick. Best-effort: a failure here is independent of the
@@ -104,7 +119,6 @@ func (r *Reconciler) Tick(ctx context.Context) error {
 		}
 	}
 
-	expected := r.Render()
 	listBytes, err := r.Lister(ctx)
 	if err != nil {
 		// Can't read live state — surface the error but don't flip status yet
@@ -142,19 +156,8 @@ func (r *Reconciler) Tick(ctx context.Context) error {
 	// Mismatch detected — re-render + apply.
 	summary := summarizeDrift(selfErr)
 	r.logger().Info("firewall drift detected, applying ruleset", "drift", summary)
-	ruleset := Render(r.Render())
 	if applyErr := r.Applier(ctx, ruleset); applyErr != nil {
-		r.degraded = true
-		// Log the apply error directly — operators reading jacod logs need
-		// to see this even when raft node-status isn't being watched.
-		r.logger().Error("apply ruleset failed", "error", applyErr)
-		// Log even if UpdateStatus fails — the previous behavior swallowed
-		// this with `_ =`, masking the real reason `nft list table inet jaco`
-		// stays missing on a live cluster (issue #45).
-		if err := r.UpdateStatus(ctx, "isolation_unavailable", applyErr.Error()); err != nil {
-			r.logger().Error("UpdateStatus(isolation_unavailable) failed", "error", err, "apply_error", applyErr)
-		}
-		return fmt.Errorf("apply ruleset: %w", applyErr)
+		return r.isolationUnavailable(ctx, "apply ruleset", applyErr)
 	}
 
 	// Apply succeeded. Audit the reconcile with a compact diff summary.

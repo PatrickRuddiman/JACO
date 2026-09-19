@@ -9,10 +9,9 @@
 package firewall
 
 import (
-	"crypto/sha1"
-	"encoding/hex"
+	"crypto/sha256"
+	"encoding/base32"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 )
@@ -20,9 +19,8 @@ import (
 // MaxSetNameLen is nftables' identifier length limit.
 const MaxSetNameLen = 63
 
-// Subnet is the per-(deployment, network) CIDR the ruleset locks down. One
-// nftables `set` is emitted per Subnet; the forward chain matches packets
-// whose saddr + daddr both belong to the same set.
+// Subnet is a host's CIDR for an exact (deployment, network) scope. All hosts
+// in that scope share one nftables set; both packet addresses must match it.
 type Subnet struct {
 	Deployment string
 	Network    string
@@ -41,39 +39,23 @@ type RuleInput struct {
 // Render emits the full `table inet jaco` ruleset as a single string. The
 // caller can pipe it through `nft -f -` or write it to a temp file.
 // Deterministic — Subnets are sorted by (deployment, network) before
-// rendering.
-func Render(in RuleInput) string {
-	subnets := append([]Subnet(nil), in.Subnets...)
-	sort.Slice(subnets, func(i, j int) bool {
-		if subnets[i].Deployment != subnets[j].Deployment {
-			return subnets[i].Deployment < subnets[j].Deployment
-		}
-		return subnets[i].Network < subnets[j].Network
-	})
+// rendering. A set-name collision returns an error and no ruleset.
+func Render(in RuleInput) (string, error) {
+	return render(in, SetName)
+}
 
-	// Group CIDRs by nftables set name: with per-host /24s (issue #28),
-	// several CIDRs share one (deployment, network) set, so cross-host
-	// intra-deployment traffic (saddr in host-A's /24, daddr in host-B's)
-	// matches @set on both sides.
-	var setOrder []string
-	cidrsBySet := map[string][]string{}
-	for _, s := range subnets {
-		name := SetName(s.Deployment, s.Network)
-		if _, ok := cidrsBySet[name]; !ok {
-			setOrder = append(setOrder, name)
-		}
-		cidrsBySet[name] = append(cidrsBySet[name], s.CIDR)
-	}
-	for name := range cidrsBySet {
-		sort.Strings(cidrsBySet[name])
+func render(in RuleInput, setName func(string, string) string) (string, error) {
+	sets, err := groupSubnets(in.Subnets, setName)
+	if err != nil {
+		return "", err
 	}
 
 	// allCIDRs is the union of every JACO subnet — the "pool". It scopes the
 	// cross-network isolation drop so JACO never touches traffic outside its
 	// own subnets (the operator's other networks/routing are left alone).
 	var allCIDRs []string
-	for _, name := range setOrder {
-		allCIDRs = append(allCIDRs, cidrsBySet[name]...)
+	for _, set := range sets {
+		allCIDRs = append(allCIDRs, set.cidrs...)
 	}
 	sort.Strings(allCIDRs)
 
@@ -99,11 +81,11 @@ func Render(in RuleInput) string {
 	fmt.Fprintln(&b, "table inet jaco {")
 
 	// Named sets — one per (deployment, network), holding every host's /24.
-	for _, name := range setOrder {
-		fmt.Fprintf(&b, "    set %s {\n", name)
+	for _, set := range sets {
+		fmt.Fprintf(&b, "    set %s {\n", set.name)
 		fmt.Fprintf(&b, "        type ipv4_addr\n")
 		fmt.Fprintf(&b, "        flags interval\n")
-		fmt.Fprintf(&b, "        elements = { %s }\n", strings.Join(cidrsBySet[name], ", "))
+		fmt.Fprintf(&b, "        elements = { %s }\n", strings.Join(set.cidrs, ", "))
 		fmt.Fprintf(&b, "    }\n\n")
 	}
 	// jaco_pool — union of all JACO subnets; the isolation drop is scoped to it.
@@ -124,9 +106,9 @@ func Render(in RuleInput) string {
 	// untouched by the accept policy.
 	fmt.Fprintln(&b, "    chain forward {")
 	fmt.Fprintln(&b, "        type filter hook forward priority 0; policy accept;")
-	fmt.Fprintln(&b, "        ct state established,related accept")
-	for _, name := range setOrder {
-		fmt.Fprintf(&b, "        ip saddr @%s ip daddr @%s accept\n", name, name)
+	// Conntrack entries created before a reload must not bypass scope checks.
+	for _, set := range sets {
+		fmt.Fprintf(&b, "        ip saddr @%s ip daddr @%s accept\n", set.name, set.name)
 	}
 	if len(allCIDRs) > 0 {
 		fmt.Fprintln(&b, "        ip saddr @jaco_pool ip daddr @jaco_pool drop")
@@ -149,30 +131,56 @@ func Render(in RuleInput) string {
 	fmt.Fprintln(&b, "        type filter hook output priority 0; policy accept;")
 	fmt.Fprintln(&b, "    }")
 	fmt.Fprintln(&b, "}")
-	return b.String()
+	return b.String(), nil
 }
 
 // SetName builds the nftables set identifier for (deployment, network).
-// Sanitizes the input to `[a-zA-Z0-9_]` (nftables identifiers can't contain
-// dashes / dots) and hashes when the joined identifier would exceed
-// MaxSetNameLen. The hash form preserves the human-readable prefix so
-// debugging-from-rules is still possible.
+// Length-prefixed original fields preserve punctuation and tuple boundaries.
+// The full SHA-256 digest fits in 60 identifier-safe characters with the prefix.
 func SetName(deployment, network string) string {
-	if network == "" {
-		network = "_default"
-	}
-	full := fmt.Sprintf("dep_net_%s_%s", sanitize(deployment), sanitize(network))
-	if len(full) <= MaxSetNameLen {
-		return full
-	}
-	// Hash form: dep_net_<sha1>_<truncated-prefix> — total length still <= 63.
-	sum := sha1.Sum([]byte(deployment + "/" + network))
-	prefix := full[:len("dep_net_")+8]
-	return fmt.Sprintf("%s_%s", prefix, hex.EncodeToString(sum[:])[:8])
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d:%s%d:%s", len(deployment), deployment, len(network), network)))
+	return "dep_net_" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:]))
 }
 
-var sanitizeRE = regexp.MustCompile(`[^a-zA-Z0-9_]`)
+type scope struct {
+	deployment string
+	network    string
+}
 
-func sanitize(s string) string {
-	return sanitizeRE.ReplaceAllString(s, "_")
+type scopeSet struct {
+	name  string
+	cidrs []string
+}
+
+func groupSubnets(subnets []Subnet, setName func(string, string) string) ([]scopeSet, error) {
+	cidrsByScope := map[scope][]string{}
+	var scopes []scope
+	for _, subnet := range subnets {
+		key := scope{subnet.Deployment, subnet.Network}
+		if _, exists := cidrsByScope[key]; !exists {
+			scopes = append(scopes, key)
+		}
+		cidrsByScope[key] = append(cidrsByScope[key], subnet.CIDR)
+	}
+	sort.Slice(scopes, func(i, j int) bool {
+		if scopes[i].deployment != scopes[j].deployment {
+			return scopes[i].deployment < scopes[j].deployment
+		}
+		return scopes[i].network < scopes[j].network
+	})
+
+	owners := map[string]scope{}
+	sets := make([]scopeSet, 0, len(scopes))
+	for _, key := range scopes {
+		name := setName(key.deployment, key.network)
+		if previous, exists := owners[name]; exists {
+			return nil, fmt.Errorf("nftables set name collision %q between scopes (%q, %q) and (%q, %q)",
+				name, previous.deployment, previous.network, key.deployment, key.network)
+		}
+		owners[name] = key
+		cidrs := cidrsByScope[key]
+		sort.Strings(cidrs)
+		sets = append(sets, scopeSet{name: name, cidrs: cidrs})
+	}
+	return sets, nil
 }

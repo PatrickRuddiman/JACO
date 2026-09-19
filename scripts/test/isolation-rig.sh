@@ -14,7 +14,7 @@
 # Five tests, each emits `PASS: <name>` on success:
 #   1. positive same-net cross-node
 #   2. negative cross-deployment
-#   3. negative cross-network
+#   3. negative cross-network (punctuation-colliding scope names, by IP)
 #   4. drift recovery
 #   5. startup failure
 
@@ -89,16 +89,19 @@ services:
   - name: web-a
     compose_service: web-a
     replicas: 2
-    networks: [net-a]
+    networks: [private-net]
   - name: web-b
     compose_service: web-b
     replicas: 1
-    networks: [net-b]
+    networks: [private.net]
 EOF
 cat > "$WORK/dep-front.compose.yml" <<'EOF'
 services:
-  web-a: { image: busybox, command: ["sh", "-c", "nc -lk -p 9999"] }
-  web-b: { image: busybox, command: ["sh", "-c", "nc -lk -p 9998"] }
+  web-a: { image: busybox, command: ["sh", "-c", "nc -lk -p 9999"], networks: [private-net] }
+  web-b: { image: busybox, command: ["sh", "-c", "nc -lk -p 9998"], networks: [private.net] }
+networks:
+  private-net: {}
+  private.net: {}
 EOF
 cat > "$WORK/dep-back.yaml" <<'EOF'
 deployment: dep-back
@@ -106,11 +109,13 @@ services:
   - name: api
     compose_service: api
     replicas: 1
-    networks: [net-a]
+    networks: [private-net]
 EOF
 cat > "$WORK/dep-back.compose.yml" <<'EOF'
 services:
-  api: { image: busybox, command: ["sh", "-c", "nc -lk -p 9999"] }
+  api: { image: busybox, command: ["sh", "-c", "nc -lk -p 9999"], networks: [private-net] }
+networks:
+  private-net: {}
 EOF
 JACO_TOKEN="$TOKEN" "$WORK/jaco" apply "$WORK/dep-front.yaml" --server 127.0.0.1:28001 --compose "$WORK/dep-front.compose.yml"
 JACO_TOKEN="$TOKEN" "$WORK/jaco" apply "$WORK/dep-back.yaml"  --server 127.0.0.1:28001 --compose "$WORK/dep-back.compose.yml"
@@ -118,22 +123,41 @@ sleep 5
 
 # --- 1. positive: same-net cross-node ---------------------------------------
 # Pick two web-a replicas on different hosts, nc one from the other.
-PEER=$(docker ps --filter "label=jaco.service=web-a" --format '{{.ID}}' | head -1)
-docker exec "$PEER" sh -c 'nc -z -w 3 web-a 9999' 2>/dev/null \
+mapfile -t SAME_SCOPE < <(docker ps --filter "label=jaco.deployment=dep-front" --filter "label=jaco.service=web-a" --format '{{.ID}}')
+(( ${#SAME_SCOPE[@]} >= 2 )) || { echo "FAIL: missing same-scope replicas"; exit 1; }
+PEER=${SAME_SCOPE[0]}
+scope_ip() {
+  docker inspect --format "{{with index .NetworkSettings.Networks \"$2\"}}{{.IPAddress}}{{end}}" "$1"
+}
+SAME_IP=$(scope_ip "${SAME_SCOPE[1]}" jaco_dep-front_private-net)
+[[ -n "$SAME_IP" ]] || { echo "FAIL: same-scope target has no IP"; exit 1; }
+docker exec "$PEER" nc -z -w 3 "$SAME_IP" 9999 2>/dev/null \
   && echo "PASS: positive same-net cross-node" \
   || { echo "FAIL: same-net cross-node connect"; exit 1; }
 
 # --- 2. negative: cross-deployment ------------------------------------------
-# dep-front/web-a → dep-back/api should drop (different deployments).
-docker exec "$PEER" sh -c 'nc -z -w 3 api 9999' 2>/dev/null \
-  && { echo "FAIL: cross-deployment connect succeeded"; exit 1; } \
-  || echo "PASS: negative cross-deployment"
+# Probe a live listener by IP, not a DNS name that isolation already hides.
+OTHER_DEP=$(docker ps --filter "label=jaco.deployment=dep-back" --filter "label=jaco.service=api" --format '{{.ID}}' | head -1)
+OTHER_DEP_IP=$(scope_ip "$OTHER_DEP" jaco_dep-back_private-net)
+[[ -n "$OTHER_DEP_IP" ]] || { echo "FAIL: cross-deployment target has no IP"; exit 1; }
+docker exec "$OTHER_DEP" nc -z -w 3 127.0.0.1 9999 \
+  || { echo "FAIL: cross-deployment target is not listening"; exit 1; }
+if docker exec "$PEER" nc -z -w 3 "$OTHER_DEP_IP" 9999 2>/dev/null; then
+  echo "FAIL: cross-deployment connect succeeded"; exit 1
+fi
+echo "PASS: negative cross-deployment"
 
 # --- 3. negative: cross-network ---------------------------------------------
-# dep-front/web-a → dep-front/web-b: same deployment, different network.
-docker exec "$PEER" sh -c 'nc -z -w 3 web-b 9998' 2>/dev/null \
-  && { echo "FAIL: cross-network connect succeeded"; exit 1; } \
-  || echo "PASS: negative cross-network"
+# These valid names previously shared dep_net_dep_front_private_net.
+OTHER_NET=$(docker ps --filter "label=jaco.deployment=dep-front" --filter "label=jaco.service=web-b" --format '{{.ID}}' | head -1)
+OTHER_NET_IP=$(scope_ip "$OTHER_NET" jaco_dep-front_private.net)
+[[ -n "$OTHER_NET_IP" ]] || { echo "FAIL: cross-network target has no IP"; exit 1; }
+docker exec "$OTHER_NET" nc -z -w 3 127.0.0.1 9998 \
+  || { echo "FAIL: cross-network target is not listening"; exit 1; }
+if docker exec "$PEER" nc -z -w 3 "$OTHER_NET_IP" 9998 2>/dev/null; then
+  echo "FAIL: punctuation-colliding cross-network connect succeeded"; exit 1
+fi
+echo "PASS: negative cross-network"
 
 # --- 4. drift recovery ------------------------------------------------------
 nft flush table inet jaco 2>/dev/null || true

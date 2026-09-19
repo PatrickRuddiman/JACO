@@ -13,6 +13,15 @@ import (
 	"github.com/PatrickRuddiman/jaco/internal/discovery/firewall"
 )
 
+func renderRules(t *testing.T, in firewall.RuleInput) string {
+	t.Helper()
+	out, err := firewall.Render(in)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	return out
+}
+
 func TestRender_GoldenTwoDepsTwoNets(t *testing.T) {
 	in := firewall.RuleInput{
 		Subnets: []firewall.Subnet{
@@ -25,7 +34,7 @@ func TestRender_GoldenTwoDepsTwoNets(t *testing.T) {
 		GrpcPort:     7000,
 		IngressPorts: []int{80, 443},
 	}
-	got := firewall.Render(in)
+	got := renderRules(t, in)
 
 	goldenPath := filepath.Join("testdata", "2dep-2net.nft")
 	if regenGolden() {
@@ -52,7 +61,7 @@ func regenGolden() bool { return os.Getenv("REGEN_GOLDEN") == "1" }
 // elements and exactly one forward accept rule, so cross-host intra-deployment
 // traffic is accepted (saddr in one host's /24, daddr in another's).
 func TestRender_GroupsPerHostCIDRsIntoOneSet(t *testing.T) {
-	out := firewall.Render(firewall.RuleInput{
+	out := renderRules(t, firewall.RuleInput{
 		Subnets: []firewall.Subnet{
 			{Deployment: "app", Network: "frontend", CIDR: "10.244.6.0/24"},
 			{Deployment: "app", Network: "frontend", CIDR: "10.244.5.0/24"},
@@ -84,7 +93,7 @@ func TestRender_GoldenPerHostSubnets(t *testing.T) {
 		GrpcPort:     7000,
 		IngressPorts: []int{80, 443},
 	}
-	got := firewall.Render(in)
+	got := renderRules(t, in)
 	goldenPath := filepath.Join("testdata", "perhost.nft")
 	if regenGolden() {
 		if err := os.WriteFile(goldenPath, []byte(got), 0o644); err != nil {
@@ -104,14 +113,14 @@ func TestRender_GoldenPerHostSubnets(t *testing.T) {
 }
 
 func TestRender_SortsSubnetsDeterministically(t *testing.T) {
-	a := firewall.Render(firewall.RuleInput{
+	a := renderRules(t, firewall.RuleInput{
 		Subnets: []firewall.Subnet{
 			{Deployment: "a", Network: "y", CIDR: "10.244.0.0/24"},
 			{Deployment: "b", Network: "x", CIDR: "10.244.1.0/24"},
 			{Deployment: "a", Network: "x", CIDR: "10.244.2.0/24"},
 		},
 	})
-	b := firewall.Render(firewall.RuleInput{
+	b := renderRules(t, firewall.RuleInput{
 		Subnets: []firewall.Subnet{
 			{Deployment: "a", Network: "x", CIDR: "10.244.2.0/24"},
 			{Deployment: "b", Network: "x", CIDR: "10.244.1.0/24"},
@@ -130,14 +139,14 @@ func TestRender_SortsSubnetsDeterministically(t *testing.T) {
 	}
 }
 
-func TestSetName_SanitizesAndFitsLimit(t *testing.T) {
+func TestSetName_StableDigestAndFitsLimit(t *testing.T) {
 	cases := []struct {
 		dep, net string
 		match    string
 	}{
-		{"sample", "frontend", "dep_net_sample_frontend"},
-		{"my-dep.v1", "front-end", "dep_net_my_dep_v1_front_end"},
-		{"sample", "default", "dep_net_sample_default"},
+		{"sample", "frontend", "dep_net_obib5vqxlyo37i6k7l6y7fijjgqjyj27nuyyxboihyg46wwzdk5q"},
+		{"my-dep.v1", "front-end", "dep_net_3rggt7ldjjhzpg23vz2zw7buwxdxwy7a62agsb6zvc3jkyum5stq"},
+		{"sample", "default", "dep_net_2qby75ojon7djmpbimavgecwovlay6backu6t26s5plw3n7pekua"},
 	}
 	for _, c := range cases {
 		got := firewall.SetName(c.dep, c.net)
@@ -150,26 +159,37 @@ func TestSetName_SanitizesAndFitsLimit(t *testing.T) {
 	}
 }
 
-func TestSetName_HashesWhenTooLong(t *testing.T) {
-	dep := strings.Repeat("a", 40)
-	net := strings.Repeat("b", 40)
-	got := firewall.SetName(dep, net)
-	if len(got) > firewall.MaxSetNameLen {
-		t.Errorf("SetName too long: %d > %d", len(got), firewall.MaxSetNameLen)
-	}
-	if !strings.HasPrefix(got, "dep_net_") {
-		t.Errorf("SetName lost prefix: %q", got)
-	}
-	// Same input deterministically hashes to the same name.
-	if firewall.SetName(dep, net) != got {
-		t.Errorf("SetName hashing not deterministic")
+func TestSetName_LengthBoundariesAndUniqueness(t *testing.T) {
+	seen := map[string][2]string{}
+	for _, length := range []int{0, 1, 39, 40, 46, 47, 62, 63, 64, 256, 4096} {
+		for _, pair := range [][2]string{
+			{strings.Repeat("a", length), "b"},
+			{"b", strings.Repeat("a", length)},
+			{strings.Repeat("a", length), strings.Repeat("b", length)},
+		} {
+			got := firewall.SetName(pair[0], pair[1])
+			if len(got) != 60 || len(got) > firewall.MaxSetNameLen || !strings.HasPrefix(got, "dep_net_") {
+				t.Errorf("invalid identifier shape at input length %d: %q", length, got)
+			}
+			for _, c := range got {
+				if c != '_' && (c < 'a' || c > 'z') && (c < '2' || c > '7') {
+					t.Errorf("invalid identifier character %q", c)
+				}
+			}
+			if previous, exists := seen[got]; exists && previous != pair {
+				t.Errorf("distinct scopes share identifier %q", got)
+			}
+			seen[got] = pair
+			if firewall.SetName(pair[0], pair[1]) != got {
+				t.Error("SetName is not deterministic")
+			}
+		}
 	}
 }
 
-func TestSetName_DefaultsEmptyNetworkTo_default(t *testing.T) {
-	got := firewall.SetName("sample", "")
-	if !strings.Contains(got, "_default") {
-		t.Errorf("SetName(%q,'') = %q; expected _default fallback", "sample", got)
+func TestSetName_EmptyNetworkIsNotAnAlias(t *testing.T) {
+	if firewall.SetName("sample", "") == firewall.SetName("sample", "_default") {
+		t.Error("empty network must not alias the canonical _default network")
 	}
 }
 
@@ -178,16 +198,16 @@ func TestRender_RulesetContainsExpectedChainsAndElements(t *testing.T) {
 		Subnets: []firewall.Subnet{{Deployment: "sample", Network: "frontend", CIDR: "10.244.0.0/24"}},
 		WGPort:  51820, GrpcPort: 7000, IngressPorts: []int{80, 443},
 	}
-	got := firewall.Render(in)
+	got := renderRules(t, in)
+	setName := firewall.SetName("sample", "frontend")
 	for _, want := range []string{
 		"table inet jaco {",
-		"set dep_net_sample_frontend {",
+		"set " + setName + " {",
 		"elements = { 10.244.0.0/24 }",
 		"set jaco_pool {",
 		// forward: isolate JACO's own pool, accept everything else.
 		"chain forward {",
-		"ct state established,related accept",
-		"ip saddr @dep_net_sample_frontend ip daddr @dep_net_sample_frontend accept",
+		"ip saddr @" + setName + " ip daddr @" + setName + " accept",
 		"ip saddr @jaco_pool ip daddr @jaco_pool drop",
 		// both base chains are policy accept — JACO never blanket-drops host
 		// ingress or non-JACO forwarded traffic.
@@ -212,7 +232,7 @@ func TestRender_RulesetContainsExpectedChainsAndElements(t *testing.T) {
 func TestRender_DoesNotDropWhenNoSubnets(t *testing.T) {
 	// With no JACO subnets there is nothing to isolate, so the forward chain
 	// carries no pool drop — and still never a policy-drop.
-	got := firewall.Render(firewall.RuleInput{})
+	got := renderRules(t, firewall.RuleInput{})
 	if strings.Contains(got, "policy drop;") {
 		t.Errorf("empty input must not produce a policy-drop chain:\n%s", got)
 	}
@@ -227,13 +247,13 @@ func TestSelfTestFromJSON_AllChainsAndSetsPresent(t *testing.T) {
 	}
 	// All base chains are policy accept — matches what Render emits (the
 	// no-host-disruption invariant); SelfTest must accept this shape.
-	jsonOK := []byte(`{"nftables":[
+	jsonOK := []byte(fmt.Sprintf(`{"nftables":[
 		{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"accept"}},
 		{"chain":{"family":"inet","table":"jaco","name":"input","hook":"input","prio":0,"policy":"accept"}},
 		{"chain":{"family":"inet","table":"jaco","name":"output","hook":"output","prio":0,"policy":"accept"}},
-		{"set":{"family":"inet","table":"jaco","name":"dep_net_sample_frontend","type":"ipv4_addr"}},
+		{"set":{"family":"inet","table":"jaco","name":"%s","type":"ipv4_addr"}},
 		{"set":{"family":"inet","table":"jaco","name":"jaco_pool","type":"ipv4_addr"}}
-	]}`)
+	]}`, firewall.SetName("sample", "frontend")))
 	if err := firewall.SelfTestFromJSON(jsonOK, expected); err != nil {
 		t.Fatalf("SelfTest: %v", err)
 	}
@@ -255,12 +275,12 @@ func TestSelfTestFromJSON_AcceptsRenderRoundTrip(t *testing.T) {
 		GrpcPort:     7000,
 		IngressPorts: []int{80, 443},
 	}
-	rendered := firewall.Render(in)
+	rendered := renderRules(t, in)
 
 	// Read the policy each base chain carries straight out of Render's output,
 	// rather than hard-coding it, so this test fails if Render and SelfTest
 	// ever disagree about a chain policy.
-	json := renderToNftJSON(t, in, rendered)
+	json := renderToNftJSON(t, rendered)
 	if err := firewall.SelfTestFromJSON(json, in); err != nil {
 		t.Fatalf("SelfTest rejected a faithful round-trip of Render output: %v\n=== rendered:\n%s\n=== json:\n%s", err, rendered, json)
 	}
@@ -268,10 +288,10 @@ func TestSelfTestFromJSON_AcceptsRenderRoundTrip(t *testing.T) {
 
 // renderToNftJSON synthesizes the `nft -j list table inet jaco` document that
 // applying `rendered` would yield: one base-chain entry per chain (carrying
-// the policy parsed from the rendered ruleset) plus one set entry per expected
-// (deployment, network). It is a faithful stand-in for the real nft round-trip
+// the policy parsed from the rendered ruleset) plus its actual set declarations.
+// It is a stand-in for the real nft round-trip
 // for the fields SelfTest inspects (chain hook/policy/priority and set names).
-func renderToNftJSON(t *testing.T, in firewall.RuleInput, rendered string) []byte {
+func renderToNftJSON(t *testing.T, rendered string) []byte {
 	t.Helper()
 	type chain struct {
 		Family string `json:"family"`
@@ -300,21 +320,11 @@ func renderToNftJSON(t *testing.T, in firewall.RuleInput, rendered string) []byt
 			Policy: policyFromRender(t, rendered, name),
 		}})
 	}
-	seen := map[string]bool{}
-	for _, s := range in.Subnets {
-		n := firewall.SetName(s.Deployment, s.Network)
-		if seen[n] {
-			continue
+	for _, line := range strings.Split(rendered, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 3 && fields[0] == "set" && fields[2] == "{" {
+			entries = append(entries, entry{Set: &set{Family: "inet", Table: "jaco", Name: fields[1], Type: "ipv4_addr"}})
 		}
-		seen[n] = true
-		entries = append(entries, entry{Set: &set{Family: "inet", Table: "jaco", Name: n, Type: "ipv4_addr"}})
-	}
-	// Render also emits the aggregate jaco_pool set whenever there's any
-	// subnet — a real `nft -j list` includes it, so the faithful round-trip
-	// must too. Omitting it is what let the SelfTest/Render set divergence
-	// (issue #76) slip past the unit suite and only surface on the nft rig.
-	if len(in.Subnets) > 0 {
-		entries = append(entries, entry{Set: &set{Family: "inet", Table: "jaco", Name: "jaco_pool", Type: "ipv4_addr"}})
 	}
 
 	b, err := json.Marshal(struct {
@@ -346,10 +356,10 @@ func policyFromRender(t *testing.T, rendered, chainName string) string {
 
 func TestSelfTestFromJSON_MissingChainErrors(t *testing.T) {
 	expected := firewall.RuleInput{Subnets: []firewall.Subnet{{Deployment: "a", Network: "b", CIDR: "10.244.0.0/24"}}}
-	jsonMissing := []byte(`{"nftables":[
+	jsonMissing := []byte(fmt.Sprintf(`{"nftables":[
 		{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"accept"}},
-		{"set":{"family":"inet","table":"jaco","name":"dep_net_a_b","type":"ipv4_addr"}}
-	]}`)
+		{"set":{"family":"inet","table":"jaco","name":"%s","type":"ipv4_addr"}}
+	]}`, firewall.SetName("a", "b")))
 	err := firewall.SelfTestFromJSON(jsonMissing, expected)
 	if err == nil {
 		t.Fatalf("expected SelfTestError")
@@ -368,13 +378,13 @@ func TestSelfTestFromJSON_MissingChainErrors(t *testing.T) {
 
 func TestSelfTestFromJSON_ExtraSetErrors(t *testing.T) {
 	expected := firewall.RuleInput{Subnets: []firewall.Subnet{{Deployment: "a", Network: "b", CIDR: "10.244.0.0/24"}}}
-	jsonExtra := []byte(`{"nftables":[
+	jsonExtra := []byte(fmt.Sprintf(`{"nftables":[
 		{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"accept"}},
 		{"chain":{"family":"inet","table":"jaco","name":"input","hook":"input","prio":0,"policy":"accept"}},
 		{"chain":{"family":"inet","table":"jaco","name":"output","hook":"output","prio":0,"policy":"accept"}},
-		{"set":{"family":"inet","table":"jaco","name":"dep_net_a_b","type":"ipv4_addr"}},
+		{"set":{"family":"inet","table":"jaco","name":"%s","type":"ipv4_addr"}},
 		{"set":{"family":"inet","table":"jaco","name":"orphan_set","type":"ipv4_addr"}}
-	]}`)
+	]}`, firewall.SetName("a", "b")))
 	err := firewall.SelfTestFromJSON(jsonExtra, expected)
 	var ste *firewall.SelfTestError
 	if !errors.As(err, &ste) {
@@ -398,7 +408,7 @@ func TestSelfTestFromJSON_ExtraSetErrors(t *testing.T) {
 // `@jaco_pool drop` shadows a later stack's per-scope accept — silently
 // breaking cross-host traffic for every deployment except the first applied.
 func TestRender_AtomicReplacePreamble(t *testing.T) {
-	got := firewall.Render(firewall.RuleInput{
+	got := renderRules(t, firewall.RuleInput{
 		Subnets: []firewall.Subnet{
 			{Deployment: "alpha", Network: "stack", CIDR: "10.244.11.0/24"},
 			{Deployment: "alpha", Network: "stack", CIDR: "10.244.12.0/24"},
@@ -425,7 +435,7 @@ func TestRender_AtomicReplacePreamble(t *testing.T) {
 		t.Errorf("pool drop appears %d times, want 1", c)
 	}
 	dropIdx := strings.Index(got, "@jaco_pool ip daddr @jaco_pool drop")
-	for _, sc := range []string{"dep_net_alpha_stack", "dep_net_bench_stack"} {
+	for _, sc := range []string{firewall.SetName("alpha", "stack"), firewall.SetName("bench", "stack")} {
 		acceptIdx := strings.Index(got, "ip saddr @"+sc+" ip daddr @"+sc+" accept")
 		if acceptIdx < 0 || acceptIdx > dropIdx {
 			t.Errorf("accept for %s must precede the pool drop (accept=%d drop=%d)", sc, acceptIdx, dropIdx)

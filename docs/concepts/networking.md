@@ -164,7 +164,8 @@ attached to deployment `web`'s network `frontend` (subnet
    `wg-jaco` to node B; node B's WG decrypts and delivers to the local
    `jaco-web-frontend` bridge.
 4. nftables FORWARD on node B matches: source and destination are
-   both in the `dep_net_web_frontend` set → ACCEPT.
+   both in the digest-named set for the exact `(web, frontend)` scope
+   (see [Isolation](isolation.md#named-sets)) → ACCEPT.
 
 ## Kernel gates
 

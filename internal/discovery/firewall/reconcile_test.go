@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -119,22 +121,22 @@ func goodInput() firewall.RuleInput {
 // validJSON is `nft -j list` output that matches goodInput (3 chains + 1
 // set). All base chains are policy accept — the shape Render emits (the
 // no-host-disruption invariant); SelfTest must treat this as no-drift.
-const validJSON = `{"nftables":[
+var validJSON = fmt.Sprintf(`{"nftables":[
 	{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"accept"}},
 	{"chain":{"family":"inet","table":"jaco","name":"input","hook":"input","prio":0,"policy":"accept"}},
 	{"chain":{"family":"inet","table":"jaco","name":"output","hook":"output","prio":0,"policy":"accept"}},
-	{"set":{"family":"inet","table":"jaco","name":"dep_net_sample_frontend","type":"ipv4_addr"}},
+	{"set":{"family":"inet","table":"jaco","name":"%s","type":"ipv4_addr"}},
 	{"set":{"family":"inet","table":"jaco","name":"jaco_pool","type":"ipv4_addr"}}
-]}`
+]}`, firewall.SetName("sample", "frontend"))
 
 // driftedJSON is missing the input chain (drift simulation); the sets match
 // goodInput (incl. jaco_pool) so the ONLY drift is the absent input chain.
-const driftedJSON = `{"nftables":[
+var driftedJSON = fmt.Sprintf(`{"nftables":[
 	{"chain":{"family":"inet","table":"jaco","name":"forward","hook":"forward","prio":0,"policy":"accept"}},
 	{"chain":{"family":"inet","table":"jaco","name":"output","hook":"output","prio":0,"policy":"accept"}},
-	{"set":{"family":"inet","table":"jaco","name":"dep_net_sample_frontend","type":"ipv4_addr"}},
+	{"set":{"family":"inet","table":"jaco","name":"%s","type":"ipv4_addr"}},
 	{"set":{"family":"inet","table":"jaco","name":"jaco_pool","type":"ipv4_addr"}}
-]}`
+]}`, firewall.SetName("sample", "frontend"))
 
 func TestReconcile_HappyPathNoDriftSilent(t *testing.T) {
 	apl := &recordingApplier{}
@@ -267,6 +269,79 @@ func TestReconcile_DriftDetectedReappliesAndAudits(t *testing.T) {
 	codes := aud.Codes()
 	if len(codes) != 1 || codes[0] != "ISOLATION_RULESET_RECONCILED" {
 		t.Errorf("audit codes = %v, want [ISOLATION_RULESET_RECONCILED]", codes)
+	}
+}
+
+func TestReconcile_LegacyScopeMigration(t *testing.T) {
+	legacy, err := os.ReadFile(filepath.Join("testdata", "legacy-colliding.nft"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := firewall.RuleInput{Subnets: []firewall.Subnet{
+		{Deployment: "demo", Network: "private-net", CIDR: "10.244.1.0/24"},
+		{Deployment: "demo", Network: "private.net", CIDR: "10.244.2.0/24"},
+		{Deployment: "demo", Network: "private-net", CIDR: "10.244.3.0/24"},
+	}}
+	live := string(legacy)
+	var drift *firewall.SelfTestError
+	if err := firewall.SelfTestFromJSON(renderToNftJSON(t, live), expected); !errors.As(err, &drift) {
+		t.Fatalf("legacy merged set must require migration, got %v", err)
+	}
+	if len(drift.Missing) != 2 || len(drift.Extra) != 1 || drift.Extra[0] != "set:dep_net_demo_private_net" {
+		t.Fatalf("expected two distinct missing scopes and one legacy set, got %+v", drift)
+	}
+
+	applyErr := errors.New("nft transaction rejected")
+	applications := 0
+	aud := &recordingAudit{}
+	stat := &recordingStatus{}
+	r := &firewall.Reconciler{
+		Lister: func(context.Context) ([]byte, error) { return renderToNftJSON(t, live), nil },
+		Applier: func(_ context.Context, ruleset string) error {
+			applications++
+			if !strings.HasPrefix(ruleset, "add table inet jaco\ndelete table inet jaco\ntable inet jaco {\n") {
+				t.Fatal("migration must replace the table in one transaction")
+			}
+			if applyErr != nil {
+				return applyErr
+			}
+			live = ruleset
+			return nil
+		},
+		Render:       func() firewall.RuleInput { return expected },
+		Audit:        aud.fn(),
+		UpdateStatus: stat.fn(),
+	}
+	if err := r.Tick(context.Background()); !errors.Is(err, applyErr) {
+		t.Fatalf("failed reload error = %v, want %v", err, applyErr)
+	}
+	if live != string(legacy) {
+		t.Fatal("failed transaction replaced the live ruleset")
+	}
+	applyErr = nil
+	if err := r.Tick(context.Background()); err != nil {
+		t.Fatalf("migration retry: %v", err)
+	}
+	for _, state := range []string{"new", "established", "related"} {
+		if got := forwardVerdict(t, live, "10.244.1.2", "10.244.2.2", state); got != "drop" {
+			t.Errorf("%s cross-scope traffic survived migration: %s", state, got)
+		}
+		if got := forwardVerdict(t, live, "10.244.1.2", "10.244.3.2", state); got != "accept" {
+			t.Errorf("%s same-scope traffic broken by migration: %s", state, got)
+		}
+	}
+	if err := r.Tick(context.Background()); err != nil {
+		t.Fatalf("post-migration self-test: %v", err)
+	}
+	if applications != 2 {
+		t.Errorf("migration reapplied after success: got %d total attempts, want 2", applications)
+	}
+	updates := stat.Updates()
+	if len(updates) != 2 || updates[0].status != "isolation_unavailable" || updates[1].status != "ready" {
+		t.Errorf("migration status transitions = %v", updates)
+	}
+	if codes := aud.Codes(); len(codes) != 1 || codes[0] != "ISOLATION_RULESET_RECONCILED" {
+		t.Errorf("migration audit events = %v", codes)
 	}
 }
 

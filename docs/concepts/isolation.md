@@ -50,7 +50,7 @@ like:
 add table inet jaco
 delete table inet jaco
 table inet jaco {
-    set dep_net_front__default {
+    set dep_net_g3iz3fiipyuqgmrjd7nptv6xcnesao3w53kwzwrpw2mho5ugg7aa {
         type ipv4_addr
         flags interval
         elements = { 10.244.1.0/24 }
@@ -63,8 +63,7 @@ table inet jaco {
 
     chain forward {
         type filter hook forward priority 0; policy accept;
-        ct state established,related accept
-        ip saddr @dep_net_front__default ip daddr @dep_net_front__default accept
+        ip saddr @dep_net_g3iz3fiipyuqgmrjd7nptv6xcnesao3w53kwzwrpw2mho5ugg7aa ip daddr @dep_net_g3iz3fiipyuqgmrjd7nptv6xcnesao3w53kwzwrpw2mho5ugg7aa accept
         ip saddr @jaco_pool ip daddr @jaco_pool drop
     }
 
@@ -86,13 +85,25 @@ re-apply rebuilds the table from scratch instead of appending to it.
 
 ### Named sets
 
-- One `set dep_net_<dep>_<net>` per (deployment, network), holding
+- One `set dep_net_<digest>` per exact (deployment, network), holding
   **every host's** `/24` for that scope (per-host /24s, issue #28) so
   cross-host same-scope traffic matches `@set` on both saddr and
-  daddr. Names are sanitized to `[a-zA-Z0-9_]` and hashed when they
-  would exceed nftables' 63-char identifier limit (`SetName`).
+  daddr. `SetName` hashes **every** scope, including short names:
+  SHA-256 over the original, byte-length-prefixed fields
+  (`<deployment-length>:<deployment><network-length>:<network>`),
+  encoded as lowercase, unpadded base32. The full digest plus prefix is
+  60 identifier-safe characters, within the 63-character bound.
+  Punctuation and tuple boundaries are preserved: `private-net` and
+  `private.net` never deliberately share an identity. The firewall does
+  not alias empty names to `_default`; canonical default names come
+  from the caller.
 - `set jaco_pool` — the union of every JACO subnet. Emitted **only
   when at least one subnet exists**. It scopes the cross-network drop.
+
+CIDRs are grouped by the original structured scope, **not** by the generated
+identifier. If distinct scopes ever produce the same identifier, rendering
+fails explicitly without returning a partial ruleset. The reconciler logs
+the error and reports `isolation_unavailable` instead of applying merged sets.
 
 ### `chain forward`
 
@@ -100,17 +111,21 @@ re-apply rebuilds the table from scratch instead of appending to it.
 
 Rules in order:
 
-1. `ct state established,related accept` — return path for
-   already-allowed flows.
-2. Per (deployment, network), one rule:
+1. Per (deployment, network), one rule:
    `ip saddr @<set> ip daddr @<set> accept` — same-(deployment,
    network) traffic, anywhere in the cluster, regardless of whether
    the inbound interface is a JACO bridge or `wg-jaco`.
-3. `ip saddr @jaco_pool ip daddr @jaco_pool drop` — the cross-scope
+2. `ip saddr @jaco_pool ip daddr @jaco_pool drop` — the cross-scope
    isolation drop, emitted only when subnets exist. Two JACO containers
    in different scopes both fall in `jaco_pool` but match no per-set
    accept, so this rule fires. Anything where either address is outside
    `jaco_pool` falls through to the **accept** policy untouched.
+
+These predicates apply to **every packet**, including established and related
+flows. There is no unconditional conntrack ACCEPT ahead of isolation: entries
+created under an older, permissive ruleset must not bypass a corrected policy.
+Same-scope return traffic still matches its scope's ACCEPT; non-JACO traffic
+still falls through to the accept policy.
 
 ### `chain input`
 
@@ -134,7 +149,7 @@ JACO does not constrain egress from the host itself.
 Cross-node traffic arrives via `wg-jaco`, not a JACO bridge — `iifname`
 matching alone would miss it. IP-set matching, keyed on
 `(saddr, daddr)` both being members of the same
-`dep_net_<dep>_<net>` set, works uniformly for same-node bridge-to-bridge
+`dep_net_<digest>` set, works uniformly for same-node bridge-to-bridge
 and for cross-node WG-decrypted paths.
 
 ## Coexistence with docker
@@ -187,12 +202,28 @@ host where the table doesn't exist yet. The SNAT/overlay exemptions live
 in Docker's own `nat`/`raw` tables (re-asserted each tick), so flushing
 `inet jaco` doesn't disturb them.
 
+### Upgrading from sanitized set names
+
+After a daemon upgrade, the first reconciliation detects legacy sanitized
+set names as extra and the new digest-based names as missing. It replaces the
+entire table in the same atomic transaction, removing the old combined sets
+and their ACCEPT rules; no manual table deletion, IPAM reallocation, bridge
+rename, or container restart is needed. Update every node: nodes still running
+the old renderer remain vulnerable.
+
+Conntrack entries are **not flushed**. Cross-scope traffic, including flows
+established before the upgrade, hits the pool DROP immediately after the
+replacement because no conntrack shortcut precedes it. Legitimate same-scope
+and unrelated established traffic keeps working. A failed render or rejected
+`nft -f` transaction leaves the previous ruleset intact and reports
+`isolation_unavailable`; that node is not remediated until a retry succeeds.
+
 ## Self-test on startup
 
 After first load, JACO reads back `nft -j list table inet jaco` and
 checks it against the rendered expectation (`SelfTestFromJSON`): the
 three base chains are present with `policy accept`, one
-`dep_net_<dep>_<net>` set exists per scope, and `jaco_pool` exists iff
+`dep_net_<digest>` set exists per scope, and `jaco_pool` exists iff
 there is at least one subnet. On mismatch:
 
 - `Error{code: isolation_self_test_failed}` is logged + audited.

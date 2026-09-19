@@ -1,0 +1,26 @@
+add table inet jaco
+delete table inet jaco
+table inet jaco {
+    set dep_net_demo_private_net {
+        type ipv4_addr
+        flags interval
+        elements = { 10.244.1.0/24, 10.244.2.0/24, 10.244.3.0/24 }
+    }
+    set jaco_pool {
+        type ipv4_addr
+        flags interval
+        elements = { 10.244.1.0/24, 10.244.2.0/24, 10.244.3.0/24 }
+    }
+    chain forward {
+        type filter hook forward priority 0; policy accept;
+        ct state established,related accept
+        ip saddr @dep_net_demo_private_net ip daddr @dep_net_demo_private_net accept
+        ip saddr @jaco_pool ip daddr @jaco_pool drop
+    }
+    chain input {
+        type filter hook input priority 0; policy accept;
+    }
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}
