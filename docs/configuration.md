@@ -4,6 +4,8 @@ sources:
   - internal/daemon/netdetect/
   - internal/daemon/grpc/heartbeat.go
   - internal/daemon/grpc/server.go
+  - internal/daemon/grpc/ingress.go
+  - internal/ingress/config/
   - internal/discovery/dns/forwarder.go
   - internal/discovery/dns/resolvconf.go
   - internal/runtime/cgroupv2/
@@ -234,6 +236,90 @@ rebalancer is therefore safely dormant when no signal is available.
 
 See `internal/daemon/config/config.go::Validate` for the canonical
 rule set.
+
+## Ingress administration
+
+By default, Caddy runs inside `jacod`. Its generated config explicitly sets
+`admin.disabled: true`: there is no Caddy administration listener on
+`localhost:2019`, even after the first HTTP/TCP route, forced reloads, or
+deleting the last route. Route and certificate changes still reload through
+the in-process API. Use JACO's authenticated control plane to manage ingress;
+Caddy's origin checks are not authentication for local processes.
+
+### External Caddy (`JACO_INGRESS_EXEC=1`)
+
+This opt-in mode reloads an already-running, dedicated Caddy process; it
+does not start one. JACO writes `/etc/caddy/jaco.json` and invokes
+`caddy reload --address 'unix//run/jaco-caddy/admin.sock|0600' --config ...`.
+The persisted config keeps this same Unix administration address, and
+forced reloads pass `--force`. There is **no TCP fallback**, including when
+the Unix socket is absent or `CADDY_ADMIN` names a TCP address.
+
+Run this Caddy instance as the **same OS user as `jacod`** (`jaco` in the
+packages). External mode requires Unix filesystem permissions; unsupported
+platforms fail rather than falling back to TCP. Its socket must be owned by
+that user, mode `0600`, inside `/run/jaco-caddy`, owned by that user and mode
+`0700`. JACO rejects an
+existing symlink, wrong-owner, or less-restricted administration directory
+rather than silently accepting it. Do not share this endpoint with untrusted
+users or use the unrelated, wider-access `jaco.sock` control socket.
+
+Before enabling exec mode, provision `/etc/caddy/jaco.json`, writable by
+`jaco` and preferably mode `0600`, with this bootstrap configuration:
+
+```json
+{
+  "admin": {
+    "listen": "unix//run/jaco-caddy/admin.sock|0600"
+  }
+}
+```
+
+A dedicated systemd service named `jaco-caddy.service` can provide the
+runtime directory and start Caddy with these service settings (adjust the
+binary path to the installed Caddy build):
+
+```ini
+[Service]
+Type=notify
+User=jaco
+Group=jaco
+RuntimeDirectory=jaco-caddy
+RuntimeDirectoryMode=0700
+UMask=0077
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ExecStart=/usr/bin/caddy run --config /etc/caddy/jaco.json
+Restart=on-failure
+```
+
+Then add a `jaco.service` drop-in to order startup and permit writing the
+existing config file under the packaged filesystem sandbox:
+
+```ini
+[Unit]
+Requires=jaco-caddy.service
+After=jaco-caddy.service
+
+[Service]
+Environment=JACO_INGRESS_EXEC=1
+ReadWritePaths=/etc/caddy/jaco.json
+```
+
+Use a Caddy build containing the modules required by your generated config,
+including `caddy-l4` for published TCP ports. Caddy owns socket creation,
+permissions, reuse on reload, and rebinding any stale socket on restart.
+The service manager removes its private runtime directory on service stop
+and recreates it on startup, including after reboot; JACO never unlinks a
+running Caddy's administration socket. The separate directory avoids tying
+the socket to `jacod`'s restart lifecycle. Non-systemd deployments must
+provide the same ownership, modes, and startup ordering.
+
+**Migration:** stop an existing TCP-admin Caddy instance and restart it with
+the Unix bootstrap config before enabling exec mode. Do not try to migrate
+by leaving `localhost:2019` open: reloads intentionally never contact it.
+Missing Caddy binaries, unsafe directories, and failed reloads are surfaced
+in the ingress logs.
 
 ## Reloading
 

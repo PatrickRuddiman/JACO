@@ -3,6 +3,7 @@ package grpc
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -37,9 +38,10 @@ import (
 	pb "github.com/PatrickRuddiman/jaco/pkg/proto/jaco/v1"
 )
 
-// ingressConfigPath is where the daemon writes the rendered Caddy config.
-// Operators can repoint this with an env override in a follow-up iter.
-const ingressConfigPath = "/etc/caddy/jaco.json"
+const (
+	ingressConfigPath      = "/etc/caddy/jaco.json"
+	ingressAdminSocketPath = "/run/jaco-caddy/admin.sock"
+)
 
 // ingressACMEOpts is the daemon-resolved ACME configuration the builder
 // projects onto config.BuildOpts. Sourced from jacod.yaml (acme_email,
@@ -635,12 +637,11 @@ func ingressBuilder(st *state.State, acme ingressACMEOpts, logger *slog.Logger) 
 
 // ingressLoader is the rebuild.Loader concrete impl. Default mode is
 // embedded — calls caddy.Load directly, no IPC, no exec (task 32
-// deferral). JACO_INGRESS_EXEC=1 falls back to the v0 path that writes
-// /etc/caddy/jaco.json + execs `caddy reload`, useful when the operator
-// wants caddy crashes to stay isolated from jacod.
+// deferral). JACO_INGRESS_EXEC=1 writes /etc/caddy/jaco.json and reloads a
+// separately managed Caddy over its private Unix administration socket.
 func ingressLoader(logger *slog.Logger) func(ctx context.Context, cfg []byte, force bool) error {
 	if os.Getenv("JACO_INGRESS_EXEC") == "1" {
-		return ingressLoaderExec()
+		return ingressLoaderExec(ingressConfigPath, ingressAdminSocketPath)
 	}
 	return ingressLoaderEmbedded(logger)
 }
@@ -687,23 +688,45 @@ func ingressLoaderEmbedded(logger *slog.Logger) func(ctx context.Context, cfg []
 	}
 }
 
-// ingressLoaderExec is the v0 fallback: write the config to disk + exec
-// `caddy reload`. Skips silently when caddy isn't on PATH. The exec path always
-// re-applies the on-disk config, so the force flag (used by the embedded path
-// to defeat caddy.Load's identical-config short-circuit) is a no-op here.
-func ingressLoaderExec() func(ctx context.Context, cfg []byte, force bool) error {
-	caddyBin, _ := exec.LookPath("caddy")
-	return func(ctx context.Context, cfg []byte, _ bool) error {
-		if caddyBin == "" {
-			return nil
+// ingressLoaderExec enables administration only on the external instance's
+// owner-only Unix socket. Embedded configs retain their disabled admin API.
+func ingressLoaderExec(configPath, adminSocketPath string) func(ctx context.Context, cfg []byte, force bool) error {
+	caddyBin, lookupErr := exec.LookPath("caddy")
+	return func(ctx context.Context, cfg []byte, force bool) error {
+		if lookupErr != nil {
+			return fmt.Errorf("find caddy binary: %w", lookupErr)
 		}
-		if err := os.MkdirAll(filepath.Dir(ingressConfigPath), 0o755); err != nil {
+		if err := checkIngressAdminDir(filepath.Dir(adminSocketPath)); err != nil {
+			return err
+		}
+		var root map[string]json.RawMessage
+		if err := json.Unmarshal(cfg, &root); err != nil {
+			return fmt.Errorf("decode caddy config: %w", err)
+		}
+		if root == nil {
+			return errors.New("caddy config must be a JSON object")
+		}
+		adminAddr := "unix/" + adminSocketPath + "|0600"
+		admin, err := json.Marshal(map[string]string{"listen": adminAddr})
+		if err != nil {
+			return fmt.Errorf("encode caddy admin config: %w", err)
+		}
+		root["admin"] = admin
+		cfg, err = json.MarshalIndent(root, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encode caddy config: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 			return fmt.Errorf("mkdir caddy config dir: %w", err)
 		}
-		if err := os.WriteFile(ingressConfigPath, cfg, 0o644); err != nil {
+		if err := os.WriteFile(configPath, cfg, 0o644); err != nil {
 			return fmt.Errorf("write caddy config: %w", err)
 		}
-		cmd := exec.CommandContext(ctx, caddyBin, "reload", "--config", ingressConfigPath)
+		args := []string{"reload", "--config", configPath, "--address", adminAddr}
+		if force {
+			args = append(args, "--force")
+		}
+		cmd := exec.CommandContext(ctx, caddyBin, args...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("caddy reload: %w: %s", err, string(out))
 		}
