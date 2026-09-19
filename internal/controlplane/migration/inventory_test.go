@@ -34,8 +34,12 @@ func TestInventoryRejectsOpaqueIdentityMaterial(t *testing.T) {
 		valid      bool
 	}{
 		{"certificate", "node/ca.crt", cert, true},
+		{"certificate-crlf", "node/ca.crt", bytes.ReplaceAll(cert, []byte("\n"), []byte("\r\n")), true},
 		{"ca-bundle", "node/ca.crt", append(bytes.Clone(cert), rotationCert...), true},
 		{"leaf-chain", "node/node-a.crt", append(bytes.Clone(nodeCert), cert...), true},
+		{"certificate-with-header", "node/ca.crt", bytes.Replace(cert, []byte("-----BEGIN CERTIFICATE-----\n"), []byte("-----BEGIN CERTIFICATE-----\nOpaque: synthetic-secret\n\n"), 1), false},
+		{"malformed-first-certificate", "node/ca.crt", append([]byte("-----BEGIN CERTIFICATE-----\ninvalid!\n-----END CERTIFICATE-----\n"), cert...), false},
+		{"incomplete-first-certificate", "node/ca.crt", append([]byte("-----BEGIN CERTIFICATE-----\n"), cert...), false},
 		{"certificate-with-private-key", "node/ca.crt", append(bytes.Clone(cert), key...), false},
 		{"certificate-with-opaque-tail", "node/ca.crt", append(bytes.Clone(cert), []byte("synthetic-hidden-secret\n")...), false},
 		{"bundle-with-opaque-middle", "node/ca.crt", append(append(bytes.Clone(cert), []byte("synthetic-hidden-secret\n")...), rotationCert...), false},
