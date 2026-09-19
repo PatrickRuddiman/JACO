@@ -167,7 +167,9 @@ compatibility mechanism and must not be relied on for this cutover.
 
 For routine leaf rotation, issue a new per-node keypair and certificate
 under the same trusted cluster CA, keeping the Raft ID in both common
-name and SANs and retaining server/client authentication usages. In a
+name and SANs, preserving the node's approved management DNS/IP SANs,
+and retaining server/client authentication usages. Use a trusted PKI
+issuance procedure; this change adds no certificate-reissue CLI. In a
 TLS-only cluster, stop one node while preserving quorum, replace its
 matching `.crt`/`.key` files, protect the private key with mode `0600`,
 then restart it and verify catch-up before advancing to the next node.

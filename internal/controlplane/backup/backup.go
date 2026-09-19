@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -264,7 +265,7 @@ func Import(opts ImportOptions) error {
 	if err := hraft.RecoverCluster(raftCfg, recoveryFSM, logStore, logStore, snapStore, transport, configuration); err != nil {
 		return fmt.Errorf("RecoverCluster: %w", err)
 	}
-	if err := restoreNodeCredentials(opts.DataDir, opts.LocalID, st.Cluster.Get()); err != nil {
+	if err := restoreNodeCredentials(opts.DataDir, opts.LocalID, st, logger); err != nil {
 		return fmt.Errorf("restore node credentials: %w", err)
 	}
 
@@ -280,11 +281,44 @@ func Import(opts ImportOptions) error {
 	return nil
 }
 
-func restoreNodeCredentials(dataDir, localID string, meta *pb.ClusterMeta) error {
+func restoreNodeCredentials(dataDir, localID string, st *state.State, logger *slog.Logger) error {
+	meta := st.Cluster.Get()
 	if meta == nil || len(meta.GetCaCert()) == 0 || len(meta.GetCaKey()) == 0 {
 		return fmt.Errorf("cluster CA missing from recovered state")
 	}
-	key, csr, err := ca.GenerateNodeKeypair(localID, netdetect.LocalIPs()...)
+	ips := netdetect.LocalIPs()
+	var dnsNames []string
+	// Only this exact member's recovered endpoints authorize extra identities.
+	// Never infer aliases through DNS or from another node in the snapshot.
+	if member, ok := st.Nodes.Get(localID); ok {
+		for _, endpoint := range []struct{ field, address string }{
+			{"grpc_address", member.GetGrpcAddress()},
+			{"address", member.GetAddress()},
+		} {
+			if endpoint.address == "" {
+				continue
+			}
+			host, port, err := net.SplitHostPort(endpoint.address)
+			portNumber, portErr := strconv.ParseUint(port, 10, 16)
+			ip := net.ParseIP(host)
+			valid := err == nil && portErr == nil && portNumber > 0 && host != ""
+			if ip != nil {
+				valid = valid && !ip.IsUnspecified() && !ip.IsMulticast() && !ip.Equal(net.IPv4bcast)
+			} else {
+				valid = valid && validRestoredDNSHost(host)
+			}
+			if !valid {
+				logger.Warn("ignoring unusable restored node endpoint", logging.KeyNode, localID, "field", endpoint.field)
+				continue
+			}
+			if ip != nil {
+				ips = append(ips, ip)
+			} else {
+				dnsNames = append(dnsNames, strings.TrimSuffix(host, "."))
+			}
+		}
+	}
+	key, csr, err := ca.GenerateNodeKeypairWithSANs(localID, dnsNames, ips...)
 	if err != nil {
 		return err
 	}
@@ -302,6 +336,24 @@ func restoreNodeCredentials(dataDir, localID string, meta *pb.ClusterMeta) error
 		}
 	}
 	return nil
+}
+
+func validRestoredDNSHost(host string) bool {
+	host = strings.TrimSuffix(host, ".")
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, c := range label {
+			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // ReadMeta untars opts.Reader and returns just the meta.json content,

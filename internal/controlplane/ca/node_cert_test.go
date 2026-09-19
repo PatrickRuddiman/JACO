@@ -4,10 +4,40 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"net"
+	"slices"
 	"testing"
 
 	"github.com/PatrickRuddiman/jaco/internal/controlplane/ca"
 )
+
+func TestGenerateNodeKeypairWithSANs(t *testing.T) {
+	ip := net.ParseIP("192.0.2.10")
+	_, csrPEM, err := ca.GenerateNodeKeypairWithSANs("node-a",
+		[]string{"management.example.invalid", "node-a", "management.example.invalid"}, ip, ip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(csrPEM)
+	if block == nil {
+		t.Fatal("missing CSR PEM")
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := csr.CheckSignature(); err != nil {
+		t.Fatal(err)
+	}
+	if csr.Subject.CommonName != "node-a" || !slices.Equal(csr.DNSNames, []string{"node-a", "management.example.invalid"}) {
+		t.Fatalf("unexpected CSR identity: CN=%q DNS=%v", csr.Subject.CommonName, csr.DNSNames)
+	}
+	if len(csr.IPAddresses) != 1 || !csr.IPAddresses[0].Equal(ip) {
+		t.Fatalf("unexpected CSR IPs: %v", csr.IPAddresses)
+	}
+	if key, csr, err := ca.GenerateNodeKeypairWithSANs("node-a", []string{""}); err == nil || len(key) != 0 || len(csr) != 0 {
+		t.Fatal("empty requested DNS SAN did not fail cleanly")
+	}
+}
 
 func TestGenerateAndSignNodeCert_ChainValidates(t *testing.T) {
 	caCertPEM, caKeyPEM, err := ca.GenerateClusterCA()

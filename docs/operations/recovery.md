@@ -97,6 +97,42 @@ trusted backup: this preserves the backup's CA rather than rotating a
 potentially compromised authority. See
 [historical plaintext exposure](upgrades.md#secrets-exposed-by-historical-plaintext-replication).
 
+Offline restore accepts a node name, **not an advertised-host/SAN list**.
+The new certificate contains that name and usable IP addresses detected
+on the restoring host. When `--name` exactly matches a member in the
+recovered state, it also preserves that member's valid explicit DNS/IP
+hosts from its stored gRPC and Raft addresses. It never takes another
+member's aliases or discovers identities through DNS. Unusable endpoints,
+including wildcard binds or wildcard DNS names, are omitted with a warning.
+
+A changed node name or an older backup without those endpoints retains
+only the name/local-IP fallback. If the intended DNS alias is absent,
+the supported recovery path is to choose a real address already present
+in the restored certificate:
+
+```sh
+sudo openssl x509 -in /var/lib/jaco/node/$(hostname).crt \
+  -noout -ext subjectAltName
+```
+
+Before starting the daemon, configure `listen_addr` and `cluster_addr`
+in `jacod.yaml` with that verified IP and their respective ports (normally
+7000 and 7001), keeping the hostname consistent with restore's `--name`.
+For example, if `10.0.0.5` is an address on this host and appears as an IP
+SAN, verify it against the restored CA:
+
+```sh
+sudo openssl verify -CAfile /var/lib/jaco/node/ca.crt \
+  -purpose sslserver -verify_ip 10.0.0.5 \
+  /var/lib/jaco/node/$(hostname).crt
+```
+
+Then start the daemon and use the local Unix-socket CLI for the initial
+`jaco cluster status` check. Adjust paths when using a different
+`data_dir` or node name. There is no advertised-SAN restore flag or
+certificate-reissue CLI added by this change. Do not bypass hostname
+verification or assume an arbitrary DNS alias is authorized.
+
 If startup fails with `raft TLS`, check the node hostname/Raft ID and the
 CA, certificate, key, and validity period under `data_dir/node`. Restore
 the correct credentials through a trusted management path; do not remove
