@@ -76,11 +76,9 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
-          # v2.12.2 is the first release built with go1.25, which the
-          # module pins via go.mod. Earlier versions refuse to load the
-          # config: "Go language version used to build golangci-lint is
-          # lower than the targeted Go version".
-          version: v2.12.2
+          # The prebuilt linter must support the Go version in go.mod.
+          # v2.13.2 is built with Go 1.27.
+          version: v2.13.2
 
   secrets-scan:
     name: secrets-scan
@@ -108,10 +106,8 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: install govulncheck
-        # v1.3.0 is the first release built with go1.25 — earlier
-        # versions refuse to scan go1.25 modules and emit "package
-        # requires newer Go version" errors for every file.
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
+        # v1.3.0's analysis dependencies panic on Go 1.27 types.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
       - name: govulncheck
         run: |
           set +e

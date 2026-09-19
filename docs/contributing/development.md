@@ -16,9 +16,15 @@ by [`.golangci.yml`](../../.golangci.yml).
 
 ## Toolchain
 
-- **Go** — pinned by `go.mod`. CI uses `setup-go@v5` with
-  `go-version-file: go.mod`. Match locally with whatever pins the same
-  version (`gvm`, `goenv`, `asdf`, or just install the matching tag).
+- **Go 1.27.1 or newer** — the minimum is enforced by `go.mod`.
+  All CI and release jobs use `setup-go@v5` with
+  `go-version-file: go.mod` to select that exact release. To reproduce
+  it locally, set `GOTOOLCHAIN=go1.27.1` (for example,
+  `GOTOOLCHAIN=go1.27.1 make ci-test`). An older compiler with automatic
+  toolchain switching disabled fails rather than building JACO.
+- **govulncheck v1.8.0** — CI installs
+  `golang.org/x/vuln/cmd/govulncheck@v1.8.0` with the selected Go
+  toolchain. Older scanner analysis dependencies do not support Go 1.27.
 - **buf** — used by `make proto`. Install per
   <https://buf.build/docs/installation>.
 - **nfpm** — used by `make package`. Install with
@@ -108,8 +114,9 @@ Correctness-only linters (`errcheck`, `govet`, `ineffassign`,
   Run `gofmt -w .` before pushing.
 - Naming, capitalization, and comment-style suggestions from
   `staticcheck` are disabled — no value vs. churn.
-- `golangci-lint` v2 schema. Pin matches CI's `v2.12.2` (the first
-  release built with go1.25, which the module pins).
+- `golangci-lint` v2 schema. Pin matches CI's `v2.13.2`, built with
+  Go 1.27. The linter's build compiler must be at least as new as the
+  module's Go language version; upgrading only your local Go is not enough.
 
 Per-file or per-rule exemptions live in `.golangci.yml::issues.exclusions`.
 
